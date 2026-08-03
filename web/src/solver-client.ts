@@ -1,10 +1,10 @@
-import type { PackingProblem, SensitivityResult, SensitivityStudy, SolveOptions, SolveProgress, SolveResult } from "./types";
+import type { PackingProblem, SensitivityProgress, SensitivityResult, SensitivityStudy, SolveOptions, SolveProgress, SolveResult } from "./types";
 import type { WorkerRequest, WorkerRequestPayload, WorkerResponse } from "./worker-protocol";
 
 interface Pending {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
-  progress?: (progress: SolveProgress) => void;
+  progress?: (progress: SolveProgress | SensitivityProgress) => void;
 }
 
 export class SolverClient {
@@ -22,11 +22,11 @@ export class SolverClient {
   }
 
   solve(problem: PackingProblem, options: SolveOptions, progress: (value: SolveProgress) => void): Promise<SolveResult> {
-    return this.request({ type: "solve", problem, options }, progress);
+    return this.request({ type: "solve", problem, options }, (value) => progress(value as SolveProgress));
   }
 
-  sensitivity(problem: PackingProblem, study: SensitivityStudy): Promise<SensitivityResult> {
-    return this.request({ type: "sensitivity", problem, study });
+  sensitivity(problem: PackingProblem, study: SensitivityStudy, progress: (value: SensitivityProgress) => void): Promise<SensitivityResult> {
+    return this.request({ type: "sensitivity", problem, study }, (value) => progress(value as SensitivityProgress));
   }
 
   cancel(): void {
@@ -48,7 +48,7 @@ export class SolverClient {
     };
   }
 
-  private async request<T>(request: WorkerRequestPayload, progress?: (value: SolveProgress) => void): Promise<T> {
+  private async request<T>(request: WorkerRequestPayload, progress?: (value: SolveProgress | SensitivityProgress) => void): Promise<T> {
     await this.readyPromise;
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
@@ -61,7 +61,7 @@ export class SolverClient {
     if (message.type === "ready") { this.readyResolve(); return; }
     const pending = this.pending.get(message.id);
     if (!pending) return;
-    if (message.type === "progress") { pending.progress?.(message.progress); return; }
+    if (message.type === "progress" || message.type === "sensitivity-progress") { pending.progress?.(message.progress); return; }
     this.pending.delete(message.id);
     if (message.type === "error") pending.reject(new Error(message.message));
     else if (message.type === "validated") pending.resolve(undefined);

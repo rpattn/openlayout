@@ -2,10 +2,10 @@ import "./style.css";
 import { SolverClient } from "./solver-client";
 import { ShapeModeller } from "./modeller";
 import { defaultState, fromProblem, makePrimitive, parsePointText, pointText, toProblem } from "./problem";
-import { renderLayout, renderSensitivity, renderShapePreview } from "./renderer";
+import { renderLayout, renderSensitivity, renderShapePreview, sensitivityValueAt } from "./renderer";
 import type {
   EditorExclusion, EditorItem, EditorState, PackingProblem, ParameterPath, PrimitiveEditor,
-  SensitivityResult, SensitivityStudy, SolveProgress, SolveResult,
+  SensitivityProgress, SensitivityResult, SensitivityStudy, SolveProgress, SolveResult,
 } from "./types";
 
 const root = document.querySelector<HTMLDivElement>("#app")!;
@@ -13,6 +13,7 @@ const client = new SolverClient();
 let state = defaultState();
 let currentResult: SolveResult | null = null;
 let sensitivityResult: SensitivityResult | null = null;
+let sensitivitySelection: number | null = null;
 let running = false;
 let modeller: ShapeModeller | null = null;
 let status: { tone: "neutral" | "working" | "success" | "error"; message: string } = { tone: "neutral", message: "Ready" };
@@ -38,8 +39,8 @@ root.innerHTML = `
       </section>
       <section class="analysis-grid">
         <div class="panel sensitivity-panel">
-          <div class="panel-heading"><div><small>PARAMETER STUDY</small><h2>Capacity transitions</h2></div><button id="run-study" class="button secondary">Run study</button></div>
-          <canvas id="sensitivity-canvas" aria-label="Sensitivity capacity chart"></canvas>
+          <div class="panel-heading"><div><small>PARAMETER STUDY</small><h2>Capacity transitions</h2></div><div class="study-run"><div id="study-progress" class="study-progress" hidden><progress max="100" value="0" aria-label="Sensitivity study progress"></progress><span aria-live="polite">Preparing…</span></div><button id="run-study" class="button secondary">Run study</button></div></div>
+          <div id="sensitivity-scroll" class="sensitivity-scroll"><canvas id="sensitivity-canvas" tabindex="0" aria-label="Sensitivity capacity chart. Click a point to inspect its layout."></canvas></div>
           <div id="transitions" class="transition-list"></div>
         </div>
         <div class="panel diagnostics-panel">
@@ -66,6 +67,15 @@ element("run-study").addEventListener("click", () => void runStudy());
 element("copy-result").addEventListener("click", () => void copyResult());
 element("nav-studio").addEventListener("click", closeModeller);
 element("nav-modeller").addEventListener("click", () => openModeller(0));
+sensitivityCanvas.addEventListener("click", (event) => {
+  if (!sensitivityResult) return;
+  selectSensitivityEvaluation(sensitivityValueAt(sensitivityCanvas, sensitivityResult, event.clientX), "graph");
+});
+element("sensitivity-scroll").addEventListener("wheel", (event) => {
+  const scroll = event.currentTarget as HTMLElement;
+  if (scroll.scrollWidth <= scroll.clientWidth || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+  scroll.scrollLeft += event.deltaY; event.preventDefault();
+}, { passive: false });
 
 function renderEditor(): void {
   editor.innerHTML = `
@@ -169,7 +179,7 @@ function bindEditor(): void {
   element<HTMLTextAreaElement>("container-points").addEventListener("change", (event) => mutate(() => { state.containerVertices = parsePointText((event.target as HTMLTextAreaElement).value); }, false));
   editor.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>("[data-scope]").forEach((input) => input.addEventListener("change", () => {
     if (input.dataset.scope === "study") {
-      updateScopedInput(input); sensitivityResult = null; renderSensitivity(sensitivityCanvas, null); setStatus("neutral", "Study configuration changed");
+      updateScopedInput(input); sensitivityResult = null; sensitivitySelection = null; element("study-progress").hidden = true; renderSensitivity(sensitivityCanvas, null); setStatus("neutral", "Study configuration changed");
     } else {
       mutate(() => updateScopedInput(input), input.dataset.scope === "exclusion-kind");
     }
@@ -253,14 +263,42 @@ async function runStudy(): Promise<void> {
     const problem = toProblem(state);
     const study = buildStudy();
     setRunning(true, "Running parameter study…");
-    sensitivityResult = await client.sensitivity(problem, study);
-    renderSensitivity(sensitivityCanvas, sensitivityResult);
+    sensitivitySelection = null;
+    resetStudyProgress();
+    sensitivityResult = await client.sensitivity(problem, study, updateStudyProgress);
+    sensitivitySelection = sensitivityResult.evaluations[0]?.value ?? null;
+    renderSensitivity(sensitivityCanvas, sensitivityResult, sensitivitySelection);
     renderTransitions();
+    completeStudyProgress(sensitivityResult.evaluations.length);
     setStatus("success", `${sensitivityResult.evaluations.length} parameter values evaluated`);
   } catch (error) { handleRunError(error); } finally { setRunning(false); }
 }
 
-function cancel(): void { if (!running) return; client.cancel(); setRunning(false); setStatus("neutral", "Run cancelled; worker restarted"); }
+function cancel(): void { if (!running) return; client.cancel(); setRunning(false); element("study-progress").hidden = true; setStatus("neutral", "Run cancelled; worker restarted"); }
+
+function resetStudyProgress(): void {
+  const container = element("study-progress"), progress = container.querySelector("progress")!;
+  container.hidden = false; progress.max = 100; progress.value = 0;
+  container.querySelector("span")!.textContent = "Preparing…";
+}
+
+function updateStudyProgress(value: SensitivityProgress): void {
+  const container = element("study-progress"), progress = container.querySelector("progress")!;
+  container.hidden = false;
+  if (value.phase === "sampling") {
+    progress.value = Math.min(100, value.completed / Math.max(value.initial_total, 1) * (state.study.strategy === "adaptive" ? 72 : 100));
+    container.querySelector("span")!.textContent = `${value.completed}/${value.initial_total} sampled · ${format(value.value)}`;
+  } else {
+    progress.removeAttribute("value");
+    container.querySelector("span")!.textContent = `Refining transitions · ${value.completed} points`;
+  }
+  setStatus("working", `${value.completed} parameter values evaluated · capacity ${value.capacity}`);
+}
+
+function completeStudyProgress(count: number): void {
+  const container = element("study-progress"), progress = container.querySelector("progress")!;
+  progress.value = 100; container.querySelector("span")!.textContent = `${count} points complete`;
+}
 
 function updateProgress(problem: PackingProblem, progress: SolveProgress): void {
   setStatus("working", `${progress.packed_item_count} placed · ${progress.iterations.toLocaleString()} iterations`);
@@ -280,13 +318,20 @@ function showResult(problem: PackingProblem, result: SolveResult): void {
 function renderTransitions(): void {
   const container = element("transitions");
   if (!sensitivityResult) { container.innerHTML = ""; return; }
-  container.innerHTML = sensitivityResult.transitions.map((transition) => `<button class="transition" data-value="${transition.upper_value}"><strong>${transition.lower_capacity} → ${transition.upper_capacity}</strong><span>${format(transition.lower_value)}–${format(transition.upper_value)}</span></button>`).join("") || '<p class="hint">No capacity change was observed in this interval.</p>';
-  container.querySelectorAll<HTMLButtonElement>("button").forEach((button) => button.addEventListener("click", () => {
-    const value = Number(button.dataset.value);
-    const evaluation = sensitivityResult!.evaluations.reduce((best, entry) => Math.abs(entry.value - value) < Math.abs(best.value - value) ? entry : best);
-    currentResult = evaluation.result; showResult(evaluation.problem, evaluation.result); setStatus("neutral", `Viewing sensitivity layout at ${format(evaluation.value)}`);
-  }));
+  container.innerHTML = sensitivityResult.transitions.map((transition) => `<article class="transition"><header><strong>${transition.lower_capacity} → ${transition.upper_capacity}</strong><span>${format(transition.lower_value)}–${format(transition.upper_value)}</span></header><div><button data-value="${transition.lower_value}" title="Inspect the last evaluated point before this transition"><b>Before</b><span>${transition.lower_capacity} items @ ${format(transition.lower_value)}</span></button><button data-value="${transition.upper_value}" title="Inspect the first evaluated point after this transition"><b>After</b><span>${transition.upper_capacity} items @ ${format(transition.upper_value)}</span></button></div></article>`).join("") || '<p class="hint">No capacity change was observed in this interval. Click any graph point to inspect its layout.</p>';
+  container.querySelectorAll<HTMLButtonElement>("button").forEach((button) => button.addEventListener("click", () => selectSensitivityEvaluation(Number(button.dataset.value), button.querySelector("b")!.textContent!.toLowerCase())));
   if (sensitivityResult.warnings.length) container.insertAdjacentHTML("beforeend", `<div class="warning">${sensitivityResult.warnings.map(escapeHtml).join("<br>")}</div>`);
+}
+
+function selectSensitivityEvaluation(value: number, side: string): void {
+  if (!sensitivityResult) return;
+  const evaluation = sensitivityResult.evaluations.reduce((best, entry) => Math.abs(entry.value - value) < Math.abs(best.value - value) ? entry : best);
+  sensitivitySelection = evaluation.value;
+  currentResult = evaluation.result;
+  renderSensitivity(sensitivityCanvas, sensitivityResult, evaluation.value);
+  showResult(evaluation.problem, evaluation.result);
+  element("transitions").querySelectorAll<HTMLButtonElement>("button").forEach((button) => button.classList.toggle("selected", Number(button.dataset.value) === evaluation.value));
+  setStatus("neutral", `Viewing ${side} point ${format(evaluation.value)} · ${evaluation.capacity} items`);
 }
 
 function buildStudy(): SensitivityStudy {
@@ -333,12 +378,12 @@ function parameterOptions(): string {
 }
 
 function mutate(change: () => void, rerender = true): void {
-  try { change(); currentResult = null; sensitivityResult = null; if (rerender) renderEditor(); else element<HTMLTextAreaElement>("problem-json").value = JSON.stringify(toProblem(state), null, 2); refreshPreview(); setStatus("neutral", "Problem changed"); }
+  try { change(); currentResult = null; sensitivityResult = null; sensitivitySelection = null; element("study-progress").hidden = true; if (rerender) renderEditor(); else element<HTMLTextAreaElement>("problem-json").value = JSON.stringify(toProblem(state), null, 2); refreshPreview(); setStatus("neutral", "Problem changed"); }
   catch (error) { setStatus("error", errorMessage(error)); }
 }
 
 function refreshPreview(): void {
-  try { renderLayout(layoutCanvas, toProblem(state), currentResult?.placements ?? []); renderSensitivity(sensitivityCanvas, sensitivityResult); renderItemPreviews(); }
+  try { renderLayout(layoutCanvas, toProblem(state), currentResult?.placements ?? []); renderSensitivity(sensitivityCanvas, sensitivityResult, sensitivitySelection); renderItemPreviews(); }
   catch (error) { setStatus("error", errorMessage(error)); }
 }
 function renderItemPreviews(): void {

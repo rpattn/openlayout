@@ -95,6 +95,14 @@ export interface SensitivityStudy {
   increasing_is_harder: boolean;
 }
 
+export interface SensitivityProgress {
+  completed: number;
+  initial_total: number;
+  value: number;
+  capacity: number;
+  phase: "sampling" | "refining";
+}
+
 export interface SensitivityResult {
   evaluations: Array<{ value: number; capacity: number; status: string; problem: PackingProblem; result: SolveResult }>;
   representative_layouts: Record<string, SolveResult>;

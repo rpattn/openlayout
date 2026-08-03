@@ -1,4 +1,4 @@
-import type { PackingProblem, SensitivityResult, SensitivityStudy, SolveOptions, SolveProgress, SolveResult } from "./types";
+import type { PackingProblem, SensitivityProgress, SensitivityResult, SensitivityStudy, SolveOptions, SolveProgress, SolveResult } from "./types";
 
 export type WorkerRequest =
   | { id: number; type: "validate"; problem: PackingProblem }
@@ -13,6 +13,7 @@ export type WorkerRequestPayload =
 export type WorkerResponse =
   | { type: "ready" }
   | { id: number; type: "progress"; progress: SolveProgress }
+  | { id: number; type: "sensitivity-progress"; progress: SensitivityProgress }
   | { id: number; type: "validated" }
   | { id: number; type: "solved"; result: SolveResult }
   | { id: number; type: "sensitivity"; result: SensitivityResult }

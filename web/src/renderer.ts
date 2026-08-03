@@ -34,7 +34,9 @@ export function renderLayout(canvas: HTMLCanvasElement, problem: PackingProblem,
   }
 }
 
-export function renderSensitivity(canvas: HTMLCanvasElement, result: SensitivityResult | null): void {
+export function renderSensitivity(canvas: HTMLCanvasElement, result: SensitivityResult | null, selectedValue: number | null = null): void {
+  const availableWidth = canvas.parentElement?.clientWidth ?? 0;
+  canvas.style.width = result ? `${Math.max(availableWidth, result.evaluations.length * 58 + 72)}px` : "100%";
   const context = setup(canvas);
   context.fillStyle = "#171c24";
   context.fillRect(0, 0, canvas.width, canvas.height);
@@ -57,6 +59,11 @@ export function renderSensitivity(canvas: HTMLCanvasElement, result: Sensitivity
   context.strokeStyle = "#3a424e";
   context.lineWidth = scale;
   context.beginPath(); context.moveTo(left, top); context.lineTo(left, bottom); context.lineTo(right, bottom); context.stroke();
+  for (const transition of result.transitions) {
+    const lower = x(transition.lower_value), upper = x(transition.upper_value);
+    context.fillStyle = "rgba(244,184,96,.09)";
+    context.fillRect(lower, top, Math.max(upper - lower, 2 * scale), bottom - top);
+  }
   context.strokeStyle = "#4fc3a1";
   context.lineWidth = 2 * scale;
   context.beginPath();
@@ -66,7 +73,12 @@ export function renderSensitivity(canvas: HTMLCanvasElement, result: Sensitivity
   });
   context.stroke();
   for (const entry of result.evaluations) {
-    context.fillStyle = "#f4b860";
+    const selected = selectedValue !== null && Math.abs(entry.value - selectedValue) < 1e-9;
+    if (selected) {
+      context.strokeStyle = "#eefaf7"; context.lineWidth = 2 * scale;
+      context.beginPath(); context.arc(x(entry.value), y(entry.capacity), 7 * scale, 0, Math.PI * 2); context.stroke();
+    }
+    context.fillStyle = selected ? "#eefaf7" : "#f4b860";
     context.beginPath(); context.arc(x(entry.value), y(entry.capacity), 3.2 * scale, 0, Math.PI * 2); context.fill();
   }
   context.fillStyle = "#9ba5b2";
@@ -75,6 +87,15 @@ export function renderSensitivity(canvas: HTMLCanvasElement, result: Sensitivity
   context.fillText(format(maxX), right - 28 * scale, canvas.height - 10 * scale);
   context.fillText(String(maxY), 16 * scale, top + 4 * scale);
   context.fillText(String(minY), 16 * scale, bottom + 4 * scale);
+}
+
+export function sensitivityValueAt(canvas: HTMLCanvasElement, result: SensitivityResult, clientX: number): number {
+  const rect = canvas.getBoundingClientRect();
+  const plotLeft = 46, plotRight = Math.max(plotLeft + 1, rect.width - 18);
+  const ratio = Math.max(0, Math.min(1, (clientX - rect.left - plotLeft) / (plotRight - plotLeft)));
+  const values = result.evaluations.map((entry) => entry.value);
+  const target = Math.min(...values) + ratio * (Math.max(...values) - Math.min(...values));
+  return result.evaluations.reduce((best, entry) => Math.abs(entry.value - target) < Math.abs(best.value - target) ? entry : best).value;
 }
 
 export function renderShapePreview(canvas: HTMLCanvasElement, shape: Shape): void {

@@ -67,10 +67,18 @@ test("Wasm sensitivity refines a parameterized compound-part transition", () => 
     seed_policy: "fixed",
     increasing_is_harder: true,
   };
-  const result = JSON.parse(engine.sensitivity(JSON.stringify(problem), JSON.stringify(study)));
+  const progress = [];
+  const result = JSON.parse(engine.sensitivity_with_progress(
+    JSON.stringify(problem),
+    JSON.stringify(study),
+    (json) => progress.push(JSON.parse(json)),
+  ));
   const capacities = new Set(result.evaluations.map((entry) => entry.capacity));
 
   assert.ok(capacities.size >= 2);
+  assert.equal(progress.length, result.evaluations.length);
+  assert.equal(progress[0].phase, "sampling");
+  assert.ok(progress.some((entry) => entry.phase === "refining"));
   assert.ok(result.transitions.length >= 1);
   assert.equal(result.evaluations.every((entry) => entry.problem.items.length === 1), true);
   assert.ok(result.transitions.every((entry) => entry.upper_value - entry.lower_value <= 0.05 + 1e-9));

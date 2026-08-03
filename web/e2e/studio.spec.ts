@@ -35,6 +35,17 @@ test("composes parameterized primitives, validates, solves, and inspects sensiti
   await page.getByRole("button", { name: "Run study" }).click();
   await expect(page.locator("#status")).toContainText("parameter values evaluated", { timeout: 20_000 });
   await expect(page.locator("#sensitivity-canvas")).toBeVisible();
+  await expect(page.locator("#study-progress")).toContainText("points complete");
+  await expect(page.locator("#study-progress progress")).toHaveAttribute("value", "100");
+  await page.locator("#sensitivity-canvas").click({ position: { x: 120, y: 70 } });
+  await expect(page.locator("#status")).toContainText("Viewing graph point");
+  const before = page.locator(".transition button").filter({ hasText: "Before" }).first();
+  if (await before.count()) {
+    await before.click();
+    await expect(page.locator("#status")).toContainText("Viewing before point");
+    await page.locator(".transition button").filter({ hasText: "After" }).first().click();
+    await expect(page.locator("#status")).toContainText("Viewing after point");
+  }
 });
 
 test("models shapes on canvas and previews snapped geometry across sensitivity extremes", async ({ page }) => {

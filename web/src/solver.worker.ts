@@ -18,7 +18,9 @@ scope.onmessage = ({ data }: MessageEvent<WorkerRequest>) => {
       });
       post({ id: data.id, type: "solved", result: JSON.parse(encoded) });
     } else {
-      const encoded = engine.sensitivity(problem, JSON.stringify(data.study));
+      const encoded = engine.sensitivity_with_progress(problem, JSON.stringify(data.study), (progressJson: string) => {
+        post({ id: data.id, type: "sensitivity-progress", progress: JSON.parse(progressJson) });
+      });
       post({ id: data.id, type: "sensitivity", result: JSON.parse(encoded) });
     }
   } catch (error) {
@@ -31,4 +33,3 @@ post({ type: "ready" });
 function post(message: WorkerResponse): void {
   scope.postMessage(message);
 }
-
