@@ -1,0 +1,21 @@
+{
+  "container": {
+    "boundary": {
+      "kind": "polygon",
+      "vertices": [
+        { "x": 0, "y": 0 }, { "x": 18, "y": 0 }, { "x": 18, "y": 10 },
+        { "x": 12, "y": 10 }, { "x": 12, "y": 8 }, { "x": 0, "y": 8 }
+      ]
+    }
+  },
+  "items": [
+    {
+      "id": "rectangle-a",
+      "shape": { "kind": "rectangle", "width": 3, "height": 2 },
+      "quantity": 50,
+      "rotations": [0, 90]
+    }
+  ],
+  "clearance": { "item_to_item": 0.2, "item_to_boundary": 0.2, "item_to_exclusion": 0 }
+}
+

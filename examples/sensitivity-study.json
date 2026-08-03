@@ -1,0 +1,17 @@
+{
+  "parameter": { "kind": "item_width", "item_id": "rectangle-a" },
+  "start": 2,
+  "end": 4,
+  "initial_step": 0.5,
+  "transition_tolerance": 0.02,
+  "strategy": "adaptive",
+  "solve_options": {
+    "seed": 7,
+    "deterministic": true,
+    "max_iterations": 30000,
+    "grid_step": 0.25,
+    "restarts": 2
+  },
+  "seed_policy": "fixed",
+  "increasing_is_harder": true
+}

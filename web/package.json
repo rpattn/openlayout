@@ -1,0 +1,20 @@
+{
+  "name": "openlayout-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "wasm": "wasm-pack build ../crates/packing-wasm --target web --out-dir ../../web/src/wasm",
+    "dev": "npm run wasm && vite",
+    "build": "npm run wasm && tsc --noEmit && vite build",
+    "test": "npm run wasm && node --test test/*.test.mjs",
+    "test:runtime": "node --test test/*.test.mjs",
+    "test:e2e": "playwright test",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.1"
+  }
+}

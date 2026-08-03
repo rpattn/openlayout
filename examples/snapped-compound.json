@@ -1,0 +1,44 @@
+{
+  "container": { "boundary": { "kind": "rectangle", "width": 20, "height": 8 } },
+  "items": [
+    {
+      "id": "item-a",
+      "quantity": 40,
+      "rotations": [0, 180],
+      "shape": {
+        "kind": "compound",
+        "parts": [
+          {
+            "shape": { "kind": "rectangle", "width": 4, "height": 2 },
+            "translation": { "x": 0, "y": 0 },
+            "rotation_deg": 0
+          },
+          {
+            "shape": { "kind": "circle", "radius": 1, "segments": 28 },
+            "translation": { "x": -2, "y": 0 },
+            "rotation_deg": 0,
+            "snap": {
+              "target_part": 0,
+              "own_anchor": "center",
+              "target_anchor": "left",
+              "offset": { "x": 0, "y": 0 }
+            }
+          },
+          {
+            "shape": { "kind": "circle", "radius": 1, "segments": 28 },
+            "translation": { "x": 2, "y": 0 },
+            "rotation_deg": 0,
+            "snap": {
+              "target_part": 0,
+              "own_anchor": "center",
+              "target_anchor": "right",
+              "offset": { "x": 0, "y": 0 }
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "clearance": { "item_to_item": 0.2, "item_to_boundary": 0.2, "item_to_exclusion": 0 }
+}
+

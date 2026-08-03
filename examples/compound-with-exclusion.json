@@ -1,0 +1,42 @@
+{
+  "container": {
+    "boundary": { "kind": "rectangle", "width": 20, "height": 14 }
+  },
+  "exclusions": [
+    {
+      "id": "region-a",
+      "shape": {
+        "kind": "polygon",
+        "vertices": [
+          { "x": -2, "y": -2 }, { "x": 2, "y": -2 },
+          { "x": 2, "y": 2 }, { "x": -2, "y": 2 }
+        ]
+      },
+      "clearance": 0.25
+    }
+  ],
+  "items": [
+    {
+      "id": "compound-a",
+      "shape": {
+        "kind": "compound",
+        "parts": [
+          {
+            "shape": { "kind": "rectangle", "width": 3, "height": 1 },
+            "translation": { "x": 0, "y": 0 },
+            "rotation_deg": 0
+          },
+          {
+            "shape": { "kind": "circle", "radius": 0.75, "segments": 24 },
+            "translation": { "x": 1.5, "y": 0 },
+            "rotation_deg": 0
+          }
+        ]
+      },
+      "quantity": 30,
+      "rotations": [0, 90, 180, 270]
+    }
+  ],
+  "clearance": { "item_to_item": 0.3, "item_to_boundary": 0.2, "item_to_exclusion": 0.2 }
+}
+

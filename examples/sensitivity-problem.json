@@ -1,0 +1,13 @@
+{
+  "container": { "boundary": { "kind": "rectangle", "width": 12, "height": 4 } },
+  "items": [
+    {
+      "id": "rectangle-a",
+      "shape": { "kind": "rectangle", "width": 2, "height": 4 },
+      "quantity": 20,
+      "rotations": [0]
+    }
+  ],
+  "clearance": { "item_to_item": 0, "item_to_boundary": 0, "item_to_exclusion": 0 }
+}
+
