@@ -16,6 +16,7 @@ export function renderLayout(canvas: HTMLCanvasElement, problem: PackingProblem,
   context.fillRect(0, 0, canvas.width, canvas.height);
   drawGrid(context, viewport);
   drawPolygon(context, container, viewport, "#252c36", "#77808c", 2);
+  if (display.dimensions) drawDimensions(context, container, viewport);
   if (display.clearance && problem.clearance.item_to_boundary > 0) drawDashedPolygon(context, offsetPolygon(container, -problem.clearance.item_to_boundary), viewport, "#9ba5b2");
 
   for (const exclusion of problem.exclusions) {
@@ -24,9 +25,11 @@ export function renderLayout(canvas: HTMLCanvasElement, problem: PackingProblem,
       drawPolygon(context, polygon, viewport, "rgba(239,111,108,.26)", "#ef6f6c", 1.5);
       hatchPolygon(context, polygon, viewport);
     }
+    if (display.dimensions) drawDimensions(context, polygons(exclusion.shape).flat(), viewport);
   }
 
   const itemIndex = new Map(problem.items.map((item, index) => [item.id, index]));
+  const dimensionedItems = new Set<string>();
   for (const placement of placements) {
     const item = problem.items.find((entry) => entry.id === placement.item_id);
     if (!item) continue;
@@ -36,7 +39,7 @@ export function renderLayout(canvas: HTMLCanvasElement, problem: PackingProblem,
       if (display.clearance && problem.clearance.item_to_item > 0) drawDashedPolygon(context, offsetPolygon(polygon, problem.clearance.item_to_item / 2), viewport, color);
       drawPolygon(context, polygon, viewport, `${color}b8`, placement.fixed ? "#fff4d6" : color, placement.fixed ? 2.5 : 1.1);
     }
-    if (display.dimensions) drawDimensions(context, placedPolygons.flat(), viewport);
+    if (display.dimensions && !dimensionedItems.has(item.id)) { drawDimensions(context, placedPolygons.flat(), viewport); dimensionedItems.add(item.id); }
   }
 }
 

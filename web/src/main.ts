@@ -82,10 +82,10 @@ element("sensitivity-scroll").addEventListener("wheel", (event) => {
 
 function renderEditor(): void {
   editor.innerHTML = `
-    <details open><summary>Container <span>irregular boundary</span></summary>
-      <div class="section-body">
-        <label>Polygon vertices <textarea id="container-points" rows="6" spellcheck="false">${pointText(state.containerVertices)}</textarea></label>
-        <p class="hint">One <code>x, y</code> pair per line. Counter-clockwise or clockwise is accepted.</p>
+    <details open><summary>Container <span>${state.container.kind} boundary</span></summary>
+      <div class="section-body stack">
+        ${state.container.kind === "polygon" ? `<label>Polygon vertices <textarea id="container-points" rows="6" spellcheck="false">${pointText(state.container.vertices)}</textarea></label><p class="hint">One <code>x, y</code> pair per line. Counter-clockwise or clockwise is accepted.</p>` : '<p class="hint">This container uses an editable closed Bézier boundary.</p>'}
+        <button class="button ghost full" data-action="model-container">Edit container visually</button>
       </div>
     </details>
     <details open><summary>Item shapes <span>${state.items.length} definition${state.items.length === 1 ? "" : "s"}</span></summary>
@@ -174,7 +174,7 @@ function exclusionHtml(entry: EditorExclusion, index: number): string {
         ? `${exclusionNumber("Base", "base", part.base, index)}${exclusionNumber("Height", "height", part.height, index)}`
       : part.kind === "polygon" ? `<label class="wide">Vertices<textarea rows="3" data-scope="exclusion-points" data-exclusion="${index}">${pointText(part.vertices)}</textarea></label>`
         : `<p class="hint wide">Edit Bézier knots in the Shape modeller.</p>`;
-  return `<article class="shape-card compact"><div class="card-heading"><strong>${escapeHtml(entry.id)}</strong><button class="icon-button" data-action="delete-exclusion" data-exclusion="${index}">×</button></div><div class="field-grid three">${textField("ID", "exclusion", "id", entry.id, index)}${numberField("Clearance", "exclusion", "clearance", entry.clearance, .05, false, index)}<label>Shape<select data-scope="exclusion-kind" data-exclusion="${index}">${(["rectangle", "triangle", "circle", "polygon"] as const).map((kind) => `<option ${part.kind === kind ? "selected" : ""}>${kind}</option>`).join("")}</select></label>${shapeFields}${exclusionNumber("X", "x", part.x, index)}${exclusionNumber("Y", "y", part.y, index)}${exclusionNumber("Rotation°", "rotation", part.rotation, index)}</div></article>`;
+  return `<article class="shape-card compact"><div class="card-heading"><strong>${escapeHtml(entry.id)}</strong><div class="card-actions"><button class="text-button" data-action="model-exclusion" data-exclusion="${index}">Edit visually</button><button class="icon-button" data-action="delete-exclusion" data-exclusion="${index}">×</button></div></div><div class="field-grid three">${textField("ID", "exclusion", "id", entry.id, index)}${numberField("Clearance", "exclusion", "clearance", entry.clearance, .05, false, index)}<label>Shape<select data-scope="exclusion-kind" data-exclusion="${index}">${(["rectangle", "triangle", "circle", "polygon"] as const).map((kind) => `<option ${part.kind === kind ? "selected" : ""}>${kind}</option>`).join("")}</select></label>${shapeFields}${exclusionNumber("X", "x", part.x, index)}${exclusionNumber("Y", "y", part.y, index)}${exclusionNumber("Rotation°", "rotation", part.rotation, index)}</div></article>`;
 }
 
 function fixedHtml(entry: EditorState["fixedPlacements"][number], index: number): string {
@@ -182,7 +182,7 @@ function fixedHtml(entry: EditorState["fixedPlacements"][number], index: number)
 }
 
 function bindEditor(): void {
-  element<HTMLTextAreaElement>("container-points").addEventListener("change", (event) => mutate(() => { state.containerVertices = parsePointText((event.target as HTMLTextAreaElement).value); }, false));
+  document.querySelector<HTMLTextAreaElement>("#container-points")?.addEventListener("change", (event) => mutate(() => { if (state.container.kind === "polygon") state.container.vertices = parsePointText((event.target as HTMLTextAreaElement).value); }, false));
   editor.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>("[data-scope]").forEach((input) => input.addEventListener("change", () => {
     if (input.dataset.scope === "study") {
       updateScopedInput(input); sensitivityResult = null; sensitivitySelection = null; element("study-progress").hidden = true; renderSensitivity(sensitivityCanvas, null); setStatus("neutral", "Study configuration changed");
@@ -225,6 +225,8 @@ function updateScopedInput(input: HTMLInputElement | HTMLSelectElement | HTMLTex
 function handleAction(button: HTMLButtonElement): void {
   const action = button.dataset.action;
   if (action === "model-item") { openModeller(Number(button.dataset.item)); return; }
+  if (action === "model-container") { openModeller("container"); return; }
+  if (action === "model-exclusion") { openModeller(`exclusion:${button.dataset.exclusion}`); return; }
   mutate(() => {
     if (action === "add-item") state.items.push({ id: uniqueId("item", state.items.map((item) => item.id)), quantity: 50, rotations: "0, 90", parts: [makePrimitive("rectangle")] });
     else if (action === "delete-item") state.items.splice(Number(button.dataset.item), 1);
@@ -401,14 +403,15 @@ function renderItemPreviews(): void {
 }
 function refreshCanvases(): void { refreshPreview(); }
 
-function openModeller(itemIndex: number): void {
-  if (!state.items[itemIndex]) return;
+function openModeller(target: number | string): void {
+  if (typeof target === "number" && !state.items[target]) return;
+  if (typeof target === "string" && target.startsWith("exclusion:") && !state.exclusions[Number(target.split(":")[1])]) return;
   element("modeller-page").hidden = false;
   document.querySelector<HTMLElement>(".workspace")!.hidden = true;
   document.querySelector<HTMLElement>(".run-actions")!.hidden = true;
   element("nav-studio").classList.remove("active"); element("nav-modeller").classList.add("active");
-  modeller = new ShapeModeller(element("modeller-page"), state, itemIndex, () => {
-    currentResult = null; sensitivityResult = null; setStatus("neutral", "Item geometry changed");
+  modeller = new ShapeModeller(element("modeller-page"), state, target, () => {
+    currentResult = null; sensitivityResult = null; setStatus("neutral", "Problem geometry changed");
   }, closeModeller);
 }
 

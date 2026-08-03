@@ -61,6 +61,29 @@ test("models shapes on canvas and previews snapped geometry across sensitivity e
   await expect(page.locator("#model-canvas")).toBeVisible();
   await expect(page.locator(".layer")).toHaveCount(3);
   await expect(page.locator(".shape-step")).toHaveCount(7);
+  await expect(page.locator(".model-dimensions text")).toHaveCount(2);
+  await expect(page.locator(".model-clearance")).toHaveCount(3);
+  expect(await page.locator(".model-dimensions text").first().evaluate((element) => getComputedStyle(element).stroke)).toBe("none");
+
+  await page.locator(".layer").filter({ hasText: "end-left" }).click();
+  const snappedChild = page.locator('#model-canvas [data-part-id="end-left"]');
+  const snappedStart = await screenCenter(snappedChild);
+  await page.mouse.move(snappedStart.x, snappedStart.y); await page.mouse.down(); await page.mouse.move(snappedStart.x + 38, snappedStart.y - 18, { steps: 6 }); await page.mouse.up();
+  await expect(page.locator(".layer.selected")).toContainText("snapped");
+
+  await page.locator("#model-target-select").selectOption("container");
+  await expect(page.locator(".layer")).toHaveCount(1);
+  await expect(page.locator(".geometry-context")).toContainText("Container boundary");
+  await expect(page.locator(".model-clearance")).toHaveCount(1);
+  await page.locator('[data-add-shape="bezier"]').click();
+  await expect(page.locator(".bezier-knot")).toHaveCount(4);
+  await page.locator("#model-target-select").selectOption("exclusion:0");
+  await expect(page.locator(".geometry-context")).toContainText("Exclusion");
+  const exclusionShape = page.locator("#model-canvas [data-part-id]").first();
+  const exclusionStart = await screenCenter(exclusionShape);
+  await page.mouse.move(exclusionStart.x, exclusionStart.y); await page.mouse.down(); await page.mouse.move(exclusionStart.x + 12, exclusionStart.y - 5); await page.mouse.up();
+  await page.locator("#model-target-select").selectOption("item:0");
+  await expect(page.locator(".layer")).toHaveCount(3);
 
   const startRightCenter = await shapeCenter(page.locator(".shape-step").first().locator("path").nth(2));
   const endRightCenter = await shapeCenter(page.locator(".shape-step").last().locator("path").nth(2));
@@ -110,6 +133,7 @@ test("models shapes on canvas and previews snapped geometry across sensitivity e
 
   await page.getByRole("button", { name: "Back to packing" }).click();
   await expect(page.locator("#layout-canvas")).toBeVisible();
+  expect(JSON.parse(await page.locator("#problem-json").inputValue()).container.boundary.kind).toBe("bezier");
   await page.getByRole("button", { name: "Validate" }).click();
   await expect(page.locator("#status")).toContainText("valid", { timeout: 10_000 });
 });

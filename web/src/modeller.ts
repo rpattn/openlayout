@@ -9,7 +9,7 @@ const COLORS = ["#4fc3a1", "#f4b860", "#7aa2f7", "#d98adf", "#ef6f6c", "#94c973"
 
 interface ViewBounds { minX: number; minY: number; width: number; height: number }
 interface SnapCandidate { targetId: string; ownAnchor: AnchorName; targetAnchor: AnchorName; position: Point; point: Point; distance: number }
-interface DragState { id: string; start: Point; original: Point; moved: boolean; mode: "move" | "resize" | "rotate" | "bezier"; anchor?: AnchorName; initialRotation?: number; bezierIndex?: number; bezierHandle?: "point" | "control_in" | "control_out" }
+interface DragState { id: string; start: Point; original: Point; moved: boolean; mode: "move" | "resize" | "rotate" | "bezier"; anchor?: AnchorName; initialRotation?: number; bezierIndex?: number; bezierHandle?: "point" | "control_in" | "control_out"; wasSnapped?: boolean }
 
 export class ShapeModeller {
   private selectedId: string;
@@ -20,25 +20,29 @@ export class ShapeModeller {
   private readonly side: HTMLElement;
   private readonly sensitivity: HTMLElement;
   private readonly keyHandler = (event: KeyboardEvent): void => {
-    if (event.key === "Escape" && this.selected?.snap) { delete this.selected.snap; this.changed(); }
+    if (event.key === "Escape" && this.selected?.snap) {
+      const position = resolveEditorTranslations(this.item.parts).get(this.selected.id)!;
+      this.selected.x = position.x; this.selected.y = position.y; delete this.selected.snap; this.changed();
+    }
     if ((event.key === "Delete" || event.key === "Backspace") && event.target === document.body) this.deleteSelected();
   };
 
   constructor(
     private readonly root: HTMLElement,
     private readonly state: EditorState,
-    private itemIndex: number,
+    target: number | string,
     private readonly onChange: () => void,
     private readonly onClose: () => void,
   ) {
+    this.targetKey = typeof target === "number" ? `item:${target}` : target;
     this.selectedId = this.item.parts[0]?.id ?? "";
     this.view = fitView(this.item.parts);
     root.innerHTML = `
       <div class="model-toolbar">
         <button class="button ghost" id="model-back">← Back to packing</button>
         <div class="model-title"><small>SHAPE MODELLER</small><strong>Constraint-aware item geometry</strong></div>
-        <label>Item<select id="model-item-select">${state.items.map((item, index) => `<option value="${index}" ${index === itemIndex ? "selected" : ""}>${escapeHtml(item.id)}</option>`).join("")}</select></label>
-        <div class="model-add"><span>Add</span>${(["rectangle", "triangle", "circle", "polygon", "bezier"] as const).map((kind) => `<button data-add-shape="${kind}">${kind}</button>`).join("")}</div>
+        <label>Editing<select id="model-target-select">${this.targetOptions()}</select></label>
+        <div class="model-add"><span>Shape</span>${(["rectangle", "triangle", "circle", "polygon", "bezier"] as const).map((kind) => `<button data-add-shape="${kind}">${kind}</button>`).join("")}</div>
       </div>
       <div class="model-body">
         <aside id="model-side" class="model-side"></aside>
@@ -57,19 +61,40 @@ export class ShapeModeller {
 
   destroy(): void { window.removeEventListener("keydown", this.keyHandler); }
 
-  private get item(): EditorItem { return this.state.items[this.itemIndex]; }
+  private targetKey: string;
+  private get isItem(): boolean { return this.targetKey.startsWith("item:"); }
+  private get itemIndex(): number { return Number(this.targetKey.split(":")[1]); }
+  private get exclusionIndex(): number { return Number(this.targetKey.split(":")[1]); }
+  private get item(): EditorItem {
+    if (this.targetKey === "container") return { id: "Container boundary", quantity: 1, rotations: "0", parts: [this.state.container] };
+    if (this.targetKey.startsWith("exclusion:")) { const exclusion = this.state.exclusions[this.exclusionIndex]; return { id: `Exclusion · ${exclusion.id}`, quantity: 1, rotations: "0", parts: [exclusion.primitive] }; }
+    return this.state.items[this.itemIndex];
+  }
   private get selected(): PrimitiveEditor | undefined { return this.item.parts.find((part) => part.id === this.selectedId); }
+
+  private targetOptions(): string {
+    const options: Array<[string, string]> = [["container", "Container boundary"]];
+    this.state.exclusions.forEach((entry, index) => options.push([`exclusion:${index}`, `Exclusion · ${entry.id}`]));
+    this.state.items.forEach((item, index) => options.push([`item:${index}`, `Item · ${item.id}`]));
+    return options.map(([value, label]) => `<option value="${value}" ${value === this.targetKey ? "selected" : ""}>${escapeHtml(label)}</option>`).join("");
+  }
 
   private bindShell(): void {
     this.root.querySelector("#model-back")!.addEventListener("click", this.onClose);
-    this.root.querySelector<HTMLSelectElement>("#model-item-select")!.addEventListener("change", (event) => {
-      this.itemIndex = Number((event.target as HTMLSelectElement).value);
+    this.root.querySelector<HTMLSelectElement>("#model-target-select")!.addEventListener("change", (event) => {
+      this.targetKey = (event.target as HTMLSelectElement).value;
       this.selectedId = this.item.parts[0]?.id ?? ""; this.view = fitView(this.item.parts); this.render();
     });
     this.root.querySelectorAll<HTMLButtonElement>("[data-add-shape]").forEach((button) => button.addEventListener("click", () => {
       const primitive = makePrimitive(button.dataset.addShape as PrimitiveEditor["kind"]);
       const center = { x: this.view.minX + this.view.width / 2, y: this.view.minY + this.view.height / 2 };
-      primitive.x = center.x; primitive.y = center.y; this.item.parts.push(primitive); this.selectedId = primitive.id; this.changed(true);
+      if (this.isItem) {
+        primitive.x = center.x; primitive.y = center.y; this.item.parts.push(primitive);
+      } else {
+        const previous = this.item.parts[0]; fitReplacement(primitive, previous);
+        if (this.targetKey === "container") this.state.container = primitive; else this.state.exclusions[this.exclusionIndex].primitive = primitive;
+      }
+      this.selectedId = primitive.id; this.changed(true);
     }));
     this.svg.addEventListener("pointerdown", (event) => this.pointerDown(event));
     this.svg.addEventListener("pointermove", (event) => this.pointerMove(event));
@@ -124,14 +149,15 @@ export class ShapeModeller {
           : part.kind === "polygon" ? `<label class="wide">Vertices<textarea rows="4" data-model-points>${part.vertices.map((point) => `${point.x}, ${point.y}`).join("\n")}</textarea></label>`
             : `${modelNumber("Curve segments", "segments", part.segments, 1)}<p class="hint wide">Drag the solid knots and hollow tangent handles directly on the canvas.</p>`;
     const targets = this.item.parts.filter((entry) => entry.id !== part.id && !dependsOn(this.item.parts, entry.id, part.id));
+    const constraintPanel = this.isItem ? `<div class="snap-panel"><div class="snap-heading"><small>CONSTRAINT</small><strong>${part.snap ? "Anchored" : "Free position"}</strong></div>
+        <label>Snap to<select id="snap-target"><option value="">Free position</option>${targets.map((target) => `<option value="${target.id}" ${part.snap?.targetId === target.id ? "selected" : ""}>${escapeHtml(target.id)}</option>`).join("")}</select></label>
+        ${part.snap ? `<div class="field-grid two"><label>Own anchor<select data-snap-anchor="ownAnchor">${anchorOptions(part.snap.ownAnchor)}</select></label><label>Target anchor<select data-snap-anchor="targetAnchor">${anchorOptions(part.snap.targetAnchor)}</select></label><label>Offset X<input type="number" step=".1" value="${part.snap.offset.x}" data-snap-offset="x"></label><label>Offset Y<input type="number" step=".1" value="${part.snap.offset.y}" data-snap-offset="y"></label></div><button id="detach-snap" class="button ghost full">Detach at current position</button>` : '<p>Drag near another part’s center, edge midpoint, or corner to create a live relationship.</p>'}
+      </div>` : `<div class="snap-panel"><div class="snap-heading"><small>CLEARANCE</small><strong>${format(this.targetClearance())}</strong></div><p>The dashed line previews the active ${this.targetKey === "container" ? "inward boundary" : "exclusion"} clearance.</p></div>`;
     return `<div class="model-inspector">
       <div class="inspector-title"><div><small>SELECTED</small><strong>${capitalize(part.kind)}</strong></div><span>${escapeHtml(part.id)}</span></div>
       <div class="field-grid two">${dimensionFields}${modelNumber("X", "x", part.snap ? resolved.x : part.x, .1, Boolean(part.snap))}${modelNumber("Y", "y", part.snap ? resolved.y : part.y, .1, Boolean(part.snap))}${modelNumber("Rotation°", "rotation", part.rotation, 1)}</div>
-      <div class="snap-panel"><div class="snap-heading"><small>CONSTRAINT</small><strong>${part.snap ? "Anchored" : "Free position"}</strong></div>
-        <label>Snap to<select id="snap-target"><option value="">Free position</option>${targets.map((target) => `<option value="${target.id}" ${part.snap?.targetId === target.id ? "selected" : ""}>${escapeHtml(target.id)}</option>`).join("")}</select></label>
-        ${part.snap ? `<div class="field-grid two"><label>Own anchor<select data-snap-anchor="ownAnchor">${anchorOptions(part.snap.ownAnchor)}</select></label><label>Target anchor<select data-snap-anchor="targetAnchor">${anchorOptions(part.snap.targetAnchor)}</select></label><label>Offset X<input type="number" step=".1" value="${part.snap.offset.x}" data-snap-offset="x"></label><label>Offset Y<input type="number" step=".1" value="${part.snap.offset.y}" data-snap-offset="y"></label></div><button id="detach-snap" class="button ghost full">Detach at current position</button>` : '<p>Drag near another part’s center, edge midpoint, or corner to create a live relationship.</p>'}
-      </div>
-      <div class="inline-actions"><button id="duplicate-part" class="button ghost">Duplicate</button><button id="delete-part-model" class="button danger">Delete</button></div>
+      ${constraintPanel}
+      ${this.isItem ? '<div class="inline-actions"><button id="duplicate-part" class="button ghost">Duplicate</button><button id="delete-part-model" class="button danger">Delete</button></div>' : ""}
     </div>`;
   }
 
@@ -141,6 +167,7 @@ export class ShapeModeller {
     const selected = this.selected;
     this.svg.setAttribute("viewBox", `${this.view.minX} ${-this.view.minY - this.view.height} ${this.view.width} ${this.view.height}`);
     this.svg.innerHTML = `<rect x="${this.view.minX}" y="${-this.view.minY - this.view.height}" width="${this.view.width}" height="${this.view.height}" class="model-bg"/>${grid}
+      ${clearanceMarkup(this.item.parts, translations, this.targetKey === "container" ? -this.targetClearance() : this.targetClearance())}
       ${this.item.parts.map((part, index) => {
         const position = translations.get(part.id) ?? { x: part.x, y: part.y };
         return `<path data-part-id="${part.id}" class="model-shape ${part.id === this.selectedId ? "selected" : ""}" d="${pathForPart(part, position)}" fill="${COLORS[index % COLORS.length]}66" stroke="${COLORS[index % COLORS.length]}"/>`;
@@ -150,6 +177,10 @@ export class ShapeModeller {
   }
 
   private renderSensitivity(): void {
+    if (!this.isItem) {
+      this.sensitivity.innerHTML = `<div class="geometry-context"><div><small>PROBLEM GEOMETRY</small><strong>${escapeHtml(this.item.id)}</strong></div><p>Use the same canvas handles to move, resize, rotate, or reshape this boundary. Dimensions are shown on the selected shape and the dashed outline is its active clearance.</p><dl><dt>Geometry</dt><dd>${this.selected?.kind ?? "—"}</dd><dt>Clearance</dt><dd>${format(this.targetClearance())}</dd></dl></div>`;
+      return;
+    }
     const parameterOptions = modelParameterOptions(this.item);
     if (!parameterOptions.some(([value]) => value === this.state.study.parameterKey)) this.state.study.parameterKey = parameterOptions[0]?.[0] ?? "";
     const values = studyValues(this.state.study.start, this.state.study.end, this.state.study.initial_step);
@@ -186,7 +217,7 @@ export class ShapeModeller {
     this.selectedId = target.dataset.partId!;
     const part = this.selected!;
     const position = resolveEditorTranslations(this.item.parts).get(part.id) ?? { x: part.x, y: part.y };
-    this.drag = { id: part.id, start: this.eventPoint(event), original: position, moved: false, mode: "move" };
+    this.drag = { id: part.id, start: this.eventPoint(event), original: position, moved: false, mode: "move", wasSnapped: Boolean(part.snap) };
     this.svg.setPointerCapture(event.pointerId); this.render();
   }
 
@@ -222,6 +253,10 @@ export class ShapeModeller {
     if (candidate) {
       part.x = candidate.position.x; part.y = candidate.position.y;
       part.snap = { targetId: candidate.targetId, ownAnchor: candidate.ownAnchor, targetAnchor: candidate.targetAnchor, offset: { x: 0, y: 0 } };
+    } else if (this.drag.wasSnapped && part.snap) {
+      const base = positionForSnap(part, this.item.parts);
+      part.x = raw.x; part.y = raw.y;
+      part.snap.offset = { x: raw.x - base.x, y: raw.y - base.y };
     } else {
       part.x = raw.x; part.y = raw.y; delete part.snap;
     }
@@ -240,11 +275,17 @@ export class ShapeModeller {
   }
 
   private duplicateSelected(): void {
-    const selected = this.selected; if (!selected) return; const copy = structuredClone(selected); let suffix = 1; do { copy.id = `${selected.id}-copy-${suffix++}`; } while (this.item.parts.some((part) => part.id === copy.id)); copy.x += .7; copy.y += .7; delete copy.snap; this.item.parts.push(copy); this.selectedId = copy.id; this.changed(true);
+    const selected = this.selected; if (!selected || !this.isItem) return; const copy = structuredClone(selected); let suffix = 1; do { copy.id = `${selected.id}-copy-${suffix++}`; } while (this.item.parts.some((part) => part.id === copy.id)); copy.x += .7; copy.y += .7; delete copy.snap; this.item.parts.push(copy); this.selectedId = copy.id; this.changed(true);
   }
 
   private deleteSelected(): void {
-    if (!this.selected) return; const id = this.selected.id; this.item.parts = this.item.parts.filter((part) => part.id !== id); this.item.parts.forEach((part) => { if (part.snap?.targetId === id) delete part.snap; }); this.selectedId = this.item.parts[0]?.id ?? ""; this.changed(true);
+    if (!this.selected || !this.isItem) return; const id = this.selected.id; const item = this.item; item.parts = item.parts.filter((part) => part.id !== id); item.parts.forEach((part) => { if (part.snap?.targetId === id) delete part.snap; }); this.selectedId = item.parts[0]?.id ?? ""; this.changed(true);
+  }
+
+  private targetClearance(): number {
+    if (this.targetKey === "container") return this.state.clearance.item_to_boundary;
+    if (this.targetKey.startsWith("exclusion:")) return Math.max(this.state.clearance.item_to_exclusion, this.state.exclusions[this.exclusionIndex].clearance);
+    return this.state.clearance.item_to_item / 2;
   }
 
   private changed(refit = false): void { if (refit) this.view = fitView(this.item.parts); this.onChange(); this.render(); }
@@ -279,7 +320,53 @@ function selectionMarkup(part: PrimitiveEditor, position: Point, handleOffset: n
   const rotate = { x: top.x + (top.x - center.x) / length * handleOffset, y: top.y + (top.y - center.y) / length * handleOffset };
   const outline = ["top_left", "top_right", "bottom_right", "bottom_left"].map((anchor) => byAnchor.get(anchor as AnchorName)!);
   const bezier = part.kind === "bezier" ? bezierControlMarkup(part, position) : "";
-  return `<path class="selection-box" d="${outline.map((point, index) => `${index ? "L" : "M"}${point.x},${-point.y}`).join(" ")} Z"/><line class="rotate-stem" x1="${top.x}" y1="${-top.y}" x2="${rotate.x}" y2="${-rotate.y}"/><circle class="rotate-handle" data-rotate-handle cx="${rotate.x}" cy="${-rotate.y}" r=".13"/>${points.map(({ anchor, point }) => `<circle class="anchor-handle ${anchor === "center" ? "center" : anchor}" data-anchor="${anchor}" ${anchor === "center" ? "" : `data-resize-anchor="${anchor}"`} cx="${point.x}" cy="${-point.y}" r=".11"/>`).join("")}${bezier}`;
+  return `<path class="selection-box" d="${outline.map((point, index) => `${index ? "L" : "M"}${point.x},${-point.y}`).join(" ")} Z"/>${dimensionMarkup(byAnchor, handleOffset)}<line class="rotate-stem" x1="${top.x}" y1="${-top.y}" x2="${rotate.x}" y2="${-rotate.y}"/><circle class="rotate-handle" data-rotate-handle cx="${rotate.x}" cy="${-rotate.y}" r=".13"/>${points.map(({ anchor, point }) => `<circle class="anchor-handle ${anchor === "center" ? "center" : anchor}" data-anchor="${anchor}" ${anchor === "center" ? "" : `data-resize-anchor="${anchor}"`} cx="${point.x}" cy="${-point.y}" r=".11"/>`).join("")}${bezier}`;
+}
+
+function positionForSnap(part: PrimitiveEditor, parts: PrimitiveEditor[]): Point {
+  if (!part.snap) return { x: part.x, y: part.y };
+  const target = parts.find((entry) => entry.id === part.snap!.targetId);
+  if (!target) return { x: part.x, y: part.y };
+  const targetPosition = resolveEditorTranslations(parts.filter((entry) => entry.id !== part.id)).get(target.id) ?? { x: target.x, y: target.y };
+  const own = primitiveAnchor(part, part.snap.ownAnchor), targetPoint = primitiveAnchor(target, part.snap.targetAnchor, targetPosition);
+  return { x: targetPoint.x - own.x, y: targetPoint.y - own.y };
+}
+
+function dimensionMarkup(anchors: Map<AnchorName, Point>, offset: number): string {
+  const center = anchors.get("center")!, top = anchors.get("top")!, right = anchors.get("right")!;
+  const topLeft = anchors.get("top_left")!, topRight = anchors.get("top_right")!, bottomRight = anchors.get("bottom_right")!;
+  const topLength = Math.hypot(top.x - center.x, top.y - center.y) || 1, rightLength = Math.hypot(right.x - center.x, right.y - center.y) || 1;
+  const up = { x: (top.x - center.x) / topLength * offset * .52, y: (top.y - center.y) / topLength * offset * .52 };
+  const outward = { x: (right.x - center.x) / rightLength * offset, y: (right.y - center.y) / rightLength * offset };
+  const a = { x: topLeft.x + up.x, y: topLeft.y + up.y }, b = { x: topRight.x + up.x, y: topRight.y + up.y };
+  const c = { x: topRight.x + outward.x, y: topRight.y + outward.y }, d = { x: bottomRight.x + outward.x, y: bottomRight.y + outward.y };
+  const width = Math.hypot(topRight.x - topLeft.x, topRight.y - topLeft.y), height = Math.hypot(topRight.x - bottomRight.x, topRight.y - bottomRight.y);
+  return `<g class="model-dimensions"><line x1="${a.x}" y1="${-a.y}" x2="${b.x}" y2="${-b.y}"/><text x="${(a.x + b.x) / 2}" y="${-(a.y + b.y) / 2}">${format(width)}</text><line x1="${c.x}" y1="${-c.y}" x2="${d.x}" y2="${-d.y}"/><text x="${(c.x + d.x) / 2}" y="${-(c.y + d.y) / 2}">${format(height)}</text></g>`;
+}
+
+function clearanceMarkup(parts: PrimitiveEditor[], translations: Map<string, Point>, distance: number): string {
+  if (Math.abs(distance) < 1e-9) return "";
+  return parts.map((part) => {
+    const position = translations.get(part.id) ?? { x: part.x, y: part.y };
+    const polygon = shapePoints(primitiveShape(part)).map((point) => transformPoint(point, part.rotation, position.x, position.y));
+    const offset = offsetPolygon(polygon, distance);
+    return `<path class="model-clearance" d="${offset.map((point, index) => `${index ? "L" : "M"}${point.x},${-point.y}`).join(" ")} Z"/>`;
+  }).join("");
+}
+
+function offsetPolygon(points: Point[], distance: number): Point[] {
+  if (points.length < 3) return points;
+  const area = points.reduce((sum, point, index) => { const next = points[(index + 1) % points.length]; return sum + point.x * next.y - next.x * point.y; }, 0);
+  const direction = area >= 0 ? 1 : -1;
+  const lines = points.map((point, index) => { const next = points[(index + 1) % points.length], dx = next.x - point.x, dy = next.y - point.y, length = Math.hypot(dx, dy) || 1; return { point: { x: point.x + direction * dy / length * distance, y: point.y - direction * dx / length * distance }, direction: { x: dx, y: dy } }; });
+  return points.map((_, index) => lineIntersection(lines[(index + lines.length - 1) % lines.length], lines[index]) ?? lines[index].point);
+}
+
+function lineIntersection(a: { point: Point; direction: Point }, b: { point: Point; direction: Point }): Point | null {
+  const cross = a.direction.x * b.direction.y - a.direction.y * b.direction.x;
+  if (Math.abs(cross) < 1e-9) return null;
+  const dx = b.point.x - a.point.x, dy = b.point.y - a.point.y, amount = (dx * b.direction.y - dy * b.direction.x) / cross;
+  return { x: a.point.x + amount * a.direction.x, y: a.point.y + amount * a.direction.y };
 }
 
 function bezierControlMarkup(part: Extract<PrimitiveEditor, { kind: "bezier" }>, position: Point): string {
@@ -319,6 +406,18 @@ function scaleBezier(part: Extract<PrimitiveEditor, { kind: "bezier" }>, axis: "
   const points = part.knots.flatMap((knot) => [knot.point, knot.control_in, knot.control_out]);
   const extent = Math.max(...points.map((point) => Math.abs(point[axis]))) * 2;
   if (extent > 0) points.forEach((point) => { point[axis] *= target / extent; });
+}
+
+function fitReplacement(replacement: PrimitiveEditor, previous: PrimitiveEditor): void {
+  const center = primitiveAnchor(previous, "center", { x: previous.x, y: previous.y });
+  const topLeft = primitiveAnchor(previous, "top_left"), topRight = primitiveAnchor(previous, "top_right"), bottomRight = primitiveAnchor(previous, "bottom_right");
+  const width = Math.hypot(topRight.x - topLeft.x, topRight.y - topLeft.y), height = Math.hypot(topRight.x - bottomRight.x, topRight.y - bottomRight.y);
+  replacement.id = previous.id; replacement.x = center.x; replacement.y = center.y; replacement.rotation = previous.rotation;
+  if (replacement.kind === "rectangle") { replacement.width = width; replacement.height = height; }
+  else if (replacement.kind === "triangle") { replacement.base = width; replacement.height = height; }
+  else if (replacement.kind === "circle") replacement.radius = Math.max(.05, Math.min(width, height) / 2);
+  else if (replacement.kind === "polygon") { scalePolygon(replacement.vertices, "x", width); scalePolygon(replacement.vertices, "y", height); }
+  else { scaleBezier(replacement, "x", width); scaleBezier(replacement, "y", height); }
 }
 
 function pathForPart(part: PrimitiveEditor, position: Point): string {

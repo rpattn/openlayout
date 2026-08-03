@@ -26,7 +26,7 @@ Clearance participates in feasibility, never merely scoring. A requested item se
 
 Boundary clearance is the minimum item-to-container-boundary distance after containment. Exclusion clearance is `max(problem.item_to_exclusion, exclusion.clearance)`. The solver and independent validator use the same convention through separate data paths.
 
-The layout clearance overlay is explanatory rather than part of feasibility calculation: it draws the container's inward boundary-clearance line, each exclusion's outward effective-clearance line, and half of the item-to-item separation around each placed item. The numeric dimension overlay uses each transformed placement's overall bounds.
+The layout clearance overlay is explanatory rather than part of feasibility calculation: it draws the container's inward boundary-clearance line, each exclusion's outward effective-clearance line, and half of the item-to-item separation around each placed item. To avoid repeated labels, the packing dimension overlay annotates the container, every exclusion, and only the first placement of each item definition. The modeller separately annotates the currently selected source shape.
 
 ## Prepared problem and solver portfolio
 

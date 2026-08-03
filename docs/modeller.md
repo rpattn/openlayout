@@ -1,12 +1,16 @@
 # Shape modeller
 
-The Shape modeller is the geometry-focused workspace in the browser studio. It edits the same `EditorItem` used by the packing form and serializes constraints into ordinary domain-neutral `ShapePart` data.
+The Shape modeller is the geometry-focused workspace in the browser studio. Its target selector switches between item definitions, the container boundary, and every exclusion. All three use the same direct manipulation vocabulary and serialize back into the domain-neutral problem model.
 
 ## Canvas workflow
 
-Choose an item from the toolbar, then add rectangles, triangles, circles, custom polygons, or closed cubic Bézier paths. The layer list selects overlapping parts. Selected geometry shows its rotated bounding box and nine anchors: center, four edge midpoints, and four corners. Drag a part freely, pull an edge or corner handle to resize it symmetrically, or drag the amber handle to rotate it. Bézier parts expose solid knots and hollow incoming/outgoing tangent handles directly on the canvas. When any shape anchor comes near a compatible anchor on another part, the canvas shows alignment guides and creates a snap on release.
+Choose a geometry target from the toolbar, then add rectangles, triangles, circles, custom polygons, or closed cubic Bézier paths. The layer list selects overlapping item parts. Selected geometry shows its rotated bounding box and nine anchors: center, four edge midpoints, and four corners. Drag a part freely, pull an edge or corner handle to resize it symmetrically, or drag the amber handle to rotate it. Bézier parts expose solid knots and hollow incoming/outgoing tangent handles directly on the canvas. When any item-shape anchor comes near a compatible anchor on another part, the canvas shows alignment guides and creates a snap on release.
+
+Selecting the container or an exclusion changes the shape buttons from adding compound parts to replacing that boundary while preserving its centre and overall dimensions. This makes switching an existing polygonal container to a Bézier boundary practical. Container and exclusion geometry can then be moved, resized, rotated, or reshaped directly. The selected shape always shows width and height dimensions, and a dashed outline shows the active item envelope, inward boundary clearance, or effective exclusion clearance.
 
 Exact dimensions, rotation, and free coordinates remain editable in the inspector. A constraint can also be configured explicitly by choosing the target, own anchor, target anchor, and numeric offset. “Detach at current position” converts the resolved snapped position back into free coordinates. Dependency choices that would immediately create a cycle are omitted.
+
+Dragging a constrained part preserves the relationship and edits its snap offset. A relationship is removed only with “Detach at current position” or Escape; both preserve the current resolved position instead of allowing the part to jump back to stale fallback coordinates.
 
 Snaps use the shape’s local bounding-frame anchors transformed by its rotation. Rectangle corners and edge midpoints therefore stay on the actual rotated rectangle instead of drifting to the corners of a screen-aligned bounding box. The same oriented-frame rule remains predictable for triangles, Bézier paths, and arbitrary polygons without introducing shape-specific edge naming.
 

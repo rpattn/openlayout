@@ -11,10 +11,10 @@ import type {
 } from "./types";
 
 export const defaultState = (): EditorState => ({
-  containerVertices: [
-    { x: 0, y: 0 }, { x: 30, y: 0 }, { x: 30, y: 18 },
-    { x: 21, y: 18 }, { x: 21, y: 15 }, { x: 0, y: 15 },
-  ],
+  container: { id: "container-boundary", kind: "polygon", vertices: [
+    { x: -15, y: -9 }, { x: 15, y: -9 }, { x: 15, y: 9 },
+    { x: 6, y: 9 }, { x: 6, y: 6 }, { x: -15, y: 6 },
+  ], x: 15, y: 9, rotation: 0 },
   items: [{
     id: "item-a",
     quantity: 80,
@@ -54,11 +54,11 @@ export const defaultState = (): EditorState => ({
 
 export function toProblem(state: EditorState): PackingProblem {
   return {
-    container: { boundary: { kind: "polygon", vertices: state.containerVertices } },
+    container: { boundary: transformedShape(state.container) },
     exclusions: state.exclusions.map((entry) => ({
       id: entry.id,
       clearance: entry.clearance,
-      shape: transformedPolygon(entry.primitive),
+      shape: transformedShape(entry.primitive),
     })),
     items: state.items.map((item) => ({
       id: item.id,
@@ -106,6 +106,21 @@ export function transformedPolygon(primitive: PrimitiveEditor): Shape {
     kind: "polygon",
     vertices: points.map((point) => transformPoint(point, primitive.rotation, primitive.x, primitive.y)),
   };
+}
+
+export function transformedShape(primitive: PrimitiveEditor): Shape {
+  if (primitive.kind === "bezier") {
+    return {
+      kind: "bezier",
+      segments_per_curve: primitive.segments,
+      knots: primitive.knots.map((knot) => ({
+        point: transformPoint(knot.point, primitive.rotation, primitive.x, primitive.y),
+        control_in: transformPoint(knot.control_in, primitive.rotation, primitive.x, primitive.y),
+        control_out: transformPoint(knot.control_out, primitive.rotation, primitive.x, primitive.y),
+      })),
+    };
+  }
+  return transformedPolygon(primitive);
 }
 
 export function shapePoints(shape: Shape): Point[] {
@@ -170,7 +185,7 @@ export function makePrimitive(kind: PrimitiveEditor["kind"]): PrimitiveEditor {
 
 export function fromProblem(problem: PackingProblem): EditorState {
   const state = defaultState();
-  state.containerVertices = shapePoints(problem.container.boundary);
+  state.container = shapeToPrimitive(problem.container.boundary, 0, 0, 0, "container-boundary");
   state.items = problem.items.map((item) => ({
     id: item.id,
     quantity: item.quantity,

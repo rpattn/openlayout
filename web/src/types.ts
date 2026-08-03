@@ -141,7 +141,7 @@ export interface EditorExclusion {
 }
 
 export interface EditorState {
-  containerVertices: Point[];
+  container: PrimitiveEditor;
   items: EditorItem[];
   exclusions: EditorExclusion[];
   fixedPlacements: PackingProblem["fixed_placements"];
