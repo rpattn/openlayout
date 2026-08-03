@@ -1,10 +1,12 @@
 export interface Point { x: number; y: number }
+export interface BezierKnot { point: Point; control_in: Point; control_out: Point }
 
 export type Shape =
   | { kind: "polygon"; vertices: Point[] }
   | { kind: "rectangle"; width: number; height: number }
   | { kind: "triangle"; base: number; height: number }
   | { kind: "circle"; radius: number; segments: number }
+  | { kind: "bezier"; knots: BezierKnot[]; segments_per_curve: number }
   | { kind: "compound"; parts: ShapePart[] };
 
 export interface ShapePart {
@@ -122,6 +124,7 @@ export type PrimitiveEditor = PrimitiveBase & (
   | { kind: "triangle"; base: number; height: number }
   | { kind: "circle"; radius: number; segments: number }
   | { kind: "polygon"; vertices: Point[] }
+  | { kind: "bezier"; knots: BezierKnot[]; segments: number }
 );
 
 export interface EditorItem {

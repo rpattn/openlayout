@@ -5,20 +5,52 @@ use crate::{
 };
 use std::collections::BTreeMap;
 
+pub trait SensitivityObserver {
+    fn on_progress(&mut self, _progress: &crate::SensitivityProgress) {}
+}
+
+struct NoopObserver;
+impl SensitivityObserver for NoopObserver {}
+
 pub fn run_sensitivity(
     problem: &PackingProblem,
     study: &SensitivityStudy,
 ) -> Result<SensitivityResult, PackingError> {
+    run_sensitivity_with_observer(problem, study, &mut NoopObserver)
+}
+
+pub fn run_sensitivity_with_observer(
+    problem: &PackingProblem,
+    study: &SensitivityStudy,
+    observer: &mut impl SensitivityObserver,
+) -> Result<SensitivityResult, PackingError> {
     validate_study(study)?;
     let mut evaluations = Vec::new();
+    let initial_total = initial_values(study).len();
     let mut value = study.start;
     while value <= study.end + study.initial_step * 1e-9 {
-        evaluate(problem, study, value.min(study.end), &mut evaluations)?;
+        evaluate(
+            problem,
+            study,
+            value.min(study.end),
+            &mut evaluations,
+            initial_total,
+            crate::SensitivityPhase::Sampling,
+            observer,
+        )?;
         value += study.initial_step;
     }
-    evaluate(problem, study, study.end, &mut evaluations)?;
+    evaluate(
+        problem,
+        study,
+        study.end,
+        &mut evaluations,
+        initial_total,
+        crate::SensitivityPhase::Sampling,
+        observer,
+    )?;
     if study.strategy == crate::SamplingStrategy::Adaptive {
-        refine(problem, study, &mut evaluations)?;
+        refine(problem, study, &mut evaluations, initial_total, observer)?;
     }
     evaluations.sort_by(|a, b| a.value.total_cmp(&b.value));
     evaluations.dedup_by(|a, b| (a.value - b.value).abs() < study.transition_tolerance * 1e-6);
@@ -54,6 +86,22 @@ pub fn run_sensitivity(
     })
 }
 
+fn initial_values(study: &SensitivityStudy) -> Vec<f64> {
+    let mut values = Vec::new();
+    let mut value = study.start;
+    while value <= study.end + study.initial_step * 1e-9 {
+        values.push(value.min(study.end));
+        value += study.initial_step;
+    }
+    if values
+        .last()
+        .is_none_or(|last| (last - study.end).abs() >= study.transition_tolerance * 1e-6)
+    {
+        values.push(study.end);
+    }
+    values
+}
+
 fn validate_study(study: &SensitivityStudy) -> Result<(), PackingError> {
     if !study.start.is_finite()
         || !study.end.is_finite()
@@ -75,6 +123,9 @@ fn evaluate(
     study: &SensitivityStudy,
     value: f64,
     evaluations: &mut Vec<SensitivityPoint>,
+    initial_total: usize,
+    phase: crate::SensitivityPhase,
+    observer: &mut impl SensitivityObserver,
 ) -> Result<(), PackingError> {
     if evaluations
         .iter()
@@ -90,12 +141,20 @@ fn evaluate(
         options.seed ^= value.to_bits().rotate_left(17);
     }
     let result = solve_prepared(&prepared, &options)?;
+    let capacity = result.packed_item_count;
     evaluations.push(SensitivityPoint {
         value,
-        capacity: result.packed_item_count,
+        capacity,
         status: result.status,
         problem: changed,
         result,
+    });
+    observer.on_progress(&crate::SensitivityProgress {
+        completed: evaluations.len(),
+        initial_total,
+        value,
+        capacity,
+        phase,
     });
     Ok(())
 }
@@ -104,6 +163,8 @@ fn refine(
     problem: &PackingProblem,
     study: &SensitivityStudy,
     evaluations: &mut Vec<SensitivityPoint>,
+    initial_total: usize,
+    observer: &mut impl SensitivityObserver,
 ) -> Result<(), PackingError> {
     loop {
         evaluations.sort_by(|a, b| a.value.total_cmp(&b.value));
@@ -117,7 +178,15 @@ fn refine(
         let Some((lower, upper)) = interval else {
             break;
         };
-        evaluate(problem, study, lower + (upper - lower) / 2.0, evaluations)?;
+        evaluate(
+            problem,
+            study,
+            lower + (upper - lower) / 2.0,
+            evaluations,
+            initial_total,
+            crate::SensitivityPhase::Refining,
+            observer,
+        )?;
     }
     Ok(())
 }
@@ -290,6 +359,30 @@ fn set_shape_dimension(shape: &mut Shape, value: f64, width: bool) -> Result<(),
             }
             Ok(())
         }
+        Shape::Bezier { knots, .. } => {
+            let points = knots
+                .iter()
+                .flat_map(|knot| [knot.point, knot.control_in, knot.control_out]);
+            let (minimum, maximum) =
+                points.fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), point| {
+                    let coordinate = if width { point.x } else { point.y };
+                    (min.min(coordinate), max.max(coordinate))
+                });
+            let size = maximum - minimum;
+            if size <= 0.0 {
+                return Err(unsupported("cannot resize a shape with a zero-sized axis"));
+            }
+            for knot in knots {
+                for point in [&mut knot.point, &mut knot.control_in, &mut knot.control_out] {
+                    if width {
+                        point.x = minimum + (point.x - minimum) * value / size;
+                    } else {
+                        point.y = minimum + (point.y - minimum) * value / size;
+                    }
+                }
+            }
+            Ok(())
+        }
         _ => Err(unsupported(
             "dimension paths support rectangle and polygon shapes; use scale for other shapes",
         )),
@@ -323,6 +416,14 @@ fn scale_shape(shape: &mut Shape, scale: f64) {
             *height *= scale;
         }
         Shape::Circle { radius, .. } => *radius *= scale,
+        Shape::Bezier { knots, .. } => {
+            for knot in knots {
+                for point in [&mut knot.point, &mut knot.control_in, &mut knot.control_out] {
+                    point.x *= scale;
+                    point.y *= scale;
+                }
+            }
+        }
         Shape::Compound { parts } => {
             for part in parts {
                 part.translation.x *= scale;

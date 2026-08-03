@@ -6,7 +6,7 @@ The project proves the complete computational and interaction path in one local 
 
 ## Current capabilities
 
-- Polygon, rectangle, triangle, polygonized-circle, and compound shapes with transforms
+- Polygon, rectangle, triangle, polygonized-circle, closed cubic Bézier, and compound shapes with transforms
 - Concave single-polygon containers and polygonal exclusions
 - Uniform item, boundary, and exclusion clearances
 - Finite or effectively unlimited quantities, rotations, and fixed placements
@@ -17,7 +17,7 @@ The project proves the complete computational and interaction path in one local 
 - Sampled and adaptively refined sensitivity studies with non-monotonicity warnings
 - Structured results containing transforms, counts, strategy, bounds, search statistics, validation, and warnings
 - The same `packing-core` library behind a native CLI and a thin `wasm-bindgen` adapter
-- A local TypeScript studio for composing multi-part shapes, configuring runs, rendering incremental layouts, cancelling workers, and inspecting sensitivity transitions
+- A local TypeScript studio for composing multi-part shapes, configuring runs, rendering incremental layouts, cancelling workers, and inspecting sensitivity transitions with live study progress
 - A canvas-first shape modeller with direct dragging, nine-point snapping, constraint editing, and visual sensitivity extremes
 
 The workspace is deliberately small:
@@ -64,9 +64,9 @@ npm run dev
 
 Open the local URL printed by Vite. `npm run build` generates the Wasm bindings, type-checks the application, and creates a production bundle. `npm test` generates the same Wasm module and exercises progress delivery, prepared-problem reuse, deterministic layouts, and compound-part sensitivity directly against the WebAssembly runtime. For the real-browser workflow checks, run `npx playwright install chromium` once and then `npm run test:e2e`.
 
-The studio can edit an irregular container polygon; create multiple item definitions from transformed rectangle, triangle, circle, and custom-polygon parts; position exclusions; preserve fixed placements; set clearances and deterministic solve limits; import or export problem JSON; watch improving layouts; stop a run by terminating its worker; inspect validation and solver statistics; and select representative layouts at sensitivity transitions.
+The studio can edit an irregular container polygon; create multiple item definitions from transformed rectangle, triangle, circle, polygon, and Bézier parts; position exclusions; preserve fixed placements; set clearances and deterministic solve limits; import or export problem JSON; watch improving layouts; stop a run by terminating its worker; toggle dimension and dashed clearance overlays; inspect validation and solver statistics; and select exact evaluated layouts from a scrollable sensitivity graph. Each transition exposes its last “Before” and first “After” evaluation, making boundary cases such as the maximum width for a capacity directly inspectable.
 
-The **Shape modeller** tab provides the canvas-first geometry workflow. Select or add parts, drag them directly, or edit exact dimensions and transforms in the inspector. Moving an anchor near another part’s center, edge midpoint, or corner creates a live snap constraint. A snapped part follows its target when target dimensions or rotation change. The lower strip previews the configured sensitivity start, intermediate steps, and end geometry before solving. See [shape modeller details](docs/modeller.md).
+The **Shape modeller** tab provides the canvas-first geometry workflow. Select or add parts, drag them directly, resize or rotate with handles, edit Bézier knots and tangents, or enter exact dimensions and transforms in the inspector. Moving an anchor near another part’s center, edge midpoint, or corner creates a live snap constraint. A snapped part follows its target when target dimensions or rotation change. The lower strip previews the configured sensitivity start, intermediate steps, and end geometry before solving. See [shape modeller details](docs/modeller.md).
 
 [`examples/wasm-usage.js`](examples/wasm-usage.js) shows module loading, solving, reading placements, and sensitivity execution. The Wasm exports are `validate_problem`, `solve_problem`, and `run_sensitivity`.
 
@@ -83,7 +83,7 @@ for placement in result.placements {
 }
 ```
 
-All coordinates are `f64` values in one caller-selected linear unit. No unit conversion occurs. Shapes are treated as closed polygonal regions, circles use the requested segment count, and comparisons use a documented epsilon rather than float equality. Compound snaps use nine points on each rotated part’s bounding box: center, four edge midpoints, and four corners. Item-to-item separation `d` is enforced as a total physical boundary distance of at least `d`; this is equivalent to expanding each item collision envelope by `d / 2`. Boundary clearance is the distance from the physical item boundary to the container boundary. Exclusion clearance is the greater of the problem-wide and per-exclusion values.
+All coordinates are `f64` values in one caller-selected linear unit. No unit conversion occurs. Shapes are treated as closed polygonal regions, circles and Bézier spans use their requested segment counts, and comparisons use a documented epsilon rather than float equality. Compound snaps use nine points on each part’s oriented local frame: center, four edge midpoints, and four corners. Item-to-item separation `d` is enforced as a total physical boundary distance of at least `d`; this is equivalent to expanding each item collision envelope by `d / 2`. Boundary clearance is the distance from the physical item boundary to the container boundary. Exclusion clearance is the greater of the problem-wide and per-exclusion values.
 
 ## Examples and limitations
 

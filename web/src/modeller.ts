@@ -1,5 +1,5 @@
 import {
-  anchorPoint, cloneItemAtParameter, makePrimitive, primitiveBounds, primitiveShape,
+  cloneItemAtParameter, makePrimitive, primitiveAnchor, primitiveShape,
   resolveEditorTranslations, shapePoints, transformPoint,
 } from "./problem";
 import type { AnchorName, EditorItem, EditorState, Point, PrimitiveEditor } from "./types";
@@ -9,7 +9,7 @@ const COLORS = ["#4fc3a1", "#f4b860", "#7aa2f7", "#d98adf", "#ef6f6c", "#94c973"
 
 interface ViewBounds { minX: number; minY: number; width: number; height: number }
 interface SnapCandidate { targetId: string; ownAnchor: AnchorName; targetAnchor: AnchorName; position: Point; point: Point; distance: number }
-interface DragState { id: string; start: Point; original: Point; moved: boolean; mode: "move" | "resize"; anchor?: AnchorName }
+interface DragState { id: string; start: Point; original: Point; moved: boolean; mode: "move" | "resize" | "rotate" | "bezier"; anchor?: AnchorName; initialRotation?: number; bezierIndex?: number; bezierHandle?: "point" | "control_in" | "control_out" }
 
 export class ShapeModeller {
   private selectedId: string;
@@ -38,12 +38,12 @@ export class ShapeModeller {
         <button class="button ghost" id="model-back">← Back to packing</button>
         <div class="model-title"><small>SHAPE MODELLER</small><strong>Constraint-aware item geometry</strong></div>
         <label>Item<select id="model-item-select">${state.items.map((item, index) => `<option value="${index}" ${index === itemIndex ? "selected" : ""}>${escapeHtml(item.id)}</option>`).join("")}</select></label>
-        <div class="model-add"><span>Add</span>${(["rectangle", "triangle", "circle", "polygon"] as const).map((kind) => `<button data-add-shape="${kind}">${kind}</button>`).join("")}</div>
+        <div class="model-add"><span>Add</span>${(["rectangle", "triangle", "circle", "polygon", "bezier"] as const).map((kind) => `<button data-add-shape="${kind}">${kind}</button>`).join("")}</div>
       </div>
       <div class="model-body">
         <aside id="model-side" class="model-side"></aside>
         <section class="model-stage">
-          <div class="stage-help"><span>Drag shapes · pull handles to resize</span><span>Nearby anchors snap automatically</span><span>Esc detaches</span></div>
+          <div class="stage-help"><span>Drag to move · corners resize · amber handle rotates</span><span>Bézier knots and tangents edit the curve</span><span>Nearby anchors snap</span></div>
           <svg id="model-canvas" class="model-canvas" aria-label="Interactive item shape modeller"></svg>
         </section>
       </div>
@@ -121,7 +121,8 @@ export class ShapeModeller {
     const dimensionFields = part.kind === "rectangle" ? modelNumber("Width", "width", part.width) + modelNumber("Height", "height", part.height)
       : part.kind === "triangle" ? modelNumber("Base", "base", part.base) + modelNumber("Height", "height", part.height)
         : part.kind === "circle" ? modelNumber("Radius", "radius", part.radius) + modelNumber("Segments", "segments", part.segments, 1)
-          : `<label class="wide">Vertices<textarea rows="4" data-model-points>${part.vertices.map((point) => `${point.x}, ${point.y}`).join("\n")}</textarea></label>`;
+          : part.kind === "polygon" ? `<label class="wide">Vertices<textarea rows="4" data-model-points>${part.vertices.map((point) => `${point.x}, ${point.y}`).join("\n")}</textarea></label>`
+            : `${modelNumber("Curve segments", "segments", part.segments, 1)}<p class="hint wide">Drag the solid knots and hollow tangent handles directly on the canvas.</p>`;
     const targets = this.item.parts.filter((entry) => entry.id !== part.id && !dependsOn(this.item.parts, entry.id, part.id));
     return `<div class="model-inspector">
       <div class="inspector-title"><div><small>SELECTED</small><strong>${capitalize(part.kind)}</strong></div><span>${escapeHtml(part.id)}</span></div>
@@ -144,7 +145,7 @@ export class ShapeModeller {
         const position = translations.get(part.id) ?? { x: part.x, y: part.y };
         return `<path data-part-id="${part.id}" class="model-shape ${part.id === this.selectedId ? "selected" : ""}" d="${pathForPart(part, position)}" fill="${COLORS[index % COLORS.length]}66" stroke="${COLORS[index % COLORS.length]}"/>`;
       }).join("")}
-      ${selected ? selectionMarkup(selected, translations.get(selected.id)!) : ""}
+      ${selected ? selectionMarkup(selected, translations.get(selected.id)!, Math.max(this.view.width / Math.max(this.svg.clientWidth, 1) * 32, .35)) : ""}
       ${this.snapCandidate ? `<line class="snap-guide" x1="${this.snapCandidate.point.x - this.view.width}" y1="${-this.snapCandidate.point.y}" x2="${this.snapCandidate.point.x + this.view.width}" y2="${-this.snapCandidate.point.y}"/><line class="snap-guide" x1="${this.snapCandidate.point.x}" y1="${-this.snapCandidate.point.y - this.view.height}" x2="${this.snapCandidate.point.x}" y2="${-this.snapCandidate.point.y + this.view.height}"/>` : ""}`;
   }
 
@@ -159,6 +160,20 @@ export class ShapeModeller {
   }
 
   private pointerDown(event: PointerEvent): void {
+    const bezierHandle = (event.target as Element).closest<SVGCircleElement>("[data-bezier-index]");
+    if (bezierHandle && this.selected?.kind === "bezier") {
+      const position = resolveEditorTranslations(this.item.parts).get(this.selected.id) ?? { x: this.selected.x, y: this.selected.y };
+      this.drag = { id: this.selected.id, start: this.eventPoint(event), original: position, moved: false, mode: "bezier", bezierIndex: Number(bezierHandle.dataset.bezierIndex), bezierHandle: bezierHandle.dataset.bezierHandle as DragState["bezierHandle"] };
+      this.svg.setPointerCapture(event.pointerId);
+      return;
+    }
+    const rotateHandle = (event.target as Element).closest<SVGCircleElement>("[data-rotate-handle]");
+    if (rotateHandle && this.selected) {
+      const position = resolveEditorTranslations(this.item.parts).get(this.selected.id) ?? { x: this.selected.x, y: this.selected.y };
+      this.drag = { id: this.selected.id, start: this.eventPoint(event), original: position, moved: false, mode: "rotate", initialRotation: this.selected.rotation };
+      this.svg.setPointerCapture(event.pointerId);
+      return;
+    }
     const resizeHandle = (event.target as Element).closest<SVGCircleElement>("[data-resize-anchor]");
     if (resizeHandle && this.selected) {
       const position = resolveEditorTranslations(this.item.parts).get(this.selected.id) ?? { x: this.selected.x, y: this.selected.y };
@@ -178,6 +193,21 @@ export class ShapeModeller {
   private pointerMove(event: PointerEvent): void {
     if (!this.drag) return;
     const current = this.eventPoint(event), part = this.selected!;
+    if (this.drag.mode === "rotate") {
+      const startAngle = Math.atan2(this.drag.start.y - this.drag.original.y, this.drag.start.x - this.drag.original.x);
+      const currentAngle = Math.atan2(current.y - this.drag.original.y, current.x - this.drag.original.x);
+      part.rotation = Math.round((this.drag.initialRotation! + (currentAngle - startAngle) * 180 / Math.PI) * 10) / 10;
+      this.drag.moved = true; this.renderCanvas(); this.renderSensitivity(); return;
+    }
+    if (this.drag.mode === "bezier" && part.kind === "bezier") {
+      const knot = part.knots[this.drag.bezierIndex!], handle = this.drag.bezierHandle!;
+      const local = inverseTransformPoint(current, part.rotation, this.drag.original);
+      if (handle === "point") {
+        const delta = { x: local.x - knot.point.x, y: local.y - knot.point.y };
+        knot.point = local; knot.control_in.x += delta.x; knot.control_in.y += delta.y; knot.control_out.x += delta.x; knot.control_out.y += delta.y;
+      } else knot[handle] = local;
+      this.drag.moved = true; this.renderCanvas(); this.renderSensitivity(); return;
+    }
     if (this.drag.mode === "resize") {
       resizePart(part, this.drag.original, current, this.drag.anchor!);
       this.drag.moved = true;
@@ -201,7 +231,7 @@ export class ShapeModeller {
   private pointerUp(event: PointerEvent): void {
     if (!this.drag) return;
     this.svg.releasePointerCapture(event.pointerId); const moved = this.drag.moved, mode = this.drag.mode; this.drag = null; this.snapCandidate = null;
-    if (moved) this.changed(mode === "resize"); else this.render();
+    if (moved) this.changed(mode !== "move"); else this.render();
   }
 
   private eventPoint(event: PointerEvent): Point {
@@ -221,14 +251,13 @@ export class ShapeModeller {
 }
 
 function findSnapCandidate(part: PrimitiveEditor, raw: Point, parts: PrimitiveEditor[], threshold: number): SnapCandidate | null {
-  const ownBounds = translated(primitiveBounds(part), raw); let best: SnapCandidate | null = null;
+  let best: SnapCandidate | null = null;
   const translations = resolveEditorTranslations(parts.filter((entry) => entry.id !== part.id));
   for (const target of parts) {
     if (target.id === part.id || dependsOn(parts, target.id, part.id)) continue;
     const targetPosition = translations.get(target.id) ?? { x: target.x, y: target.y };
-    const targetBounds = translated(primitiveBounds(target), targetPosition);
     for (const ownAnchor of ANCHORS) for (const targetAnchor of ANCHORS) {
-      const own = anchorPoint(ownBounds, ownAnchor), targetPoint = anchorPoint(targetBounds, targetAnchor);
+      const own = primitiveAnchor(part, ownAnchor, raw), targetPoint = primitiveAnchor(target, targetAnchor, targetPosition);
       const distance = Math.hypot(own.x - targetPoint.x, own.y - targetPoint.y);
       if (distance <= threshold && (!best || distance < best.distance)) best = { targetId: target.id, ownAnchor, targetAnchor, position: { x: raw.x + targetPoint.x - own.x, y: raw.y + targetPoint.y - own.y }, point: targetPoint, distance };
     }
@@ -242,9 +271,29 @@ function dependsOn(parts: PrimitiveEditor[], startId: string, targetId: string):
   return false;
 }
 
-function selectionMarkup(part: PrimitiveEditor, position: Point): string {
-  const bounds = translated(primitiveBounds(part), position); const points = ANCHORS.map((anchor) => ({ anchor, point: anchorPoint(bounds, anchor) }));
-  return `<rect class="selection-box" x="${bounds.minX}" y="${-bounds.maxY}" width="${bounds.maxX - bounds.minX}" height="${bounds.maxY - bounds.minY}"/>${points.map(({ anchor, point }) => `<circle class="anchor-handle ${anchor === "center" ? "center" : anchor}" data-anchor="${anchor}" ${anchor === "center" ? "" : `data-resize-anchor="${anchor}"`} cx="${point.x}" cy="${-point.y}" r=".11"/>`).join("")}`;
+function selectionMarkup(part: PrimitiveEditor, position: Point, handleOffset: number): string {
+  const points = ANCHORS.map((anchor) => ({ anchor, point: primitiveAnchor(part, anchor, position) }));
+  const byAnchor = new Map(points.map((entry) => [entry.anchor, entry.point]));
+  const center = byAnchor.get("center")!, top = byAnchor.get("top")!;
+  const length = Math.hypot(top.x - center.x, top.y - center.y) || 1;
+  const rotate = { x: top.x + (top.x - center.x) / length * handleOffset, y: top.y + (top.y - center.y) / length * handleOffset };
+  const outline = ["top_left", "top_right", "bottom_right", "bottom_left"].map((anchor) => byAnchor.get(anchor as AnchorName)!);
+  const bezier = part.kind === "bezier" ? bezierControlMarkup(part, position) : "";
+  return `<path class="selection-box" d="${outline.map((point, index) => `${index ? "L" : "M"}${point.x},${-point.y}`).join(" ")} Z"/><line class="rotate-stem" x1="${top.x}" y1="${-top.y}" x2="${rotate.x}" y2="${-rotate.y}"/><circle class="rotate-handle" data-rotate-handle cx="${rotate.x}" cy="${-rotate.y}" r=".13"/>${points.map(({ anchor, point }) => `<circle class="anchor-handle ${anchor === "center" ? "center" : anchor}" data-anchor="${anchor}" ${anchor === "center" ? "" : `data-resize-anchor="${anchor}"`} cx="${point.x}" cy="${-point.y}" r=".11"/>`).join("")}${bezier}`;
+}
+
+function bezierControlMarkup(part: Extract<PrimitiveEditor, { kind: "bezier" }>, position: Point): string {
+  return part.knots.map((knot, index) => {
+    const point = transformPoint(knot.point, part.rotation, position.x, position.y);
+    const incoming = transformPoint(knot.control_in, part.rotation, position.x, position.y);
+    const outgoing = transformPoint(knot.control_out, part.rotation, position.x, position.y);
+    return `<line class="bezier-tangent" x1="${incoming.x}" y1="${-incoming.y}" x2="${outgoing.x}" y2="${-outgoing.y}"/><circle class="bezier-control" data-bezier-index="${index}" data-bezier-handle="control_in" cx="${incoming.x}" cy="${-incoming.y}" r=".1"/><circle class="bezier-control" data-bezier-index="${index}" data-bezier-handle="control_out" cx="${outgoing.x}" cy="${-outgoing.y}" r=".1"/><circle class="bezier-knot" data-bezier-index="${index}" data-bezier-handle="point" cx="${point.x}" cy="${-point.y}" r=".12"/>`;
+  }).join("");
+}
+
+function inverseTransformPoint(point: Point, rotation: number, position: Point): Point {
+  const angle = -rotation * Math.PI / 180, x = point.x - position.x, y = point.y - position.y;
+  return { x: x * Math.cos(angle) - y * Math.sin(angle), y: x * Math.sin(angle) + y * Math.cos(angle) };
 }
 
 function resizePart(part: PrimitiveEditor, center: Point, worldPoint: Point, anchor: AnchorName): void {
@@ -257,10 +306,17 @@ function resizePart(part: PrimitiveEditor, center: Point, worldPoint: Point, anc
   if (part.kind === "circle") part.radius = Math.max(.05, Math.hypot(local.x, local.y));
   else if (part.kind === "rectangle") { if (resizeX) part.width = width; if (resizeY) part.height = height; }
   else if (part.kind === "triangle") { if (resizeX) part.base = width; if (resizeY) part.height = height; }
-  else { if (resizeX) scalePolygon(part.vertices, "x", width); if (resizeY) scalePolygon(part.vertices, "y", height); }
+  else if (part.kind === "polygon") { if (resizeX) scalePolygon(part.vertices, "x", width); if (resizeY) scalePolygon(part.vertices, "y", height); }
+  else { if (resizeX) scaleBezier(part, "x", width); if (resizeY) scaleBezier(part, "y", height); }
 }
 
 function scalePolygon(points: Point[], axis: "x" | "y", target: number): void {
+  const extent = Math.max(...points.map((point) => Math.abs(point[axis]))) * 2;
+  if (extent > 0) points.forEach((point) => { point[axis] *= target / extent; });
+}
+
+function scaleBezier(part: Extract<PrimitiveEditor, { kind: "bezier" }>, axis: "x" | "y", target: number): void {
+  const points = part.knots.flatMap((knot) => [knot.point, knot.control_in, knot.control_out]);
   const extent = Math.max(...points.map((point) => Math.abs(point[axis]))) * 2;
   if (extent > 0) points.forEach((point) => { point[axis] *= target / extent; });
 }
@@ -285,10 +341,9 @@ function fitView(parts: PrimitiveEditor[]): ViewBounds {
 }
 
 function boundsOf(points: Point[]) { const xs = points.map((point) => point.x), ys = points.map((point) => point.y); const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys); return { minX, maxX, minY, maxY, width: maxX - minX, height: maxY - minY }; }
-function translated(bounds: ReturnType<typeof primitiveBounds>, point: Point) { return { minX: bounds.minX + point.x, maxX: bounds.maxX + point.x, minY: bounds.minY + point.y, maxY: bounds.maxY + point.y }; }
 function gridLines(view: ViewBounds): string { const step = 1, lines: string[] = []; for (let x = Math.floor(view.minX); x <= view.minX + view.width; x += step) lines.push(`<line class="model-grid" x1="${x}" y1="${-view.minY - view.height}" x2="${x}" y2="${-view.minY}"/>`); for (let y = Math.floor(view.minY); y <= view.minY + view.height; y += step) lines.push(`<line class="model-grid" x1="${view.minX}" y1="${-y}" x2="${view.minX + view.width}" y2="${-y}"/>`); return lines.join(""); }
 function studyValues(start: number, end: number, step: number): number[] { const values = [start]; if (step > 0) for (let value = start + step; value < end && values.length < 6; value += step) values.push(value); if (end !== start) values.push(end); return values; }
-function modelParameterOptions(item: EditorItem): Array<[string, string]> { const values: Array<[string, string]> = [[`item_scale:${item.id}`, "Whole item scale"]]; item.parts.forEach((part, index) => { values.push([`part_scale:${item.id}:${index}`, `${part.id} · scale`]); if (part.kind === "rectangle" || part.kind === "triangle" || part.kind === "polygon") values.push([`part_width:${item.id}:${index}`, `${part.id} · width/base`], [`part_height:${item.id}:${index}`, `${part.id} · height`]); if (part.kind === "circle") values.push([`part_radius:${item.id}:${index}`, `${part.id} · radius`]); }); return values; }
+function modelParameterOptions(item: EditorItem): Array<[string, string]> { const values: Array<[string, string]> = [[`item_scale:${item.id}`, "Whole item scale"]]; item.parts.forEach((part, index) => { values.push([`part_scale:${item.id}:${index}`, `${part.id} · scale`]); if (part.kind === "rectangle" || part.kind === "triangle" || part.kind === "polygon" || part.kind === "bezier") values.push([`part_width:${item.id}:${index}`, `${part.id} · width/base`], [`part_height:${item.id}:${index}`, `${part.id} · height`]); if (part.kind === "circle") values.push([`part_radius:${item.id}:${index}`, `${part.id} · radius`]); }); return values; }
 function anchorOptions(selected: AnchorName): string { return ANCHORS.map((anchor) => `<option value="${anchor}" ${anchor === selected ? "selected" : ""}>${anchor.replaceAll("_", " ")}</option>`).join(""); }
 function modelNumber(label: string, field: string, value: number, step = .1, disabled = false): string { return `<label>${label}<input type="number" value="${value}" step="${step}" data-model-field="${field}" ${disabled ? "disabled" : ""}></label>`; }
 function studyNumber(label: string, field: string, value: number): string { return `<label>${label}<input type="number" value="${value}" step=".1" data-model-study="${field}"></label>`; }

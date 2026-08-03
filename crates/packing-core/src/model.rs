@@ -7,6 +7,13 @@ pub struct Point {
     pub y: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct BezierKnot {
+    pub point: Point,
+    pub control_in: Point,
+    pub control_out: Point,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Shape {
@@ -26,6 +33,11 @@ pub enum Shape {
         #[serde(default = "default_circle_segments")]
         segments: u32,
     },
+    Bezier {
+        knots: Vec<BezierKnot>,
+        #[serde(default = "default_bezier_segments")]
+        segments_per_curve: u32,
+    },
     Compound {
         parts: Vec<ShapePart>,
     },
@@ -33,6 +45,10 @@ pub enum Shape {
 
 fn default_circle_segments() -> u32 {
     32
+}
+
+fn default_bezier_segments() -> u32 {
+    12
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -313,6 +329,22 @@ pub struct SensitivityPoint {
     pub status: SolveStatus,
     pub problem: PackingProblem,
     pub result: SolveResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SensitivityProgress {
+    pub completed: usize,
+    pub initial_total: usize,
+    pub value: f64,
+    pub capacity: usize,
+    pub phase: SensitivityPhase,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SensitivityPhase {
+    Sampling,
+    Refining,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

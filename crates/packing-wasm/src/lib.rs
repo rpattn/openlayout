@@ -1,8 +1,9 @@
 use js_sys::Function;
 use packing_core::{
-    PackingProblem, PreparedProblem, SensitivityStudy, SolveObserver, SolveOptions, SolveProgress,
-    prepare_problem, run_sensitivity as core_run_sensitivity, solve_prepared, solve_with_observer,
-    validate_problem as core_validate_problem,
+    PackingProblem, PreparedProblem, SensitivityObserver, SensitivityProgress, SensitivityStudy,
+    SolveObserver, SolveOptions, SolveProgress, prepare_problem,
+    run_sensitivity as core_run_sensitivity, run_sensitivity_with_observer, solve_prepared,
+    solve_with_observer, validate_problem as core_validate_problem,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -69,6 +70,32 @@ impl PackingEngine {
             .map_err(core_error)?,
         )
     }
+
+    pub fn sensitivity_with_progress(
+        &mut self,
+        input_json: &str,
+        study_json: &str,
+        callback: Function,
+    ) -> Result<String, JsError> {
+        self.prepare(input_json)?;
+        let study: SensitivityStudy = parse(study_json, "sensitivity study")?;
+        let mut observer = JavaScriptSensitivityObserver {
+            callback,
+            callback_error: None,
+        };
+        let result = run_sensitivity_with_observer(
+            self.cached_problem
+                .as_ref()
+                .expect("prepared problem has a source problem"),
+            &study,
+            &mut observer,
+        )
+        .map_err(core_error)?;
+        if let Some(error) = observer.callback_error {
+            return Err(JsError::new(&error));
+        }
+        encode(&result)
+    }
 }
 
 impl Default for PackingEngine {
@@ -115,6 +142,33 @@ impl SolveObserver for JavaScriptObserver {
             .call1(&JsValue::NULL, &JsValue::from_str(&json))
         {
             self.callback_error = Some(format!("progress callback failed: {error:?}"));
+        }
+    }
+}
+
+struct JavaScriptSensitivityObserver {
+    callback: Function,
+    callback_error: Option<String>,
+}
+
+impl SensitivityObserver for JavaScriptSensitivityObserver {
+    fn on_progress(&mut self, progress: &SensitivityProgress) {
+        if self.callback_error.is_some() {
+            return;
+        }
+        let json = match serde_json::to_string(progress) {
+            Ok(json) => json,
+            Err(error) => {
+                self.callback_error =
+                    Some(format!("failed to serialise sensitivity progress: {error}"));
+                return;
+            }
+        };
+        if let Err(error) = self
+            .callback
+            .call1(&JsValue::NULL, &JsValue::from_str(&json))
+        {
+            self.callback_error = Some(format!("sensitivity progress callback failed: {error:?}"));
         }
     }
 }

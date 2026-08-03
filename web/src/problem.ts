@@ -2,6 +2,7 @@ import type {
   EditorState,
   PackingProblem,
   AnchorName,
+  BezierKnot,
   EditorItem,
   Point,
   PrimitiveEditor,
@@ -95,6 +96,7 @@ export function primitiveShape(primitive: PrimitiveEditor): Shape {
     case "triangle": return { kind: "triangle", base: primitive.base, height: primitive.height };
     case "circle": return { kind: "circle", radius: primitive.radius, segments: primitive.segments };
     case "polygon": return { kind: "polygon", vertices: primitive.vertices };
+    case "bezier": return { kind: "bezier", knots: primitive.knots, segments_per_curve: primitive.segments };
   }
 }
 
@@ -124,6 +126,7 @@ export function shapePoints(shape: Shape): Point[] {
       const angle = Math.PI * 2 * index / shape.segments;
       return { x: shape.radius * Math.cos(angle), y: shape.radius * Math.sin(angle) };
     });
+    case "bezier": return bezierPoints(shape.knots, shape.segments_per_curve);
     case "compound": return [];
   }
 }
@@ -161,6 +164,7 @@ export function makePrimitive(kind: PrimitiveEditor["kind"]): PrimitiveEditor {
     case "triangle": return { id, kind, base: 3, height: 3, x: 0, y: 0, rotation: 0 };
     case "circle": return { id, kind, radius: 1.5, segments: 28, x: 0, y: 0, rotation: 0 };
     case "polygon": return { id, kind, vertices: [{ x: -2, y: -1 }, { x: 2, y: -1 }, { x: 0, y: 2 }], x: 0, y: 0, rotation: 0 };
+    case "bezier": return { id, kind, knots: defaultBezierKnots(), segments: 12, x: 0, y: 0, rotation: 0 };
   }
 }
 
@@ -191,8 +195,33 @@ function shapeToPrimitive(shape: Shape, x: number, y: number, rotation: number, 
     case "triangle": return { id, kind: "triangle", base: shape.base, height: shape.height, x, y, rotation };
     case "circle": return { id, kind: "circle", radius: shape.radius, segments: shape.segments, x, y, rotation };
     case "polygon": return { id, kind: "polygon", vertices: shape.vertices, x, y, rotation };
+    case "bezier": return { id, kind: "bezier", knots: shape.knots, segments: shape.segments_per_curve, x, y, rotation };
     case "compound": throw new Error("Nested compound shapes cannot be edited directly");
   }
+}
+
+function defaultBezierKnots(): BezierKnot[] {
+  return [
+    { point: { x: -2, y: 0 }, control_in: { x: -2, y: 1.1 }, control_out: { x: -2, y: -1.1 } },
+    { point: { x: 0, y: -1.5 }, control_in: { x: -1.1, y: -1.5 }, control_out: { x: 1.1, y: -1.5 } },
+    { point: { x: 2, y: 0 }, control_in: { x: 2, y: -1.1 }, control_out: { x: 2, y: 1.1 } },
+    { point: { x: 0, y: 1.5 }, control_in: { x: 1.1, y: 1.5 }, control_out: { x: -1.1, y: 1.5 } },
+  ];
+}
+
+function bezierPoints(knots: BezierKnot[], segments: number): Point[] {
+  const output: Point[] = [];
+  knots.forEach((current, index) => {
+    const next = knots[(index + 1) % knots.length];
+    for (let step = 0; step < segments; step += 1) {
+      const t = step / segments, inverse = 1 - t;
+      output.push({
+        x: inverse ** 3 * current.point.x + 3 * inverse ** 2 * t * current.control_out.x + 3 * inverse * t ** 2 * next.control_in.x + t ** 3 * next.point.x,
+        y: inverse ** 3 * current.point.y + 3 * inverse ** 2 * t * current.control_out.y + 3 * inverse * t ** 2 * next.control_in.y + t ** 3 * next.point.y,
+      });
+    }
+  });
+  return output;
 }
 
 function fromShapeParts(parts: ShapePart[]): PrimitiveEditor[] {
@@ -224,9 +253,8 @@ export function resolveEditorTranslations(parts: PrimitiveEditor[]): Map<string,
     active.add(part.id);
     const target = byId.get(part.snap.targetId)!;
     const targetPosition = resolve(target);
-    const own = anchorPoint(primitiveBounds(part), part.snap.ownAnchor);
-    const targetBounds = translatedBounds(primitiveBounds(target), targetPosition);
-    const targetPoint = anchorPoint(targetBounds, part.snap.targetAnchor);
+    const own = primitiveAnchor(part, part.snap.ownAnchor);
+    const targetPoint = primitiveAnchor(target, part.snap.targetAnchor, targetPosition);
     const position = { x: targetPoint.x - own.x + part.snap.offset.x, y: targetPoint.y - own.y + part.snap.offset.y };
     active.delete(part.id); resolved.set(part.id, position); return position;
   };
@@ -240,6 +268,13 @@ export function primitiveBounds(part: PrimitiveEditor) {
   return { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
 }
 
+export function primitiveAnchor(part: PrimitiveEditor, anchor: AnchorName, position: Point = { x: 0, y: 0 }): Point {
+  const points = shapePoints(primitiveShape(part));
+  const xs = points.map((point) => point.x), ys = points.map((point) => point.y);
+  const local = anchorPoint({ minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) }, anchor);
+  return transformPoint(local, part.rotation, position.x, position.y);
+}
+
 export function anchorPoint(bounds: ReturnType<typeof primitiveBounds>, anchor: AnchorName): Point {
   const x = (bounds.minX + bounds.maxX) / 2, y = (bounds.minY + bounds.maxY) / 2;
   const values: Record<AnchorName, Point> = {
@@ -249,10 +284,6 @@ export function anchorPoint(bounds: ReturnType<typeof primitiveBounds>, anchor: 
     bottom_left: { x: bounds.minX, y: bounds.minY }, bottom_right: { x: bounds.maxX, y: bounds.minY },
   };
   return values[anchor];
-}
-
-function translatedBounds(bounds: ReturnType<typeof primitiveBounds>, translation: Point) {
-  return { minX: bounds.minX + translation.x, maxX: bounds.maxX + translation.x, minY: bounds.minY + translation.y, maxY: bounds.maxY + translation.y };
 }
 
 export function cloneItemAtParameter(item: EditorItem, parameterKey: string, value: number): EditorItem {
@@ -265,9 +296,11 @@ export function cloneItemAtParameter(item: EditorItem, parameterKey: string, val
     if (part.kind === "rectangle") part.width = value;
     else if (part.kind === "triangle") part.base = value;
     else if (part.kind === "polygon") scalePolygonAxis(part.vertices, value, "x");
+    else if (part.kind === "bezier") scaleBezierAxis(part.knots, value, "x");
   } else if (kind === "part_height") {
     if (part.kind === "rectangle" || part.kind === "triangle") part.height = value;
     else if (part.kind === "polygon") scalePolygonAxis(part.vertices, value, "y");
+    else if (part.kind === "bezier") scaleBezierAxis(part.knots, value, "y");
   } else if (kind === "part_radius" && part.kind === "circle") part.radius = value;
   else if (kind === "part_scale") scalePrimitive(part, value);
   else if (kind === "item_scale") clone.parts.forEach((entry) => { entry.x *= value; entry.y *= value; if (entry.snap) { entry.snap.offset.x *= value; entry.snap.offset.y *= value; } scalePrimitive(entry, value); });
@@ -279,11 +312,16 @@ function scalePolygonAxis(points: Point[], target: number, axis: "x" | "y"): voi
   if (size > 0) points.forEach((point) => { point[axis] = min + (point[axis] - min) * target / size; });
 }
 
+function scaleBezierAxis(knots: BezierKnot[], target: number, axis: "x" | "y"): void {
+  scalePolygonAxis(knots.flatMap((knot) => [knot.point, knot.control_in, knot.control_out]), target, axis);
+}
+
 function scalePrimitive(part: PrimitiveEditor, scale: number): void {
   if (part.kind === "rectangle") { part.width *= scale; part.height *= scale; }
   else if (part.kind === "triangle") { part.base *= scale; part.height *= scale; }
   else if (part.kind === "circle") part.radius *= scale;
-  else part.vertices.forEach((point) => { point.x *= scale; point.y *= scale; });
+  else if (part.kind === "polygon") part.vertices.forEach((point) => { point.x *= scale; point.y *= scale; });
+  else part.knots.forEach((knot) => [knot.point, knot.control_in, knot.control_out].forEach((point) => { point.x *= scale; point.y *= scale; }));
 }
 
 let partSequence = 0;

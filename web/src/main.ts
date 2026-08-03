@@ -14,6 +14,7 @@ let state = defaultState();
 let currentResult: SolveResult | null = null;
 let sensitivityResult: SensitivityResult | null = null;
 let sensitivitySelection: number | null = null;
+const layoutDisplay = { dimensions: false, clearance: false };
 let running = false;
 let modeller: ShapeModeller | null = null;
 let status: { tone: "neutral" | "working" | "success" | "error"; message: string } = { tone: "neutral", message: "Ready" };
@@ -33,7 +34,7 @@ root.innerHTML = `
     <aside id="editor" class="editor"></aside>
     <main class="results">
       <section class="layout-panel panel">
-        <div class="panel-heading"><div><small>LIVE LAYOUT</small><h1 id="layout-title">Problem preview</h1></div><div id="layout-id" class="layout-id">not solved</div></div>
+        <div class="panel-heading"><div><small>LIVE LAYOUT</small><h1 id="layout-title">Problem preview</h1></div><div class="layout-tools"><label><input id="toggle-dimensions" type="checkbox"> Dimensions</label><label><input id="toggle-clearance" type="checkbox"> Clearance</label><div id="layout-id" class="layout-id">not solved</div></div></div>
         <canvas id="layout-canvas" aria-label="Packing layout"></canvas>
         <div id="metrics" class="metrics"></div>
       </section>
@@ -67,6 +68,8 @@ element("run-study").addEventListener("click", () => void runStudy());
 element("copy-result").addEventListener("click", () => void copyResult());
 element("nav-studio").addEventListener("click", closeModeller);
 element("nav-modeller").addEventListener("click", () => openModeller(0));
+element<HTMLInputElement>("toggle-dimensions").addEventListener("change", (event) => { layoutDisplay.dimensions = (event.target as HTMLInputElement).checked; refreshPreview(); });
+element<HTMLInputElement>("toggle-clearance").addEventListener("change", (event) => { layoutDisplay.clearance = (event.target as HTMLInputElement).checked; refreshPreview(); });
 sensitivityCanvas.addEventListener("click", (event) => {
   if (!sensitivityResult) return;
   selectSensitivityEvaluation(sensitivityValueAt(sensitivityCanvas, sensitivityResult, event.clientX), "graph");
@@ -144,7 +147,7 @@ function itemEditorHtml(item: EditorItem, itemIndex: number): string {
     </div>
     <canvas class="item-preview" data-preview-item="${itemIndex}" aria-label="${escapeHtml(item.id)} shape preview"></canvas>
     <div class="part-stack">${item.parts.map((part, partIndex) => primitiveHtml(part, itemIndex, partIndex)).join("")}</div>
-    <div class="primitive-buttons"><span>Add part</span>${(["rectangle", "triangle", "circle", "polygon"] as const).map((kind) => `<button data-action="add-part" data-kind="${kind}" data-item="${itemIndex}">${kind}</button>`).join("")}</div>
+    <div class="primitive-buttons"><span>Add part</span>${(["rectangle", "triangle", "circle", "polygon", "bezier"] as const).map((kind) => `<button data-action="add-part" data-kind="${kind}" data-item="${itemIndex}">${kind}</button>`).join("")}</div>
   </article>`;
 }
 
@@ -155,7 +158,9 @@ function primitiveHtml(part: PrimitiveEditor, itemIndex: number, partIndex: numb
       ? `${partNumber("Base", "base", part.base, itemIndex, partIndex)}${partNumber("Height", "height", part.height, itemIndex, partIndex)}`
       : part.kind === "circle"
         ? `${partNumber("Radius", "radius", part.radius, itemIndex, partIndex)}${partNumber("Segments", "segments", part.segments, itemIndex, partIndex, 1)}`
-        : `<label class="wide">Vertices<textarea rows="3" data-scope="part-points" data-item="${itemIndex}" data-part="${partIndex}">${pointText(part.vertices)}</textarea></label>`;
+        : part.kind === "polygon"
+          ? `<label class="wide">Vertices<textarea rows="3" data-scope="part-points" data-item="${itemIndex}" data-part="${partIndex}">${pointText(part.vertices)}</textarea></label>`
+          : `${partNumber("Curve segments", "segments", part.segments, itemIndex, partIndex, 1)}<p class="hint wide">Edit Bézier knots and handles in the Shape modeller.</p>`;
   return `<div class="part-card"><div class="part-title"><span class="shape-icon ${part.kind}"></span><strong>${capitalize(part.kind)}</strong><button class="icon-button small" data-action="delete-part" data-item="${itemIndex}" data-part="${partIndex}">×</button></div><div class="field-grid part-fields">${dimensions}${partNumber("X", "x", part.x, itemIndex, partIndex)}${partNumber("Y", "y", part.y, itemIndex, partIndex)}${partNumber("Rotation°", "rotation", part.rotation, itemIndex, partIndex)}</div></div>`;
 }
 
@@ -167,7 +172,8 @@ function exclusionHtml(entry: EditorExclusion, index: number): string {
       ? `${exclusionNumber("Width", "width", part.width, index)}${exclusionNumber("Height", "height", part.height, index)}`
       : part.kind === "triangle"
         ? `${exclusionNumber("Base", "base", part.base, index)}${exclusionNumber("Height", "height", part.height, index)}`
-        : `<label class="wide">Vertices<textarea rows="3" data-scope="exclusion-points" data-exclusion="${index}">${pointText(part.vertices)}</textarea></label>`;
+      : part.kind === "polygon" ? `<label class="wide">Vertices<textarea rows="3" data-scope="exclusion-points" data-exclusion="${index}">${pointText(part.vertices)}</textarea></label>`
+        : `<p class="hint wide">Edit Bézier knots in the Shape modeller.</p>`;
   return `<article class="shape-card compact"><div class="card-heading"><strong>${escapeHtml(entry.id)}</strong><button class="icon-button" data-action="delete-exclusion" data-exclusion="${index}">×</button></div><div class="field-grid three">${textField("ID", "exclusion", "id", entry.id, index)}${numberField("Clearance", "exclusion", "clearance", entry.clearance, .05, false, index)}<label>Shape<select data-scope="exclusion-kind" data-exclusion="${index}">${(["rectangle", "triangle", "circle", "polygon"] as const).map((kind) => `<option ${part.kind === kind ? "selected" : ""}>${kind}</option>`).join("")}</select></label>${shapeFields}${exclusionNumber("X", "x", part.x, index)}${exclusionNumber("Y", "y", part.y, index)}${exclusionNumber("Rotation°", "rotation", part.rotation, index)}</div></article>`;
 }
 
@@ -302,13 +308,13 @@ function completeStudyProgress(count: number): void {
 
 function updateProgress(problem: PackingProblem, progress: SolveProgress): void {
   setStatus("working", `${progress.packed_item_count} placed · ${progress.iterations.toLocaleString()} iterations`);
-  renderLayout(layoutCanvas, problem, progress.placements);
+  renderLayout(layoutCanvas, problem, progress.placements, layoutDisplay);
   element("layout-title").textContent = `Improving · ${progress.packed_item_count} items`;
   element("layout-id").textContent = progress.solver_strategy;
 }
 
 function showResult(problem: PackingProblem, result: SolveResult): void {
-  renderLayout(layoutCanvas, problem, result.placements);
+  renderLayout(layoutCanvas, problem, result.placements, layoutDisplay);
   element("layout-title").textContent = `${result.packed_item_count} packed items`;
   element("layout-id").textContent = result.layout_id;
   element("metrics").innerHTML = metricHtml("Packed", result.packed_item_count) + metricHtml("Upper bound", result.simple_upper_bound ?? "—") + metricHtml("Candidates", result.statistics.candidates_evaluated.toLocaleString()) + metricHtml("Elapsed", `${result.statistics.elapsed_ms} ms`) + metricHtml("Validation", result.validation.valid ? "Passed" : "Failed");
@@ -364,7 +370,7 @@ function parameterOptions(): string {
     options.push([`item_scale:${item.id}`, `${item.id} · whole shape scale`]);
     item.parts.forEach((part, index) => {
       options.push([`part_scale:${item.id}:${index}`, `${item.id} · part ${index + 1} scale`]);
-      if (part.kind === "rectangle" || part.kind === "triangle" || part.kind === "polygon") {
+      if (part.kind === "rectangle" || part.kind === "triangle" || part.kind === "polygon" || part.kind === "bezier") {
         options.push([`part_width:${item.id}:${index}`, `${item.id} · part ${index + 1} width/base`]);
         options.push([`part_height:${item.id}:${index}`, `${item.id} · part ${index + 1} height`]);
       }
@@ -383,7 +389,7 @@ function mutate(change: () => void, rerender = true): void {
 }
 
 function refreshPreview(): void {
-  try { renderLayout(layoutCanvas, toProblem(state), currentResult?.placements ?? []); renderSensitivity(sensitivityCanvas, sensitivityResult, sensitivitySelection); renderItemPreviews(); }
+  try { renderLayout(layoutCanvas, toProblem(state), currentResult?.placements ?? [], layoutDisplay); renderSensitivity(sensitivityCanvas, sensitivityResult, sensitivitySelection); renderItemPreviews(); }
   catch (error) { setStatus("error", errorMessage(error)); }
 }
 function renderItemPreviews(): void {

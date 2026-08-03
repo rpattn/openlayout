@@ -92,6 +92,40 @@ pub(crate) fn shape_to_polygons(shape: &Shape) -> Result<PolygonSet, PackingErro
             }
             vec![polygon]
         }
+        Shape::Bezier {
+            knots,
+            segments_per_curve,
+        } => {
+            if knots.len() < 3
+                || *segments_per_curve < 3
+                || *segments_per_curve > 256
+                || knots.iter().any(|knot| {
+                    !finite_point(knot.point)
+                        || !finite_point(knot.control_in)
+                        || !finite_point(knot.control_out)
+                })
+            {
+                return Err(PackingError::geometry(
+                    "bezier paths require at least three finite knots and 3..=256 segments per curve",
+                ));
+            }
+            let mut polygon = Vec::with_capacity(knots.len() * *segments_per_curve as usize);
+            for index in 0..knots.len() {
+                let current = knots[index];
+                let next = knots[(index + 1) % knots.len()];
+                for step in 0..*segments_per_curve {
+                    let t = step as f64 / *segments_per_curve as f64;
+                    polygon.push(cubic_bezier(
+                        current.point,
+                        current.control_out,
+                        next.control_in,
+                        next.point,
+                        t,
+                    ));
+                }
+            }
+            vec![normalise_polygon(&polygon)?]
+        }
         Shape::Compound { parts } => {
             if parts.is_empty() {
                 return Err(PackingError::geometry(
@@ -104,7 +138,20 @@ pub(crate) fn shape_to_polygons(shape: &Shape) -> Result<PolygonSet, PackingErro
     Ok(PolygonSet { polygons })
 }
 
+fn cubic_bezier(p0: Point, p1: Point, p2: Point, p3: Point, t: f64) -> Point {
+    let inverse = 1.0 - t;
+    let a = inverse * inverse * inverse;
+    let b = 3.0 * inverse * inverse * t;
+    let c = 3.0 * inverse * t * t;
+    let d = t * t * t;
+    Point {
+        x: a * p0.x + b * p1.x + c * p2.x + d * p3.x,
+        y: a * p0.y + b * p1.y + c * p2.y + d * p3.y,
+    }
+}
+
 fn compound_polygons(parts: &[ShapePart]) -> Result<Vec<Vec<Point>>, PackingError> {
+    let mut local = Vec::with_capacity(parts.len());
     let mut rotated = Vec::with_capacity(parts.len());
     for part in parts {
         if !part.rotation_deg.is_finite() || !finite_point(part.translation) {
@@ -121,18 +168,15 @@ fn compound_polygons(parts: &[ShapePart]) -> Result<Vec<Vec<Point>>, PackingErro
                 "compound snap offset must be finite",
             ));
         }
-        rotated.push(transform(
-            &shape_to_polygons(&part.shape)?,
-            part.rotation_deg,
-            0.0,
-            0.0,
-        ));
+        let geometry = shape_to_polygons(&part.shape)?;
+        rotated.push(transform(&geometry, part.rotation_deg, 0.0, 0.0));
+        local.push(geometry);
     }
 
     let mut translations = vec![None; parts.len()];
     let mut active = vec![false; parts.len()];
     for index in 0..parts.len() {
-        resolve_part_translation(index, parts, &rotated, &mut translations, &mut active)?;
+        resolve_part_translation(index, parts, &local, &mut translations, &mut active)?;
     }
 
     let mut output = Vec::new();
@@ -146,7 +190,7 @@ fn compound_polygons(parts: &[ShapePart]) -> Result<Vec<Vec<Point>>, PackingErro
 fn resolve_part_translation(
     index: usize,
     parts: &[ShapePart],
-    rotated: &[PolygonSet],
+    local: &[PolygonSet],
     translations: &mut [Option<Point>],
     active: &mut [bool],
 ) -> Result<Point, PackingError> {
@@ -172,13 +216,15 @@ fn resolve_part_translation(
             )));
         }
         let target_translation =
-            resolve_part_translation(snap.target_part, parts, rotated, translations, active)?;
-        let own_anchor = anchor_point(bounds(&rotated[index]), snap.own_anchor);
-        let target_anchor = anchor_point(
-            bounds(&rotated[snap.target_part])
-                .translated(target_translation.x, target_translation.y),
+            resolve_part_translation(snap.target_part, parts, local, translations, active)?;
+        let own_anchor = rotated_anchor(&local[index], parts[index].rotation_deg, snap.own_anchor);
+        let mut target_anchor = rotated_anchor(
+            &local[snap.target_part],
+            parts[snap.target_part].rotation_deg,
             snap.target_anchor,
         );
+        target_anchor.x += target_translation.x;
+        target_anchor.y += target_translation.y;
         Point {
             x: target_anchor.x - own_anchor.x + snap.offset.x,
             y: target_anchor.y - own_anchor.y + snap.offset.y,
@@ -189,6 +235,15 @@ fn resolve_part_translation(
     active[index] = false;
     translations[index] = Some(translation);
     Ok(translation)
+}
+
+fn rotated_anchor(geometry: &PolygonSet, rotation_deg: f64, anchor: ShapeAnchor) -> Point {
+    let point = anchor_point(bounds(geometry), anchor);
+    let radians = rotation_deg.to_radians();
+    Point {
+        x: point.x * radians.cos() - point.y * radians.sin(),
+        y: point.x * radians.sin() + point.y * radians.cos(),
+    }
 }
 
 fn anchor_point(bounds: Bounds, anchor: ShapeAnchor) -> Point {
@@ -567,4 +622,21 @@ fn signed_area(polygon: &[Point]) -> f64 {
 }
 fn finite_point(point: Point) -> bool {
     point.x.is_finite() && point.y.is_finite()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn part_anchors_rotate_with_the_local_shape_frame() {
+        let geometry = shape_to_polygons(&Shape::Rectangle {
+            width: 4.0,
+            height: 2.0,
+        })
+        .unwrap();
+        let right = rotated_anchor(&geometry, 30.0, ShapeAnchor::Right);
+        assert!((right.x - 2.0 * 30.0_f64.to_radians().cos()).abs() < EPSILON);
+        assert!((right.y - 2.0 * 30.0_f64.to_radians().sin()).abs() < EPSILON);
+    }
 }

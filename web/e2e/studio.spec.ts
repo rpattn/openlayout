@@ -26,6 +26,13 @@ test("composes parameterized primitives, validates, solves, and inspects sensiti
   await expect(page.locator("#layout-id")).toContainText("layout-");
   await expect(page.locator("#metrics")).toContainText("Passed");
   await expect(page.locator("#diagnostics")).toContainText("Independent final validation passed");
+  const plainLayout = await page.locator("#layout-canvas").evaluate((canvas: HTMLCanvasElement) => canvas.toDataURL());
+  await page.locator("#toggle-dimensions").check();
+  const dimensionLayout = await page.locator("#layout-canvas").evaluate((canvas: HTMLCanvasElement) => canvas.toDataURL());
+  expect(dimensionLayout).not.toBe(plainLayout);
+  await page.locator("#toggle-clearance").check();
+  const clearanceLayout = await page.locator("#layout-canvas").evaluate((canvas: HTMLCanvasElement) => canvas.toDataURL());
+  expect(clearanceLayout).not.toBe(dimensionLayout);
 
   await page.locator("summary").filter({ hasText: "Sensitivity setup" }).click();
   await setNumber(page, "start", "4");
@@ -74,6 +81,12 @@ test("models shapes on canvas and previews snapped geometry across sensitivity e
   const rightCircle = page.locator('#model-canvas [data-part-id="end-right"]');
   const rightCenter = await shapeCenter(rightCircle);
   expect(rightCenter.x).toBeCloseTo(3.5, 1);
+  const bodyRotation = page.locator('[data-model-field="rotation"]');
+  await bodyRotation.fill("30"); await bodyRotation.press("Tab");
+  const rotatedRightCenter = await shapeCenter(rightCircle);
+  expect(rotatedRightCenter.x).toBeCloseTo(3.5 * Math.cos(Math.PI / 6), 1);
+  expect(rotatedRightCenter.y).toBeCloseTo(3.5 * Math.sin(Math.PI / 6), 1);
+  await bodyRotation.fill("0"); await bodyRotation.press("Tab");
 
   await page.locator('[data-add-shape="circle"]').click();
   const added = page.locator("#model-canvas [data-part-id]").last();
@@ -86,8 +99,19 @@ test("models shapes on canvas and previews snapped geometry across sensitivity e
   await expect(page.locator(".snap-heading")).toContainText("Anchored");
   await expect(page.locator(".layer.selected")).toContainText("snapped");
 
+  await page.locator('[data-add-shape="bezier"]').click();
+  await expect(page.locator(".bezier-knot")).toHaveCount(4);
+  await expect(page.locator(".bezier-control")).toHaveCount(8);
+  const tangent = await screenCenter(page.locator(".bezier-control").first());
+  await page.mouse.move(tangent.x, tangent.y); await page.mouse.down(); await page.mouse.move(tangent.x + 12, tangent.y - 8); await page.mouse.up();
+  const rotate = await screenCenter(page.locator(".rotate-handle"));
+  await page.mouse.move(rotate.x, rotate.y); await page.mouse.down(); await page.mouse.move(rotate.x + 55, rotate.y + 30, { steps: 6 }); await page.mouse.up();
+  expect(Math.abs(Number(await page.locator('[data-model-field="rotation"]').inputValue()))).toBeGreaterThan(5);
+
   await page.getByRole("button", { name: "Back to packing" }).click();
   await expect(page.locator("#layout-canvas")).toBeVisible();
+  await page.getByRole("button", { name: "Validate" }).click();
+  await expect(page.locator("#status")).toContainText("valid", { timeout: 10_000 });
 });
 
 test("stops an active worker and starts a clean replacement", async ({ page }) => {

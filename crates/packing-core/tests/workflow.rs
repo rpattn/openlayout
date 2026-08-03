@@ -40,6 +40,40 @@ fn options() -> SolveOptions {
 }
 
 #[test]
+fn closed_bezier_paths_are_tessellated_and_packable() {
+    let mut problem = rectangle_problem(12.0, 8.0, 2.0, 2.0);
+    problem.items[0].shape = Shape::Bezier {
+        knots: vec![
+            BezierKnot {
+                point: Point { x: -2.0, y: 0.0 },
+                control_in: Point { x: -2.0, y: 1.0 },
+                control_out: Point { x: -2.0, y: -1.0 },
+            },
+            BezierKnot {
+                point: Point { x: 0.0, y: -1.5 },
+                control_in: Point { x: -1.0, y: -1.5 },
+                control_out: Point { x: 1.0, y: -1.5 },
+            },
+            BezierKnot {
+                point: Point { x: 2.0, y: 0.0 },
+                control_in: Point { x: 2.0, y: -1.0 },
+                control_out: Point { x: 2.0, y: 1.0 },
+            },
+            BezierKnot {
+                point: Point { x: 0.0, y: 1.5 },
+                control_in: Point { x: 1.0, y: 1.5 },
+                control_out: Point { x: -1.0, y: 1.5 },
+            },
+        ],
+        segments_per_curve: 12,
+    };
+    validate_problem(&problem).unwrap();
+    let result = solve(&problem, &options()).unwrap();
+    assert!(result.packed_item_count > 0);
+    assert!(result.validation.valid);
+}
+
+#[test]
 fn buffered_shapes_respect_separation_and_boundary_clearance() {
     let mut problem = rectangle_problem(12.0, 7.0, 3.0, 2.0);
     problem.clearance = Clearance {
