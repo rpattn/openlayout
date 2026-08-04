@@ -168,7 +168,7 @@ fn evaluate(
 
 fn repair_monotonic_layouts(
     study: &SensitivityStudy,
-    evaluations: &mut Vec<SensitivityPoint>,
+    evaluations: &mut [SensitivityPoint],
 ) -> Result<(), PackingError> {
     evaluations.sort_by(|a, b| a.value.total_cmp(&b.value));
     if evaluations.len() < 2 {

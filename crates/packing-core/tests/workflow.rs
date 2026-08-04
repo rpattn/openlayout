@@ -524,3 +524,200 @@ fn thorough_mode_expands_the_base_budget_reported_in_progress() {
             .all(|progress| progress.max_iterations == 4_000)
     );
 }
+
+#[test]
+fn learned_lattice_reaches_square_and_hexagonal_reference_counts() {
+    let rectangles = rectangle_problem(10.0, 6.0, 2.0, 2.0);
+    let rectangle_result = solve(&rectangles, &options()).unwrap();
+    assert_eq!(rectangle_result.packed_item_count, 15);
+
+    let mut circles = rectangle_problem(10.0, 2.0 + 4.0 * 3.0_f64.sqrt(), 2.0, 2.0);
+    circles.items[0].shape = Shape::Circle {
+        radius: 1.0,
+        segments: 64,
+    };
+    circles.items[0].rotation_policy = discrete(vec![0.0]);
+    let circle_result = solve(&circles, &options()).unwrap();
+    assert!(
+        circle_result.packed_item_count >= 23,
+        "expected five staggered rows containing 5+4+5+4+5 circles, got {} via {}",
+        circle_result.packed_item_count,
+        circle_result.solver_strategy
+    );
+    assert!(
+        circle_result
+            .solver_strategy
+            .starts_with("learned_lattice_")
+    );
+}
+
+#[test]
+fn learned_complementary_motif_tiles_right_triangles_exactly() {
+    let mut problem = rectangle_problem(10.0, 10.0, 2.0, 2.0);
+    problem.items[0].shape = Shape::Polygon {
+        vertices: vec![
+            Point { x: 0.0, y: 0.0 },
+            Point { x: 2.0, y: 0.0 },
+            Point { x: 0.0, y: 2.0 },
+        ],
+    };
+    problem.items[0].rotation_policy = discrete(vec![0.0, 180.0]);
+    let result = solve(&problem, &options()).unwrap();
+
+    assert_eq!(result.packed_item_count, 50);
+    assert_eq!(result.status, SolveStatus::ProvenOptimal);
+    assert!(result.solver_strategy.starts_with("learned_motif_"));
+}
+
+#[test]
+fn learned_decomposition_fills_offset_disconnected_regions() {
+    let mut problem = rectangle_problem(1.0, 1.0, 2.0, 2.0);
+    problem.items[0].quantity = 4;
+    problem.items[0].rotation_policy = discrete(vec![0.0]);
+    problem.container.parts = vec![
+        RegionPart {
+            id: "left".into(),
+            operation: RegionOperation::Add,
+            shape: Shape::Rectangle {
+                width: 4.0,
+                height: 2.0,
+            },
+            translation: Point { x: -3.0, y: 0.0 },
+            rotation_deg: 0.0,
+        },
+        RegionPart {
+            id: "right".into(),
+            operation: RegionOperation::Add,
+            shape: Shape::Rectangle {
+                width: 4.0,
+                height: 2.0,
+            },
+            translation: Point { x: 3.25, y: 0.0 },
+            rotation_deg: 0.0,
+        },
+    ];
+
+    let result = solve(&problem, &options()).unwrap();
+    assert_eq!(result.packed_item_count, 4);
+    assert_eq!(result.status, SolveStatus::ProvenOptimal);
+    assert!(
+        result.solver_strategy.starts_with("learned_decomposed_"),
+        "expected independently aligned region seeds, got {}",
+        result.solver_strategy
+    );
+    assert!(result.validation.valid);
+}
+
+#[test]
+fn thorough_capsule_case_reaches_the_sensitivity_sweep_reference() {
+    let exclusion_vertices = (0..32)
+        .map(|index| {
+            let angle = std::f64::consts::TAU * index as f64 / 32.0;
+            Point {
+                x: 15.0 + 2.1 * angle.cos(),
+                y: 8.0 + 2.1 * angle.sin(),
+            }
+        })
+        .collect();
+    let problem = PackingProblem {
+        schema_version: 2,
+        container: Container {
+            parts: vec![RegionPart {
+                id: "stock".into(),
+                operation: RegionOperation::Add,
+                shape: Shape::Polygon {
+                    vertices: vec![
+                        Point { x: -15.0, y: -9.0 },
+                        Point { x: 15.0, y: -9.0 },
+                        Point { x: 15.0, y: 9.0 },
+                        Point { x: 6.0, y: 9.0 },
+                        Point { x: 6.0, y: 6.0 },
+                        Point { x: -15.0, y: 6.0 },
+                    ],
+                },
+                translation: Point { x: 15.0, y: 9.0 },
+                rotation_deg: 0.0,
+            }],
+        },
+        exclusions: vec![Exclusion {
+            id: "exclusion-a".into(),
+            shape: Shape::Polygon {
+                vertices: exclusion_vertices,
+            },
+            clearance: 0.25,
+        }],
+        items: vec![Item {
+            id: "item-a".into(),
+            quantity: 80,
+            rotation_policy: RotationPolicy::Continuous {
+                min_deg: 0.0,
+                max_deg: 360.0,
+                coupling: RotationCoupling::Independent,
+            },
+            shape: Shape::Compound {
+                parts: vec![
+                    ShapePart {
+                        shape: Box::new(Shape::Rectangle {
+                            width: 4.375,
+                            height: 2.4,
+                        }),
+                        translation: Point::default(),
+                        rotation_deg: 0.0,
+                        snap: None,
+                    },
+                    ShapePart {
+                        shape: Box::new(Shape::Circle {
+                            radius: 1.1,
+                            segments: 28,
+                        }),
+                        translation: Point::default(),
+                        rotation_deg: 0.0,
+                        snap: Some(PartSnap {
+                            target_part: 0,
+                            own_anchor: ShapeAnchor::Center,
+                            target_anchor: ShapeAnchor::Left,
+                            offset: Point::default(),
+                        }),
+                    },
+                    ShapePart {
+                        shape: Box::new(Shape::Circle {
+                            radius: 1.1,
+                            segments: 28,
+                        }),
+                        translation: Point::default(),
+                        rotation_deg: 0.0,
+                        snap: Some(PartSnap {
+                            target_part: 0,
+                            own_anchor: ShapeAnchor::Center,
+                            target_anchor: ShapeAnchor::Right,
+                            offset: Point::default(),
+                        }),
+                    },
+                ],
+            },
+        }],
+        fixed_placements: Vec::new(),
+        clearance: Clearance {
+            item_to_item: 0.35,
+            item_to_boundary: 0.3,
+            item_to_exclusion: 0.25,
+        },
+    };
+    let mut solve_options = options();
+    solve_options.seed = 7;
+    // Thorough expands this to 40k effective iterations, half one balanced base run while
+    // keeping the regression quick enough for the normal test suite.
+    solve_options.max_iterations = 10_000;
+    solve_options.grid_step = 0.5;
+    solve_options.restarts = 3;
+    solve_options.quality = SolveQuality::Thorough;
+
+    let result = solve(&problem, &solve_options).unwrap();
+    assert!(
+        result.packed_item_count >= 17,
+        "expected at least 17 capsules at width 4.375, got {} via {}",
+        result.packed_item_count,
+        result.solver_strategy
+    );
+    assert!(result.validation.valid);
+}

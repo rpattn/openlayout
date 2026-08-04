@@ -32,7 +32,7 @@ The layout clearance overlay is explanatory rather than part of feasibility calc
 
 `PreparedProblem` owns the validated problem, normalized container and exclusions, item rotation variants, variant indexes by item identifier, cached bounds, and the simple upper bound. This separates geometry work from repeated seeded attempts and sensitivity evaluations.
 
-The portfolio uses structured rows, staggered rows, columns, alternative low/high origins, all prepared rotations, deterministic shuffled restarts, contact/grid greedy insertion, directional compaction, and rotate-and-compact improvement. Continuous domains include cardinal and 15-degree candidates plus dominant item/container edge alignments and 2.5-degree neighbours. Independent mode may mix angles; shared-per-item mode rejects candidates that differ from the first placed copy. Quality profiles control restart and rotation-improvement effort under the same deterministic iteration cap.
+The portfolio uses learned regular lattices, complementary two-variant motifs, exact non-overlapping rectangular seeds for complex fields, structured rows, staggered rows, columns, alternative low/high origins, all prepared rotations, deterministic shuffled restarts, contact/grid greedy insertion, directional compaction, in-place rotation, and bounded remove/reinsert improvement. Continuous domains include cardinal and 15-degree candidates plus dominant item/container edge alignments and 2.5-degree neighbours. Independent mode may mix angles; shared-per-item mode rejects candidates that differ from the first placed copy. Quality profiles control restart and neighbourhood effort under the same deterministic iteration cap.
 
 ## Validation and result meaning
 

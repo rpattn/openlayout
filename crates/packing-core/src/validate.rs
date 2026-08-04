@@ -183,10 +183,10 @@ pub fn validate_placements(
                 .iter()
                 .filter(|placement| placement.item_id == item.id)
                 .map(|placement| placement.rotation_deg);
-            if let Some(first) = rotations.next() {
-                if rotations.any(|angle| !same_rotation(angle, first)) {
-                    errors.push(format!("item '{}' requires one shared rotation", item.id));
-                }
+            if let Some(first) = rotations.next()
+                && rotations.any(|angle| !same_rotation(angle, first))
+            {
+                errors.push(format!("item '{}' requires one shared rotation", item.id));
             }
         }
     }

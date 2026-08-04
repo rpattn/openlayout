@@ -1,5 +1,5 @@
 use crate::geometry::{
-    Bounds, EPSILON, PolygonSet, bounds, set_distance, set_inside, sets_overlap, transform,
+    Bounds, EPSILON, PolygonSet, area, bounds, set_distance, set_inside, sets_overlap, transform,
 };
 use crate::{
     PackingError, PackingErrorKind, Placement, PreparedProblem, SolveOptions, SolvePhase,
@@ -73,6 +73,53 @@ pub fn solve_with_observer(
     let fixed = prepare_fixed(prepared)?;
     let mut best = fixed.clone();
     let mut best_strategy = "fixed_only".to_string();
+    let mut learning_options = run_options;
+    learning_options.max_iterations = (run_options.max_iterations.saturating_mul(25) / 100).max(1);
+    for (strategy, placements) in learned_lattice_layouts(
+        prepared,
+        &learning_options,
+        &fixed,
+        &mut counters,
+        started,
+        observer,
+    ) {
+        if placements.len() > best.len()
+            || (placements.len() == best.len() && layout_key(&placements) < layout_key(&best))
+        {
+            best = placements;
+            best_strategy = strategy;
+        }
+    }
+    clear_local_limit(&mut counters, &run_options);
+    learning_options.max_iterations = (run_options.max_iterations.saturating_mul(40) / 100)
+        .max(counters.iterations + 1)
+        .min(run_options.max_iterations);
+    for (strategy, placements) in learned_motif_layouts(
+        prepared,
+        &learning_options,
+        &fixed,
+        &mut counters,
+        started,
+        observer,
+    ) {
+        if placements.len() > best.len()
+            || (placements.len() == best.len() && layout_key(&placements) < layout_key(&best))
+        {
+            best = placements;
+            best_strategy = strategy;
+        }
+    }
+    clear_local_limit(&mut counters, &run_options);
+    observer.on_progress(&SolveProgress {
+        phase: SolvePhase::Baseline,
+        completed_fraction: (counters.iterations as f64 / run_options.max_iterations as f64)
+            .clamp(0.0, 1.0),
+        max_iterations: run_options.max_iterations,
+        iterations: counters.iterations,
+        packed_item_count: best.len(),
+        placements: best.iter().map(|entry| entry.placement.clone()).collect(),
+        solver_strategy: best_strategy.clone(),
+    });
     let effective_restarts = match options.quality {
         crate::SolveQuality::Fast => options.restarts.min(2),
         crate::SolveQuality::Balanced => options.restarts,
@@ -93,6 +140,7 @@ pub fn solve_with_observer(
         let structured_end = attempt_start + attempt_budget.saturating_mul(30) / 100;
         let greedy_end = attempt_start + attempt_budget.saturating_mul(85) / 100;
         let compact_end = attempt_start + attempt_budget.saturating_mul(92) / 100;
+        let rotate_end = attempt_start + attempt_budget.saturating_mul(96) / 100;
         let attempt_end = (attempt_start + attempt_budget).min(run_options.max_iterations);
         let mut phase_options = run_options;
         phase_options.max_iterations = structured_end
@@ -147,9 +195,10 @@ pub fn solve_with_observer(
             started,
             observer,
         );
+        let mut neighbourhood_improved = false;
         if options.quality != crate::SolveQuality::Fast {
             clear_local_limit(&mut counters, &run_options);
-            phase_options.max_iterations = attempt_end
+            phase_options.max_iterations = rotate_end
                 .max(counters.iterations + 1)
                 .min(run_options.max_iterations);
             rotate_and_compact(
@@ -160,12 +209,29 @@ pub fn solve_with_observer(
                 started,
                 observer,
             );
+            clear_local_limit(&mut counters, &run_options);
+            phase_options.max_iterations = attempt_end
+                .max(counters.iterations + 1)
+                .min(run_options.max_iterations);
+            neighbourhood_improved = remove_reinsert(
+                prepared,
+                &phase_options,
+                &order,
+                &mut placements,
+                &mut counters,
+                started,
+                observer,
+            );
         }
         if placements.len() > best.len()
             || (placements.len() == best.len() && layout_key(&placements) < layout_key(&best))
         {
             best = placements;
-            best_strategy = format!("{strategy}+greedy+compact");
+            best_strategy = if neighbourhood_improved {
+                format!("{strategy}+greedy+compact+reinsert")
+            } else {
+                format!("{strategy}+greedy+compact")
+            };
         }
         let progress = SolveProgress {
             phase: if strategy_index == 0 {
@@ -208,10 +274,10 @@ pub fn solve_with_observer(
     }
     let status = if counters.cancelled {
         SolveStatus::Cancelled
-    } else if counters.limit {
-        SolveStatus::LimitReached
     } else if Some(best.len()) == prepared.simple_upper_bound {
         SolveStatus::ProvenOptimal
+    } else if counters.limit {
+        SolveStatus::LimitReached
     } else if best.is_empty() {
         SolveStatus::Infeasible
     } else {
@@ -359,6 +425,584 @@ fn portfolio_orders(
         ));
     }
     output
+}
+
+fn learned_lattice_layouts(
+    prepared: &PreparedProblem,
+    options: &SolveOptions,
+    fixed: &[CandidatePlacement],
+    counters: &mut Counters,
+    started: SolveInstant,
+    observer: &mut dyn SolveObserver,
+) -> Vec<(String, Vec<CandidatePlacement>)> {
+    let mut layouts = Vec::new();
+    let decomposed_cells = decomposed_regions(prepared);
+    for variant in &prepared.variants {
+        let horizontal_pitch = variant.bounds.width() + prepared.problem.clearance.item_to_item;
+        for shift_fraction in [0.0, 0.5] {
+            if stop_requested(options, started, counters, observer) {
+                return layouts;
+            }
+            let row_shift = horizontal_pitch * shift_fraction;
+            let vertical_pitch = learned_separation(
+                variant,
+                row_shift,
+                true,
+                prepared.problem.clearance.item_to_item,
+                counters,
+            );
+            if !vertical_pitch.is_finite() || vertical_pitch <= EPSILON {
+                continue;
+            }
+            for (vertical_high, horizontal_high) in
+                [(false, false), (false, true), (true, false), (true, true)]
+            {
+                let mut placed = fixed.to_vec();
+                lattice_fill(
+                    prepared,
+                    options,
+                    variant,
+                    prepared.container_bounds,
+                    horizontal_pitch,
+                    vertical_pitch,
+                    row_shift,
+                    vertical_high,
+                    horizontal_high,
+                    &mut placed,
+                    counters,
+                    started,
+                    observer,
+                );
+                layouts.push((
+                    format!(
+                        "learned_lattice_{}_shift_{shift_fraction:.2}_{}{}",
+                        variant.rotation_deg,
+                        if vertical_high { "top" } else { "bottom" },
+                        if horizontal_high { "_right" } else { "_left" }
+                    ),
+                    placed,
+                ));
+                if decomposed_cells.len() > 1 {
+                    let mut decomposed = fixed.to_vec();
+                    for cell in &decomposed_cells {
+                        lattice_fill(
+                            prepared,
+                            options,
+                            variant,
+                            *cell,
+                            horizontal_pitch,
+                            vertical_pitch,
+                            row_shift,
+                            vertical_high,
+                            horizontal_high,
+                            &mut decomposed,
+                            counters,
+                            started,
+                            observer,
+                        );
+                    }
+                    layouts.push((
+                        format!(
+                            "learned_decomposed_{}_shift_{shift_fraction:.2}_{}{}",
+                            variant.rotation_deg,
+                            if vertical_high { "top" } else { "bottom" },
+                            if horizontal_high { "_right" } else { "_left" }
+                        ),
+                        decomposed,
+                    ));
+                }
+            }
+        }
+    }
+    layouts
+}
+
+fn decomposed_regions(prepared: &PreparedProblem) -> Vec<Bounds> {
+    let mut xs = vec![
+        prepared.container_bounds.min_x,
+        prepared.container_bounds.max_x,
+    ];
+    let mut ys = vec![
+        prepared.container_bounds.min_y,
+        prepared.container_bounds.max_y,
+    ];
+    for point in prepared.container.polygons.iter().flatten() {
+        xs.push(point.x);
+        ys.push(point.y);
+    }
+    for exclusion in &prepared.exclusions {
+        let exclusion_bounds = bounds(exclusion);
+        xs.extend([exclusion_bounds.min_x, exclusion_bounds.max_x]);
+        ys.extend([exclusion_bounds.min_y, exclusion_bounds.max_y]);
+    }
+    normalize_axis(&mut xs, 12);
+    normalize_axis(&mut ys, 12);
+    if prepared.exclusions.is_empty() && rectangle_region_clear(prepared, prepared.container_bounds)
+    {
+        return vec![prepared.container_bounds];
+    }
+    let mut candidates = Vec::new();
+    for left in 0..xs.len().saturating_sub(1) {
+        for right in (left + 1)..xs.len() {
+            for bottom in 0..ys.len().saturating_sub(1) {
+                for top in (bottom + 1)..ys.len() {
+                    let candidate = Bounds {
+                        min_x: xs[left],
+                        min_y: ys[bottom],
+                        max_x: xs[right],
+                        max_y: ys[top],
+                    };
+                    if rectangle_region_clear(prepared, candidate) {
+                        candidates.push(candidate);
+                    }
+                }
+            }
+        }
+    }
+    candidates.sort_by(|a, b| {
+        (b.width() * b.height())
+            .total_cmp(&(a.width() * a.height()))
+            .then_with(|| a.min_y.total_cmp(&b.min_y))
+            .then_with(|| a.min_x.total_cmp(&b.min_x))
+    });
+    candidates.dedup_by(|a, b| {
+        (a.min_x - b.min_x).abs() <= EPSILON
+            && (a.min_y - b.min_y).abs() <= EPSILON
+            && (a.max_x - b.max_x).abs() <= EPSILON
+            && (a.max_y - b.max_y).abs() <= EPSILON
+    });
+    let mut regions = Vec::new();
+    for candidate in candidates {
+        if regions
+            .iter()
+            .all(|region| !bounds_interiors_overlap(*region, candidate))
+        {
+            regions.push(candidate);
+            if regions.len() == 12 {
+                break;
+            }
+        }
+    }
+    if regions.is_empty() {
+        vec![prepared.container_bounds]
+    } else {
+        regions
+    }
+}
+
+fn normalize_axis(values: &mut Vec<f64>, limit: usize) {
+    values.sort_by(f64::total_cmp);
+    values.dedup_by(|a, b| (*a - *b).abs() <= EPSILON);
+    if values.len() <= limit {
+        return;
+    }
+    let original = values.clone();
+    values.clear();
+    for index in 0..limit {
+        let source = index * (original.len() - 1) / (limit - 1);
+        values.push(original[source]);
+    }
+    values.dedup_by(|a, b| (*a - *b).abs() <= EPSILON);
+}
+
+fn rectangle_region_clear(prepared: &PreparedProblem, candidate: Bounds) -> bool {
+    if candidate.width() <= EPSILON || candidate.height() <= EPSILON {
+        return false;
+    }
+    let rectangle = PolygonSet {
+        polygons: vec![vec![
+            crate::Point {
+                x: candidate.min_x,
+                y: candidate.min_y,
+            },
+            crate::Point {
+                x: candidate.max_x,
+                y: candidate.min_y,
+            },
+            crate::Point {
+                x: candidate.max_x,
+                y: candidate.max_y,
+            },
+            crate::Point {
+                x: candidate.min_x,
+                y: candidate.max_y,
+            },
+        ]],
+    };
+    set_inside(&rectangle, &prepared.container, 0.0)
+        && prepared
+            .exclusions
+            .iter()
+            .all(|exclusion| !sets_overlap(&rectangle, exclusion))
+}
+
+fn bounds_interiors_overlap(first: Bounds, second: Bounds) -> bool {
+    first.min_x < second.max_x - EPSILON
+        && first.max_x > second.min_x + EPSILON
+        && first.min_y < second.max_y - EPSILON
+        && first.max_y > second.min_y + EPSILON
+}
+
+fn learned_motif_layouts(
+    prepared: &PreparedProblem,
+    options: &SolveOptions,
+    fixed: &[CandidatePlacement],
+    counters: &mut Counters,
+    started: SolveInstant,
+    observer: &mut dyn SolveObserver,
+) -> Vec<(String, Vec<CandidatePlacement>)> {
+    if prepared.problem.clearance.item_to_item > EPSILON {
+        return Vec::new();
+    }
+    let mut layouts = Vec::new();
+    for (item_id, variant_indexes) in &prepared.variants_by_item {
+        let item = prepared
+            .problem
+            .items
+            .iter()
+            .find(|item| &item.id == item_id)
+            .expect("prepared item exists");
+        if item.quantity < 2
+            || matches!(
+                item.rotation_policy,
+                crate::RotationPolicy::Discrete {
+                    coupling: crate::RotationCoupling::SharedPerItem,
+                    ..
+                } | crate::RotationPolicy::Continuous {
+                    coupling: crate::RotationCoupling::SharedPerItem,
+                    ..
+                }
+            )
+        {
+            continue;
+        }
+        let mut pairs = Vec::new();
+        for first_position in 0..variant_indexes.len() {
+            for second_position in (first_position + 1)..variant_indexes.len() {
+                let first = &prepared.variants[variant_indexes[first_position]];
+                let second = &prepared.variants[variant_indexes[second_position]];
+                let difference = (first.rotation_deg - second.rotation_deg)
+                    .abs()
+                    .rem_euclid(180.0);
+                let priority = (difference - 90.0)
+                    .abs()
+                    .min(difference.min(180.0 - difference));
+                pairs.push((priority, first_position, second_position));
+            }
+        }
+        pairs.sort_by(|a, b| {
+            a.0.total_cmp(&b.0)
+                .then_with(|| a.1.cmp(&b.1))
+                .then_with(|| a.2.cmp(&b.2))
+        });
+        for (_, first_position, second_position) in pairs.into_iter().take(8) {
+            let first = &prepared.variants[variant_indexes[first_position]];
+            let second = &prepared.variants[variant_indexes[second_position]];
+            for (offset, motif_bounds) in best_motif_offsets(first, second).into_iter().take(2) {
+                for (vertical_high, horizontal_high) in
+                    [(false, false), (false, true), (true, false), (true, true)]
+                {
+                    let mut placed = fixed.to_vec();
+                    motif_fill(
+                        prepared,
+                        options,
+                        first,
+                        second,
+                        offset,
+                        motif_bounds,
+                        vertical_high,
+                        horizontal_high,
+                        &mut placed,
+                        counters,
+                        started,
+                        observer,
+                    );
+                    layouts.push((
+                        format!(
+                            "learned_motif_{}_{}_{}{}",
+                            first.rotation_deg,
+                            second.rotation_deg,
+                            if vertical_high { "top" } else { "bottom" },
+                            if horizontal_high { "_right" } else { "_left" }
+                        ),
+                        placed,
+                    ));
+                }
+            }
+        }
+    }
+    layouts
+}
+
+fn best_motif_offsets(
+    first: &crate::prepare::PreparedVariant,
+    second: &crate::prepare::PreparedVariant,
+) -> Vec<(crate::Point, Bounds)> {
+    let first_contacts = first
+        .geometry
+        .polygons
+        .iter()
+        .flat_map(|polygon| contact_points(polygon))
+        .take(16)
+        .collect::<Vec<_>>();
+    let second_contacts = second
+        .geometry
+        .polygons
+        .iter()
+        .flat_map(|polygon| contact_points(polygon))
+        .take(16)
+        .collect::<Vec<_>>();
+    let occupied_area = area(&first.geometry) + area(&second.geometry);
+    let mut candidates = Vec::new();
+    for first_point in &first_contacts {
+        for second_point in &second_contacts {
+            let offset = crate::Point {
+                x: first_point.x - second_point.x,
+                y: first_point.y - second_point.y,
+            };
+            let moved = transform(&second.geometry, 0.0, offset.x, offset.y);
+            if sets_overlap(&first.geometry, &moved) {
+                continue;
+            }
+            let mut polygons = first.geometry.polygons.clone();
+            polygons.extend(moved.polygons);
+            let motif_bounds = bounds(&PolygonSet { polygons });
+            let box_area = motif_bounds.width() * motif_bounds.height();
+            if !box_area.is_finite() || box_area <= EPSILON {
+                continue;
+            }
+            candidates.push((
+                box_area / occupied_area,
+                motif_bounds.width() + motif_bounds.height(),
+                offset,
+                motif_bounds,
+            ));
+        }
+    }
+    candidates.sort_by(|a, b| {
+        a.0.total_cmp(&b.0)
+            .then_with(|| a.1.total_cmp(&b.1))
+            .then_with(|| a.2.x.total_cmp(&b.2.x))
+            .then_with(|| a.2.y.total_cmp(&b.2.y))
+    });
+    candidates
+        .dedup_by(|a, b| (a.2.x - b.2.x).abs() <= EPSILON && (a.2.y - b.2.y).abs() <= EPSILON);
+    candidates
+        .into_iter()
+        .map(|(_, _, offset, motif_bounds)| (offset, motif_bounds))
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn motif_fill(
+    prepared: &PreparedProblem,
+    options: &SolveOptions,
+    first: &crate::prepare::PreparedVariant,
+    second: &crate::prepare::PreparedVariant,
+    offset: crate::Point,
+    motif_bounds: Bounds,
+    vertical_high: bool,
+    horizontal_high: bool,
+    placed: &mut Vec<CandidatePlacement>,
+    counters: &mut Counters,
+    started: SolveInstant,
+    observer: &mut dyn SolveObserver,
+) {
+    let boundary_clearance = prepared.problem.clearance.item_to_boundary;
+    let pitch_x = motif_bounds.width();
+    let pitch_y = motif_bounds.height();
+    if pitch_x <= EPSILON || pitch_y <= EPSILON {
+        return;
+    }
+    let mut y = if vertical_high {
+        prepared.container_bounds.max_y - motif_bounds.max_y - boundary_clearance
+    } else {
+        prepared.container_bounds.min_y - motif_bounds.min_y + boundary_clearance
+    };
+    loop {
+        let y_beyond = if vertical_high {
+            y + motif_bounds.min_y < prepared.container_bounds.min_y - EPSILON
+        } else {
+            y + motif_bounds.max_y > prepared.container_bounds.max_y + EPSILON
+        };
+        if y_beyond {
+            break;
+        }
+        let mut x = if horizontal_high {
+            prepared.container_bounds.max_x - motif_bounds.max_x - boundary_clearance
+        } else {
+            prepared.container_bounds.min_x - motif_bounds.min_x + boundary_clearance
+        };
+        loop {
+            if stop_requested(options, started, counters, observer) {
+                return;
+            }
+            let x_beyond = if horizontal_high {
+                x + motif_bounds.min_x < prepared.container_bounds.min_x - EPSILON
+            } else {
+                x + motif_bounds.max_x > prepared.container_bounds.max_x + EPSILON
+            };
+            if x_beyond {
+                break;
+            }
+            try_place_pair(prepared, first, second, x, y, offset, placed, counters);
+            x += if horizontal_high { -pitch_x } else { pitch_x };
+        }
+        y += if vertical_high { -pitch_y } else { pitch_y };
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn try_place_pair(
+    prepared: &PreparedProblem,
+    first: &crate::prepare::PreparedVariant,
+    second: &crate::prepare::PreparedVariant,
+    x: f64,
+    y: f64,
+    offset: crate::Point,
+    placed: &mut Vec<CandidatePlacement>,
+    counters: &mut Counters,
+) {
+    if item_count(placed, &first.item_id) + 2
+        > prepared.problem.items[first.item_index].quantity as usize
+    {
+        return;
+    }
+    let first_candidate = candidate(first, x, y, false);
+    let second_candidate = candidate(second, x + offset.x, y + offset.y, false);
+    counters.evaluated += 2;
+    counters.iterations += 2;
+    if feasible(prepared, &first_candidate, placed.iter())
+        && feasible(
+            prepared,
+            &second_candidate,
+            placed.iter().chain(std::iter::once(&first_candidate)),
+        )
+    {
+        counters.valid += 2;
+        placed.push(first_candidate);
+        placed.push(second_candidate);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lattice_fill(
+    prepared: &PreparedProblem,
+    options: &SolveOptions,
+    variant: &crate::prepare::PreparedVariant,
+    fill_bounds: Bounds,
+    horizontal_pitch: f64,
+    vertical_pitch: f64,
+    row_shift: f64,
+    vertical_high: bool,
+    horizontal_high: bool,
+    placed: &mut Vec<CandidatePlacement>,
+    counters: &mut Counters,
+    started: SolveInstant,
+    observer: &mut dyn SolveObserver,
+) {
+    let clearance = prepared.problem.clearance.item_to_boundary;
+    let mut row = 0usize;
+    let mut y = if vertical_high {
+        fill_bounds.max_y - variant.bounds.max_y - clearance
+    } else {
+        fill_bounds.min_y - variant.bounds.min_y + clearance
+    };
+    loop {
+        let y_beyond = if vertical_high {
+            y + variant.bounds.min_y < fill_bounds.min_y - EPSILON
+        } else {
+            y + variant.bounds.max_y > fill_bounds.max_y + EPSILON
+        };
+        if y_beyond {
+            break;
+        }
+        let shift = if row % 2 == 1 { row_shift } else { 0.0 };
+        let mut x = if horizontal_high {
+            fill_bounds.max_x - variant.bounds.max_x - clearance - shift
+        } else {
+            fill_bounds.min_x - variant.bounds.min_x + clearance + shift
+        };
+        loop {
+            if stop_requested(options, started, counters, observer) {
+                return;
+            }
+            let x_beyond = if horizontal_high {
+                x + variant.bounds.min_x < fill_bounds.min_x - EPSILON
+            } else {
+                x + variant.bounds.max_x > fill_bounds.max_x + EPSILON
+            };
+            if x_beyond {
+                break;
+            }
+            try_place(prepared, variant, x, y, placed, counters);
+            x += if horizontal_high {
+                -horizontal_pitch
+            } else {
+                horizontal_pitch
+            };
+        }
+        row += 1;
+        y += if vertical_high {
+            -vertical_pitch
+        } else {
+            vertical_pitch
+        };
+    }
+}
+
+fn learned_separation(
+    variant: &crate::prepare::PreparedVariant,
+    orthogonal_offset: f64,
+    vertical: bool,
+    clearance: f64,
+    counters: &mut Counters,
+) -> f64 {
+    let upper = if vertical {
+        variant.bounds.height()
+    } else {
+        variant.bounds.width()
+    } + clearance;
+    let samples = 64;
+    let mut previous = 0.0;
+    for sample in 0..=samples {
+        let separation = upper * sample as f64 / samples as f64;
+        counters.iterations += 1;
+        counters.evaluated += 1;
+        if variants_separated(variant, orthogonal_offset, separation, vertical, clearance) {
+            let mut low = previous;
+            let mut high = separation;
+            for _ in 0..24 {
+                let middle = (low + high) / 2.0;
+                counters.iterations += 1;
+                counters.evaluated += 1;
+                if variants_separated(variant, orthogonal_offset, middle, vertical, clearance) {
+                    high = middle;
+                } else {
+                    low = middle;
+                }
+            }
+            return high;
+        }
+        previous = separation;
+    }
+    upper
+}
+
+fn variants_separated(
+    variant: &crate::prepare::PreparedVariant,
+    orthogonal_offset: f64,
+    separation: f64,
+    vertical: bool,
+    clearance: f64,
+) -> bool {
+    let moved = if vertical {
+        transform(&variant.geometry, 0.0, orthogonal_offset, separation)
+    } else {
+        transform(&variant.geometry, 0.0, separation, orthogonal_offset)
+    };
+    !sets_overlap(&variant.geometry, &moved)
+        && set_distance(&variant.geometry, &moved) + EPSILON >= clearance
 }
 
 fn alternating_fill(
@@ -832,7 +1476,7 @@ fn next_item_index(prepared: &PreparedProblem, next: &CandidatePlacement) -> usi
 fn rotate_and_compact(
     prepared: &PreparedProblem,
     options: &SolveOptions,
-    placed: &mut Vec<CandidatePlacement>,
+    placed: &mut [CandidatePlacement],
     counters: &mut Counters,
     started: SolveInstant,
     observer: &mut dyn SolveObserver,
@@ -875,6 +1519,119 @@ fn rotate_and_compact(
         }
     }
     compact(prepared, options, placed, counters, started, observer);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn remove_reinsert(
+    prepared: &PreparedProblem,
+    options: &SolveOptions,
+    order: &[usize],
+    placed: &mut Vec<CandidatePlacement>,
+    counters: &mut Counters,
+    started: SolveInstant,
+    observer: &mut dyn SolveObserver,
+) -> bool {
+    let movable = placed
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| !entry.placement.fixed)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if movable.len() < 2 || counters.iterations >= options.max_iterations {
+        return false;
+    }
+
+    // Boundary placements tend to encode the greedy decision that blocked the next item. Try a
+    // few distinct anchors and remove their closest neighbours so reinsertion can change both
+    // order and rotation without turning this bounded pass into an unbounded destroy/repair loop.
+    let mut anchors = movable.clone();
+    anchors.sort_by(|a, b| {
+        placed[*b]
+            .bounds
+            .max_y
+            .total_cmp(&placed[*a].bounds.max_y)
+            .then_with(|| placed[*b].bounds.max_x.total_cmp(&placed[*a].bounds.max_x))
+            .then_with(|| a.cmp(b))
+    });
+    if let Some(rightmost) = movable.iter().max_by(|a, b| {
+        placed[**a]
+            .bounds
+            .max_x
+            .total_cmp(&placed[**b].bounds.max_x)
+    }) {
+        anchors.insert(0, *rightmost);
+    }
+    let mut unique_anchors = Vec::new();
+    for anchor in anchors {
+        if !unique_anchors.contains(&anchor) {
+            unique_anchors.push(anchor);
+            if unique_anchors.len() == 3 {
+                break;
+            }
+        }
+    }
+
+    let original = placed.to_vec();
+    let mut best = original.clone();
+    let trial_count = unique_anchors.len() as u64;
+    for (trial_index, anchor) in unique_anchors.into_iter().enumerate() {
+        if stop_requested(options, started, counters, observer) {
+            break;
+        }
+        let anchor_x = (original[anchor].bounds.min_x + original[anchor].bounds.max_x) / 2.0;
+        let anchor_y = (original[anchor].bounds.min_y + original[anchor].bounds.max_y) / 2.0;
+        let mut neighbourhood = movable
+            .iter()
+            .copied()
+            .map(|index| {
+                let center_x = (original[index].bounds.min_x + original[index].bounds.max_x) / 2.0;
+                let center_y = (original[index].bounds.min_y + original[index].bounds.max_y) / 2.0;
+                let distance = (center_x - anchor_x).powi(2) + (center_y - anchor_y).powi(2);
+                (distance, index)
+            })
+            .collect::<Vec<_>>();
+        neighbourhood.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        let removed = neighbourhood
+            .into_iter()
+            .take(3.min(movable.len()))
+            .map(|(_, index)| index)
+            .collect::<Vec<_>>();
+        let mut trial = original
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !removed.contains(index))
+            .map(|(_, entry)| entry.clone())
+            .collect::<Vec<_>>();
+
+        let trials_left = trial_count.saturating_sub(trial_index as u64).max(1);
+        let trial_budget = (options.max_iterations - counters.iterations).div_ceil(trials_left);
+        let mut trial_options = *options;
+        trial_options.max_iterations = (counters.iterations + trial_budget)
+            .max(counters.iterations + 1)
+            .min(options.max_iterations);
+        greedy_fill(
+            prepared,
+            &trial_options,
+            order,
+            &mut trial,
+            counters,
+            started,
+            observer,
+        );
+        if trial.len() > best.len()
+            || (trial.len() == best.len() && layout_key(&trial) < layout_key(&best))
+        {
+            best = trial;
+        }
+        clear_local_limit(counters, options);
+    }
+
+    let improved = best.len() > original.len()
+        || (best.len() == original.len() && layout_key(&best) < layout_key(&original));
+    if improved {
+        *placed = best;
+    }
+    improved
 }
 
 fn candidate(

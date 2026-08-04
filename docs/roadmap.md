@@ -16,7 +16,7 @@ Wasm runs in a Web Worker with progress snapshots, cancellation, and incremental
 
 ## Stage 3: stronger packing quality
 
-Collect a small corpus of representative private problems and compare every algorithm change against it. Improve boundary and item contact-position generation first. Evaluate no-fit polygons only if contact misses justify their geometric complexity. Add remove/reinsert neighborhoods, rotation exchanges, and limited group reinsertion; consider conflict-graph candidate selection where greedy ordering is demonstrably weak.
+Expand the current reference corpus and compare every algorithm change against it. Learned contact lattices, complementary motifs, field decomposition, in-place rotation, and a bounded three-item remove/reinsert neighbourhood now provide the first quality baseline. Evaluate full no-fit polygons or conflict-graph candidate selection only where the corpus demonstrates that the bounded contact methods remain weak.
 
 Develop useful shape-aware upper bounds, warm-start adjacent sensitivity cases, and make transition refinement reuse nearby layouts. Compare strategies by capacity, runtime, and validation failures. Treat consistent transition locations—not isolated best counts—as a solver-quality metric.
 
