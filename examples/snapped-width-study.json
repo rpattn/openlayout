@@ -11,6 +11,7 @@
     "max_iterations": 40000,
     "grid_step": 0.25,
     "restarts": 2
+    ,"quality": "balanced"
   },
   "seed_policy": "fixed",
   "increasing_is_harder": true

@@ -63,17 +63,20 @@ export class ShapeModeller {
 
   private targetKey: string;
   private get isItem(): boolean { return this.targetKey.startsWith("item:"); }
+  private get isContainer(): boolean { return this.targetKey.startsWith("container:"); }
   private get itemIndex(): number { return Number(this.targetKey.split(":")[1]); }
   private get exclusionIndex(): number { return Number(this.targetKey.split(":")[1]); }
+  private get containerIndex(): number { return Number(this.targetKey.split(":")[1]); }
   private get item(): EditorItem {
-    if (this.targetKey === "container") return { id: "Container boundary", quantity: 1, rotations: "0", parts: [this.state.container] };
-    if (this.targetKey.startsWith("exclusion:")) { const exclusion = this.state.exclusions[this.exclusionIndex]; return { id: `Exclusion · ${exclusion.id}`, quantity: 1, rotations: "0", parts: [exclusion.primitive] }; }
+    if (this.isContainer) { const region = this.state.containerParts[this.containerIndex]; return shellItem(`Container · ${region.id}`, region.primitive); }
+    if (this.targetKey.startsWith("exclusion:")) { const exclusion = this.state.exclusions[this.exclusionIndex]; return shellItem(`Exclusion · ${exclusion.id}`, exclusion.primitive); }
     return this.state.items[this.itemIndex];
   }
   private get selected(): PrimitiveEditor | undefined { return this.item.parts.find((part) => part.id === this.selectedId); }
 
   private targetOptions(): string {
-    const options: Array<[string, string]> = [["container", "Container boundary"]];
+    const options: Array<[string, string]> = [];
+    this.state.containerParts.forEach((entry, index) => options.push([`container:${index}`, `Container · ${entry.id} (${entry.operation})`]));
     this.state.exclusions.forEach((entry, index) => options.push([`exclusion:${index}`, `Exclusion · ${entry.id}`]));
     this.state.items.forEach((item, index) => options.push([`item:${index}`, `Item · ${item.id}`]));
     return options.map(([value, label]) => `<option value="${value}" ${value === this.targetKey ? "selected" : ""}>${escapeHtml(label)}</option>`).join("");
@@ -92,7 +95,7 @@ export class ShapeModeller {
         primitive.x = center.x; primitive.y = center.y; this.item.parts.push(primitive);
       } else {
         const previous = this.item.parts[0]; fitReplacement(primitive, previous);
-        if (this.targetKey === "container") this.state.container = primitive; else this.state.exclusions[this.exclusionIndex].primitive = primitive;
+        if (this.isContainer) this.state.containerParts[this.containerIndex].primitive = primitive; else this.state.exclusions[this.exclusionIndex].primitive = primitive;
       }
       this.selectedId = primitive.id; this.changed(true);
     }));
@@ -152,7 +155,7 @@ export class ShapeModeller {
     const constraintPanel = this.isItem ? `<div class="snap-panel"><div class="snap-heading"><small>CONSTRAINT</small><strong>${part.snap ? "Anchored" : "Free position"}</strong></div>
         <label>Snap to<select id="snap-target"><option value="">Free position</option>${targets.map((target) => `<option value="${target.id}" ${part.snap?.targetId === target.id ? "selected" : ""}>${escapeHtml(target.id)}</option>`).join("")}</select></label>
         ${part.snap ? `<div class="field-grid two"><label>Own anchor<select data-snap-anchor="ownAnchor">${anchorOptions(part.snap.ownAnchor)}</select></label><label>Target anchor<select data-snap-anchor="targetAnchor">${anchorOptions(part.snap.targetAnchor)}</select></label><label>Offset X<input type="number" step=".1" value="${part.snap.offset.x}" data-snap-offset="x"></label><label>Offset Y<input type="number" step=".1" value="${part.snap.offset.y}" data-snap-offset="y"></label></div><button id="detach-snap" class="button ghost full">Detach at current position</button>` : '<p>Drag near another part’s center, edge midpoint, or corner to create a live relationship.</p>'}
-      </div>` : `<div class="snap-panel"><div class="snap-heading"><small>CLEARANCE</small><strong>${format(this.targetClearance())}</strong></div><p>The dashed line previews the active ${this.targetKey === "container" ? "inward boundary" : "exclusion"} clearance.</p></div>`;
+      </div>` : `<div class="snap-panel"><div class="snap-heading"><small>CLEARANCE</small><strong>${format(this.targetClearance())}</strong></div><p>The dashed line previews the active ${this.isContainer ? "structural boundary" : "exclusion"} clearance.</p></div>`;
     return `<div class="model-inspector">
       <div class="inspector-title"><div><small>SELECTED</small><strong>${capitalize(part.kind)}</strong></div><span>${escapeHtml(part.id)}</span></div>
       <div class="field-grid two">${dimensionFields}${modelNumber("X", "x", part.snap ? resolved.x : part.x, .1, Boolean(part.snap))}${modelNumber("Y", "y", part.snap ? resolved.y : part.y, .1, Boolean(part.snap))}${modelNumber("Rotation°", "rotation", part.rotation, 1)}</div>
@@ -167,7 +170,7 @@ export class ShapeModeller {
     const selected = this.selected;
     this.svg.setAttribute("viewBox", `${this.view.minX} ${-this.view.minY - this.view.height} ${this.view.width} ${this.view.height}`);
     this.svg.innerHTML = `<rect x="${this.view.minX}" y="${-this.view.minY - this.view.height}" width="${this.view.width}" height="${this.view.height}" class="model-bg"/>${grid}
-      ${clearanceMarkup(this.item.parts, translations, this.targetKey === "container" ? -this.targetClearance() : this.targetClearance())}
+      ${clearanceMarkup(this.item.parts, translations, this.isContainer && this.state.containerParts[this.containerIndex].operation === "add" ? -this.targetClearance() : this.targetClearance())}
       ${this.item.parts.map((part, index) => {
         const position = translations.get(part.id) ?? { x: part.x, y: part.y };
         return `<path data-part-id="${part.id}" class="model-shape ${part.id === this.selectedId ? "selected" : ""}" d="${pathForPart(part, position)}" fill="${COLORS[index % COLORS.length]}66" stroke="${COLORS[index % COLORS.length]}"/>`;
@@ -283,7 +286,7 @@ export class ShapeModeller {
   }
 
   private targetClearance(): number {
-    if (this.targetKey === "container") return this.state.clearance.item_to_boundary;
+    if (this.isContainer) return this.state.clearance.item_to_boundary;
     if (this.targetKey.startsWith("exclusion:")) return Math.max(this.state.clearance.item_to_exclusion, this.state.exclusions[this.exclusionIndex].clearance);
     return this.state.clearance.item_to_item / 2;
   }
@@ -450,3 +453,4 @@ function setField(target: object, field: string, value: unknown): void { (target
 function capitalize(value: string): string { return value[0].toUpperCase() + value.slice(1); }
 function format(value: number): string { return Number.isInteger(value) ? String(value) : value.toFixed(3).replace(/0+$/, ""); }
 function escapeHtml(value: unknown): string { return String(value).replace(/[&<>"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[character]!); }
+function shellItem(id: string, primitive: PrimitiveEditor): EditorItem { return { id, quantity: 1, rotationMode: "discrete", rotationCoupling: "independent", rotations: "0", minRotation: 0, maxRotation: 0, parts: [primitive] }; }

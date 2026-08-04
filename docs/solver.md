@@ -29,6 +29,8 @@ The portfolio uses ordered vectors, `BTreeMap` result counts, total float orderi
 
 The loop checks the maximum iteration count, native time budget, and `SolveObserver::should_cancel`. It reports complete best-placement snapshots after portfolio attempts through `on_progress`. The observer is deliberately a pair of callbacks rather than an event system. In the browser, a Web Worker owns the Wasm instance, forwards those snapshots, and provides immediate cancellation by termination; a replacement worker is created for the next run.
 
+Portfolio attempts receive fair phase budgets: 30% structured placement, 55% greedy insertion, 7% compaction, and 8% rotation improvement. This prevents an early grid sweep from starving later orientations. Fast and balanced respect the base iteration budget; thorough uses four times that budget and adds top-down, right-to-left, and extra seeded attempts. For a sensitivity parameter declared monotonic, a better layout from a harder point is carried to easier points only after independent validation against the easier geometry.
+
 ## Feasibility and optimality
 
 Every returned placement set is independently validated. That proves geometric feasibility, not packing optimality. `BestFound` means the selected valid heuristic result after the configured portfolio. `LimitReached` and `Cancelled` preserve the best valid result available at termination. `ProvenOptimal` requires equality with the safe simple upper bound; because that bound is loose, this is uncommon.

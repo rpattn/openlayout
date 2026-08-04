@@ -1,21 +1,21 @@
 {
+  "schema_version": 2,
   "container": {
-    "boundary": {
+    "parts": [{ "id": "stock", "operation": "add", "translation": { "x": 0, "y": 0 }, "rotation_deg": 0, "shape": {
       "kind": "polygon",
       "vertices": [
         { "x": 0, "y": 0 }, { "x": 18, "y": 0 }, { "x": 18, "y": 10 },
         { "x": 12, "y": 10 }, { "x": 12, "y": 8 }, { "x": 0, "y": 8 }
       ]
-    }
+    }}]
   },
   "items": [
     {
       "id": "rectangle-a",
       "shape": { "kind": "rectangle", "width": 3, "height": 2 },
       "quantity": 50,
-      "rotations": [0, 90]
+      "rotation_policy": { "kind": "continuous", "min_deg": 0, "max_deg": 360, "coupling": "independent" }
     }
   ],
   "clearance": { "item_to_item": 0.2, "item_to_boundary": 0.2, "item_to_exclusion": 0 }
 }
-

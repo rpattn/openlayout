@@ -7,12 +7,13 @@ const wasm = readFileSync(new URL("../src/wasm/packing_wasm_bg.wasm", import.met
 initSync({ module: wasm });
 
 const problem = {
-  container: { boundary: { kind: "rectangle", width: 12, height: 4 } },
+  schema_version: 2,
+  container: { parts: [{ id: "stock", operation: "add", shape: { kind: "rectangle", width: 12, height: 4 }, translation: { x: 0, y: 0 }, rotation_deg: 0 }] },
   exclusions: [],
   items: [{
     id: "item-a",
     quantity: 20,
-    rotations: [0],
+    rotation_policy: { kind: "discrete", angles_deg: [0], coupling: "independent" },
     shape: {
       kind: "compound",
       parts: [{
@@ -33,6 +34,7 @@ const options = {
   time_limit_ms: null,
   grid_step: 0.25,
   restarts: 2,
+  quality: "balanced",
 };
 
 test("Wasm engine validates, streams layouts, and reuses deterministic preparation", () => {
@@ -48,6 +50,8 @@ test("Wasm engine validates, streams layouts, and reuses deterministic preparati
 
   assert.ok(progress.length >= 1);
   assert.ok(progress.some((entry) => entry.placements.length > 0));
+  assert.ok(progress.some((entry) => entry.phase === "neighbourhood_improvement"));
+  assert.ok(progress.every((entry) => entry.completed_fraction >= 0 && entry.completed_fraction <= 1));
   assert.equal(first.validation.valid, true);
   assert.equal(first.layout_id, second.layout_id);
   assert.deepEqual(first.placements, second.placements);

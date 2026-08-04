@@ -1,6 +1,6 @@
 use crate::geometry::{
-    Bounds, PolygonSet, area, bounds, equivalent_geometry, guaranteed_occupied_area,
-    shape_to_polygons, transform,
+    Bounds, PolygonSet, area, bounds, container_region, equivalent_geometry,
+    guaranteed_occupied_area, shape_to_polygons, transform, union_set,
 };
 use crate::{Item, PackingError, PackingProblem, validate_problem};
 use std::collections::BTreeMap;
@@ -27,12 +27,7 @@ pub struct PreparedProblem {
 
 pub fn prepare_problem(problem: &PackingProblem) -> Result<PreparedProblem, PackingError> {
     validate_problem(problem)?;
-    let container = shape_to_polygons(&problem.container.boundary)?;
-    if container.polygons.len() != 1 {
-        return Err(PackingError::geometry(
-            "container boundary must resolve to one polygon",
-        ));
-    }
+    let container = container_region(&problem.container.parts)?;
     let container_bounds = bounds(&container);
     let exclusions = problem
         .exclusions
@@ -42,11 +37,18 @@ pub fn prepare_problem(problem: &PackingProblem) -> Result<PreparedProblem, Pack
     let mut variants = Vec::new();
     let mut variants_by_item = BTreeMap::new();
     for (item_index, item) in problem.items.iter().enumerate() {
-        prepare_item(item_index, item, &mut variants, &mut variants_by_item)?;
+        prepare_item(
+            item_index,
+            item,
+            &container,
+            &problem.fixed_placements,
+            &mut variants,
+            &mut variants_by_item,
+        )?;
     }
-    // Container area without exclusion subtraction is deliberately loose but remains a valid
-    // bound even when exclusions overlap. The largest compound component is a safe lower bound
-    // on occupied area without requiring polygon union solely for this diagnostic.
+    // The structural container and compound item solids are Boolean-normalized, so their areas
+    // include disconnected components and subtract holes correctly. Exclusions remain omitted
+    // from this deliberately loose but safe bound because they can overlap.
     let usable_area = area(&container);
     let minimum_item_area = variants
         .iter()
@@ -77,11 +79,19 @@ pub fn prepare_problem(problem: &PackingProblem) -> Result<PreparedProblem, Pack
 fn prepare_item(
     item_index: usize,
     item: &Item,
+    container: &PolygonSet,
+    fixed_placements: &[crate::FixedPlacement],
     variants: &mut Vec<PreparedVariant>,
     by_item: &mut BTreeMap<String, Vec<usize>>,
 ) -> Result<(), PackingError> {
-    let base = shape_to_polygons(&item.shape)?;
-    let mut rotations = item.rotations.clone();
+    let base = union_set(&shape_to_polygons(&item.shape)?);
+    let mut rotations = rotation_candidates(item, &base, container);
+    rotations.extend(
+        fixed_placements
+            .iter()
+            .filter(|fixed| fixed.item_id == item.id)
+            .map(|fixed| fixed.rotation_deg),
+    );
     rotations.sort_by(f64::total_cmp);
     rotations.dedup_by(|a, b| normalised_rotation(*a) == normalised_rotation(*b));
     for rotation in rotations {
@@ -104,6 +114,77 @@ fn prepare_item(
         by_item.entry(item.id.clone()).or_default().push(index);
     }
     Ok(())
+}
+
+fn rotation_candidates(
+    item: &Item,
+    item_geometry: &PolygonSet,
+    container: &PolygonSet,
+) -> Vec<f64> {
+    match &item.rotation_policy {
+        crate::RotationPolicy::Discrete { angles_deg, .. } => angles_deg.clone(),
+        crate::RotationPolicy::Continuous {
+            min_deg, max_deg, ..
+        } => {
+            let mut angles = Vec::new();
+            let mut angle = *min_deg;
+            while angle < *max_deg - 1e-9 && angles.len() < 24 {
+                angles.push(angle);
+                angle += 15.0;
+            }
+            let item_edges = edge_angles(item_geometry);
+            let container_edges = edge_angles(container);
+            let mut aligned = Vec::new();
+            for (item_angle, item_length) in &item_edges {
+                for (container_angle, container_length) in &container_edges {
+                    let candidate = normalised_rotation(container_angle - item_angle);
+                    if angle_in_range(candidate, *min_deg, *max_deg) {
+                        aligned.push((item_length * container_length, candidate));
+                    }
+                }
+            }
+            aligned.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.total_cmp(&b.1)));
+            let promising = aligned
+                .into_iter()
+                .map(|(_, angle)| angle)
+                .take(8)
+                .collect::<Vec<_>>();
+            angles.extend(promising.iter().copied());
+            for angle in promising.iter().take(4) {
+                for refined in [angle - 2.5, angle + 2.5] {
+                    let refined = normalised_rotation(refined);
+                    if angle_in_range(refined, *min_deg, *max_deg) {
+                        angles.push(refined);
+                    }
+                }
+            }
+            angles
+        }
+    }
+}
+
+fn edge_angles(set: &PolygonSet) -> Vec<(f64, f64)> {
+    set.polygons
+        .iter()
+        .flat_map(|polygon| {
+            (0..polygon.len()).map(|index| {
+                let a = polygon[index];
+                let b = polygon[(index + 1) % polygon.len()];
+                (
+                    (b.y - a.y).atan2(b.x - a.x).to_degrees(),
+                    ((b.x - a.x).powi(2) + (b.y - a.y).powi(2)).sqrt(),
+                )
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn angle_in_range(angle: f64, min: f64, max: f64) -> bool {
+    let span = max - min;
+    if span >= 360.0 - 1e-9 {
+        return true;
+    }
+    (normalised_rotation(angle) - normalised_rotation(min)).rem_euclid(360.0) <= span + 1e-9
 }
 
 fn normalised_rotation(value: f64) -> f64 {

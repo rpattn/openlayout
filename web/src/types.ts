@@ -20,12 +20,20 @@ export type AnchorName = "center" | "top" | "bottom" | "left" | "right" | "top_l
 export interface PartSnap { target_part: number; own_anchor: AnchorName; target_anchor: AnchorName; offset: Point }
 
 export interface PackingProblem {
-  container: { boundary: Shape };
+  schema_version: 2;
+  container: { parts: RegionPart[] };
   exclusions: Array<{ id: string; shape: Shape; clearance: number }>;
-  items: Array<{ id: string; shape: Shape; quantity: number; rotations: number[] }>;
+  items: Array<{ id: string; shape: Shape; quantity: number; rotation_policy: RotationPolicy }>;
   fixed_placements: Array<{ item_id: string; x: number; y: number; rotation_deg: number }>;
   clearance: { item_to_item: number; item_to_boundary: number; item_to_exclusion: number };
 }
+
+export type RegionOperation = "add" | "subtract";
+export interface RegionPart { id: string; operation: RegionOperation; shape: Shape; translation: Point; rotation_deg: number }
+export type RotationCoupling = "independent" | "shared_per_item";
+export type RotationPolicy =
+  | { kind: "discrete"; angles_deg: number[]; coupling: RotationCoupling }
+  | { kind: "continuous"; min_deg: number; max_deg: number; coupling: RotationCoupling };
 
 export interface SolveOptions {
   seed: number;
@@ -34,6 +42,7 @@ export interface SolveOptions {
   time_limit_ms: number | null;
   grid_step: number;
   restarts: number;
+  quality: "fast" | "balanced" | "thorough";
 }
 
 export interface Placement {
@@ -45,10 +54,14 @@ export interface Placement {
 }
 
 export interface SolveProgress {
+  phase: "baseline" | "coarse_rotation" | "angle_refinement" | "neighbourhood_improvement";
+  completed_fraction: number;
+  max_iterations: number;
   iterations: number;
   packed_item_count: number;
   placements: Placement[];
   solver_strategy: string;
+  selected_shared_angles: Record<string, number>;
 }
 
 export interface SolveResult {
@@ -83,6 +96,10 @@ export type ParameterPath =
   | { kind: "clearance_item_to_boundary" }
   | { kind: "container_width" }
   | { kind: "container_height" }
+  | { kind: "item_quantity"; item_id: string }
+  | { kind: "container_part_width"; part_id: string }
+  | { kind: "container_part_height"; part_id: string }
+  | { kind: "container_part_scale"; part_id: string }
   | { kind: "exclusion_scale"; exclusion_id: string };
 
 export interface SensitivityStudy {
@@ -130,7 +147,11 @@ export type PrimitiveEditor = PrimitiveBase & (
 export interface EditorItem {
   id: string;
   quantity: number;
+  rotationMode: "continuous" | "discrete";
+  rotationCoupling: RotationCoupling;
   rotations: string;
+  minRotation: number;
+  maxRotation: number;
   parts: PrimitiveEditor[];
 }
 
@@ -140,8 +161,14 @@ export interface EditorExclusion {
   primitive: PrimitiveEditor;
 }
 
+export interface EditorRegion {
+  id: string;
+  operation: RegionOperation;
+  primitive: PrimitiveEditor;
+}
+
 export interface EditorState {
-  container: PrimitiveEditor;
+  containerParts: EditorRegion[];
   items: EditorItem[];
   exclusions: EditorExclusion[];
   fixedPlacements: PackingProblem["fixed_placements"];

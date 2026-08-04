@@ -1,5 +1,20 @@
 import { expect, test } from "@playwright/test";
 
+test("builds Boolean container regions and exposes adaptive rotation controls", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "− Add cut-out" }).click();
+  const exported = JSON.parse(await page.locator("#problem-json").inputValue());
+  expect(exported.schema_version).toBe(2);
+  expect(exported.container.parts).toHaveLength(2);
+  expect(exported.container.parts[1].operation).toBe("subtract");
+  expect(exported.items[0].rotation_policy).toEqual({ kind: "continuous", min_deg: 0, max_deg: 360, coupling: "independent" });
+  await page.getByRole("button", { name: "Edit visually" }).nth(1).click();
+  await expect(page.locator(".geometry-context")).toContainText("Container · cutout-1");
+  await page.getByRole("button", { name: "Back to packing" }).click();
+  await page.getByRole("button", { name: "Validate" }).click();
+  await expect(page.locator("#status")).toContainText("valid", { timeout: 10_000 });
+});
+
 test("composes parameterized primitives, validates, solves, and inspects sensitivity layouts", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByText("OpenLayout", { exact: true })).toBeVisible();
@@ -71,9 +86,9 @@ test("models shapes on canvas and previews snapped geometry across sensitivity e
   await page.mouse.move(snappedStart.x, snappedStart.y); await page.mouse.down(); await page.mouse.move(snappedStart.x + 38, snappedStart.y - 18, { steps: 6 }); await page.mouse.up();
   await expect(page.locator(".layer.selected")).toContainText("snapped");
 
-  await page.locator("#model-target-select").selectOption("container");
+  await page.locator("#model-target-select").selectOption("container:0");
   await expect(page.locator(".layer")).toHaveCount(1);
-  await expect(page.locator(".geometry-context")).toContainText("Container boundary");
+  await expect(page.locator(".geometry-context")).toContainText("Container · stock");
   await expect(page.locator(".model-clearance")).toHaveCount(1);
   await page.locator('[data-add-shape="bezier"]').click();
   await expect(page.locator(".bezier-knot")).toHaveCount(4);
@@ -133,7 +148,7 @@ test("models shapes on canvas and previews snapped geometry across sensitivity e
 
   await page.getByRole("button", { name: "Back to packing" }).click();
   await expect(page.locator("#layout-canvas")).toBeVisible();
-  expect(JSON.parse(await page.locator("#problem-json").inputValue()).container.boundary.kind).toBe("bezier");
+  expect(JSON.parse(await page.locator("#problem-json").inputValue()).container.parts[0].shape.kind).toBe("bezier");
   await page.getByRole("button", { name: "Validate" }).click();
   await expect(page.locator("#status")).toContainText("valid", { timeout: 10_000 });
 });

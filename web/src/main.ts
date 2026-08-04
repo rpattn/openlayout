@@ -24,6 +24,7 @@ root.innerHTML = `
     <div class="brand"><span class="brand-mark">OL</span><div><strong>OpenLayout</strong><small>packing studio</small></div></div>
     <nav class="view-switch"><button id="nav-studio" class="active">Packing</button><button id="nav-modeller">Shape modeller</button></nav>
     <div class="run-actions">
+      <progress id="solve-progress" max="100" value="0" hidden aria-label="Packing solve progress"></progress>
       <span id="status" class="status neutral">Ready</span>
       <button id="validate" class="button ghost">Validate</button>
       <button id="cancel" class="button danger" disabled>Stop</button>
@@ -82,10 +83,10 @@ element("sensitivity-scroll").addEventListener("wheel", (event) => {
 
 function renderEditor(): void {
   editor.innerHTML = `
-    <details open><summary>Container <span>${state.container.kind} boundary</span></summary>
+    <details open><summary>Container regions <span>${state.containerParts.length} Boolean part${state.containerParts.length === 1 ? "" : "s"}</span></summary>
       <div class="section-body stack">
-        ${state.container.kind === "polygon" ? `<label>Polygon vertices <textarea id="container-points" rows="6" spellcheck="false">${pointText(state.container.vertices)}</textarea></label><p class="hint">One <code>x, y</code> pair per line. Counter-clockwise or clockwise is accepted.</p>` : '<p class="hint">This container uses an editable closed Bézier boundary.</p>'}
-        <button class="button ghost full" data-action="model-container">Edit container visually</button>
+        ${state.containerParts.map(containerPartHtml).join("")}
+        <div class="inline-actions"><button class="button add" data-action="add-container-add">+ Add material</button><button class="button add" data-action="add-container-subtract">− Add cut-out</button></div>
       </div>
     </details>
     <details open><summary>Item shapes <span>${state.items.length} definition${state.items.length === 1 ? "" : "s"}</span></summary>
@@ -113,10 +114,11 @@ function renderEditor(): void {
     <details open><summary>Run configuration <span>deterministic worker</span></summary>
       <div class="section-body field-grid two">
         ${numberField("Seed", "option", "seed", state.options.seed, 1)}
-        ${numberField("Iterations", "option", "max_iterations", state.options.max_iterations, 1000)}
+        ${numberField("Base iterations", "option", "max_iterations", state.options.max_iterations, 1000)}
         ${numberField("Grid step", "option", "grid_step", state.options.grid_step, 0.1)}
         ${numberField("Restarts", "option", "restarts", state.options.restarts, 1)}
-        <p class="hint wide">Browser runs are iteration-bounded and reproducible. Stop terminates and safely recreates the worker.</p>
+        <label>Quality<select data-scope="option" data-field="quality"><option value="fast" ${state.options.quality === "fast" ? "selected" : ""}>Fast preview</option><option value="balanced" ${state.options.quality === "balanced" ? "selected" : ""}>Balanced</option><option value="thorough" ${state.options.quality === "thorough" ? "selected" : ""}>Thorough</option></select></label>
+        <p class="hint wide">Browser runs are iteration-bounded and reproducible. Thorough mode uses four times the base budget and reserves time for every portfolio strategy; Stop terminates and safely recreates the worker.</p>
       </div>
     </details>
     <details><summary>Sensitivity setup <span>${state.study.strategy}</span></summary>
@@ -143,12 +145,18 @@ function itemEditorHtml(item: EditorItem, itemIndex: number): string {
     <div class="field-grid three">
       ${textField("ID", "item", "id", item.id, itemIndex)}
       ${numberField("Quantity", "item", "quantity", item.quantity, 1, false, itemIndex)}
-      ${textField("Rotations", "item", "rotations", item.rotations, itemIndex)}
+      <label>Rotation search<select data-scope="item" data-field="rotationMode" data-index="${itemIndex}"><option value="continuous" ${item.rotationMode === "continuous" ? "selected" : ""}>Adaptive 360°</option><option value="discrete" ${item.rotationMode === "discrete" ? "selected" : ""}>Fixed angles</option></select></label>
+      <label>Angle coupling<select data-scope="item" data-field="rotationCoupling" data-index="${itemIndex}"><option value="independent" ${item.rotationCoupling === "independent" ? "selected" : ""}>Independent copies</option><option value="shared_per_item" ${item.rotationCoupling === "shared_per_item" ? "selected" : ""}>Shared per item</option></select></label>
+      ${item.rotationMode === "discrete" ? textField("Angles", "item", "rotations", item.rotations, itemIndex) : `${numberField("Minimum°", "item", "minRotation", item.minRotation, 1, false, itemIndex)}${numberField("Maximum°", "item", "maxRotation", item.maxRotation, 1, false, itemIndex)}`}
     </div>
     <canvas class="item-preview" data-preview-item="${itemIndex}" aria-label="${escapeHtml(item.id)} shape preview"></canvas>
     <div class="part-stack">${item.parts.map((part, partIndex) => primitiveHtml(part, itemIndex, partIndex)).join("")}</div>
     <div class="primitive-buttons"><span>Add part</span>${(["rectangle", "triangle", "circle", "polygon", "bezier"] as const).map((kind) => `<button data-action="add-part" data-kind="${kind}" data-item="${itemIndex}">${kind}</button>`).join("")}</div>
   </article>`;
+}
+
+function containerPartHtml(entry: EditorState["containerParts"][number], index: number): string {
+  return `<article class="shape-card compact"><div class="card-heading"><strong>${escapeHtml(entry.id)}</strong><span>${entry.operation === "add" ? "ADD MATERIAL" : "SUBTRACT CUT-OUT"}</span><div class="card-actions"><button class="text-button" data-action="model-container" data-container="${index}">Edit visually</button><button class="icon-button" data-action="delete-container" data-container="${index}">×</button></div></div><div class="field-grid three">${textField("ID", "container", "id", entry.id, index)}<label>Operation<select data-scope="container" data-field="operation" data-index="${index}"><option value="add" ${entry.operation === "add" ? "selected" : ""}>Add</option><option value="subtract" ${entry.operation === "subtract" ? "selected" : ""}>Subtract</option></select></label><span class="hint">${entry.primitive.kind} · x ${format(entry.primitive.x)} · y ${format(entry.primitive.y)} · ${format(entry.primitive.rotation)}°</span></div></article>`;
 }
 
 function primitiveHtml(part: PrimitiveEditor, itemIndex: number, partIndex: number): string {
@@ -182,7 +190,6 @@ function fixedHtml(entry: EditorState["fixedPlacements"][number], index: number)
 }
 
 function bindEditor(): void {
-  document.querySelector<HTMLTextAreaElement>("#container-points")?.addEventListener("change", (event) => mutate(() => { if (state.container.kind === "polygon") state.container.vertices = parsePointText((event.target as HTMLTextAreaElement).value); }, false));
   editor.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>("[data-scope]").forEach((input) => input.addEventListener("change", () => {
     if (input.dataset.scope === "study") {
       updateScopedInput(input); sensitivityResult = null; sensitivitySelection = null; element("study-progress").hidden = true; renderSensitivity(sensitivityCanvas, null); setStatus("neutral", "Study configuration changed");
@@ -201,6 +208,7 @@ function updateScopedInput(input: HTMLInputElement | HTMLSelectElement | HTMLTex
   const field = input.dataset.field!;
   const value: string | number = input instanceof HTMLInputElement && input.type === "number" ? Number(input.value) : input.value;
   if (scope === "clearance") setField(state.clearance, field, value);
+  else if (scope === "container") setField(state.containerParts[Number(input.dataset.index)], field, value);
   else if (scope === "option") setField(state.options, field, field === "time_limit_ms" && state.options.deterministic ? null : value);
   else if (scope === "study") setField(state.study, field, value);
   else if (scope === "item") setField(state.items[Number(input.dataset.index)], field, value);
@@ -225,10 +233,20 @@ function updateScopedInput(input: HTMLInputElement | HTMLSelectElement | HTMLTex
 function handleAction(button: HTMLButtonElement): void {
   const action = button.dataset.action;
   if (action === "model-item") { openModeller(Number(button.dataset.item)); return; }
-  if (action === "model-container") { openModeller("container"); return; }
+  if (action === "model-container") { openModeller(`container:${button.dataset.container ?? 0}`); return; }
   if (action === "model-exclusion") { openModeller(`exclusion:${button.dataset.exclusion}`); return; }
   mutate(() => {
-    if (action === "add-item") state.items.push({ id: uniqueId("item", state.items.map((item) => item.id)), quantity: 50, rotations: "0, 90", parts: [makePrimitive("rectangle")] });
+    if (action === "add-item") state.items.push({ id: uniqueId("item", state.items.map((item) => item.id)), quantity: 50, rotationMode: "continuous", rotationCoupling: "independent", rotations: "0, 90", minRotation: 0, maxRotation: 360, parts: [makePrimitive("rectangle")] });
+    else if (action === "add-container-add" || action === "add-container-subtract") {
+      const operation = action === "add-container-add" ? "add" : "subtract";
+      const primitive = makePrimitive("rectangle"); primitive.x = 15; primitive.y = 9;
+      state.containerParts.push({ id: uniqueId(operation === "add" ? "material" : "cutout", state.containerParts.map((entry) => entry.id)), operation, primitive });
+    }
+    else if (action === "delete-container") {
+      const index = Number(button.dataset.container), entry = state.containerParts[index];
+      if (entry.operation === "add" && state.containerParts.filter((part) => part.operation === "add").length === 1) throw new Error("The container requires at least one additive region");
+      state.containerParts.splice(index, 1);
+    }
     else if (action === "delete-item") state.items.splice(Number(button.dataset.item), 1);
     else if (action === "add-part") state.items[Number(button.dataset.item)].parts.push(makePrimitive(button.dataset.kind as PrimitiveEditor["kind"]));
     else if (action === "delete-part") {
@@ -309,7 +327,8 @@ function completeStudyProgress(count: number): void {
 }
 
 function updateProgress(problem: PackingProblem, progress: SolveProgress): void {
-  setStatus("working", `${progress.packed_item_count} placed · ${progress.iterations.toLocaleString()} iterations`);
+  element<HTMLProgressElement>("solve-progress").value = Math.round(progress.completed_fraction * 100);
+  setStatus("working", `${humanStatus(progress.phase)} · ${progress.packed_item_count} placed · ${Math.round(progress.completed_fraction * 100)}%`);
   renderLayout(layoutCanvas, problem, progress.placements, layoutDisplay);
   element("layout-title").textContent = `Improving · ${progress.packed_item_count} items`;
   element("layout-id").textContent = progress.solver_strategy;
@@ -359,6 +378,10 @@ function decodeParameter(key: string): ParameterPath {
   if (kind === "part_radius") return { kind: "item_part_radius", item_id: id, part_index: Number(index) };
   if (kind === "part_scale") return { kind: "item_part_scale", item_id: id, part_index: Number(index) };
   if (kind === "item_scale") return { kind: "item_scale", item_id: id };
+  if (kind === "item_quantity") return { kind: "item_quantity", item_id: id };
+  if (kind === "container_part_width") return { kind: "container_part_width", part_id: id };
+  if (kind === "container_part_height") return { kind: "container_part_height", part_id: id };
+  if (kind === "container_part_scale") return { kind: "container_part_scale", part_id: id };
   if (kind === "exclusion_scale") return { kind: "exclusion_scale", exclusion_id: id };
   if (kind === "clearance_item_to_item") return { kind };
   if (kind === "clearance_item_to_boundary") return { kind };
@@ -370,6 +393,7 @@ function parameterOptions(): string {
   const options: Array<[string, string]> = [];
   state.items.forEach((item) => {
     options.push([`item_scale:${item.id}`, `${item.id} · whole shape scale`]);
+    options.push([`item_quantity:${item.id}`, `${item.id} · quantity`]);
     item.parts.forEach((part, index) => {
       options.push([`part_scale:${item.id}:${index}`, `${item.id} · part ${index + 1} scale`]);
       if (part.kind === "rectangle" || part.kind === "triangle" || part.kind === "polygon" || part.kind === "bezier") {
@@ -378,6 +402,11 @@ function parameterOptions(): string {
       }
       if (part.kind === "circle") options.push([`part_radius:${item.id}:${index}`, `${item.id} · part ${index + 1} radius`]);
     });
+  });
+  state.containerParts.forEach((part) => {
+    options.push([`container_part_scale:${part.id}`, `${part.id} · scale`]);
+    options.push([`container_part_width:${part.id}`, `${part.id} · width`]);
+    options.push([`container_part_height:${part.id}`, `${part.id} · height`]);
   });
   options.push(["clearance_item_to_item", "Item-to-item clearance"], ["clearance_item_to_boundary", "Boundary clearance"], ["container_width", "Container width"], ["container_height", "Container height"]);
   state.exclusions.forEach((entry) => options.push([`exclusion_scale:${entry.id}`, `${entry.id} · scale`]));
@@ -406,6 +435,7 @@ function refreshCanvases(): void { refreshPreview(); }
 function openModeller(target: number | string): void {
   if (typeof target === "number" && !state.items[target]) return;
   if (typeof target === "string" && target.startsWith("exclusion:") && !state.exclusions[Number(target.split(":")[1])]) return;
+  if (typeof target === "string" && target.startsWith("container:") && !state.containerParts[Number(target.split(":")[1])]) return;
   element("modeller-page").hidden = false;
   document.querySelector<HTMLElement>(".workspace")!.hidden = true;
   document.querySelector<HTMLElement>(".run-actions")!.hidden = true;
@@ -424,6 +454,7 @@ function closeModeller(): void {
 
 function setRunning(value: boolean, message?: string): void {
   running = value; element<HTMLButtonElement>("solve").disabled = value; element<HTMLButtonElement>("run-study").disabled = value; element<HTMLButtonElement>("cancel").disabled = !value;
+  const solveProgress = element<HTMLProgressElement>("solve-progress"); solveProgress.hidden = !value; if (value) solveProgress.value = 0;
   if (message) setStatus("working", message);
 }
 function setStatus(tone: typeof status.tone, message: string): void { status = { tone, message }; const node = element("status"); node.className = `status ${tone}`; node.textContent = message; }

@@ -52,6 +52,7 @@ pub fn run_sensitivity_with_observer(
     if study.strategy == crate::SamplingStrategy::Adaptive {
         refine(problem, study, &mut evaluations, initial_total, observer)?;
     }
+    repair_monotonic_layouts(study, &mut evaluations)?;
     evaluations.sort_by(|a, b| a.value.total_cmp(&b.value));
     evaluations.dedup_by(|a, b| (a.value - b.value).abs() < study.transition_tolerance * 1e-6);
     let transitions = evaluations
@@ -149,6 +150,12 @@ fn evaluate(
         problem: changed,
         result,
     });
+    repair_monotonic_layouts(study, evaluations)?;
+    let capacity = evaluations
+        .iter()
+        .find(|point| (point.value - value).abs() < study.transition_tolerance * 1e-6)
+        .map(|point| point.capacity)
+        .unwrap_or(capacity);
     observer.on_progress(&crate::SensitivityProgress {
         completed: evaluations.len(),
         initial_total,
@@ -156,6 +163,46 @@ fn evaluate(
         capacity,
         phase,
     });
+    Ok(())
+}
+
+fn repair_monotonic_layouts(
+    study: &SensitivityStudy,
+    evaluations: &mut Vec<SensitivityPoint>,
+) -> Result<(), PackingError> {
+    evaluations.sort_by(|a, b| a.value.total_cmp(&b.value));
+    if evaluations.len() < 2 {
+        return Ok(());
+    }
+    let pairs = if study.increasing_is_harder {
+        (0..evaluations.len() - 1)
+            .rev()
+            .map(|target| (target, target + 1))
+            .collect::<Vec<_>>()
+    } else {
+        (1..evaluations.len())
+            .map(|target| (target, target - 1))
+            .collect::<Vec<_>>()
+    };
+    for (target_index, donor_index) in pairs {
+        if evaluations[donor_index].capacity <= evaluations[target_index].capacity {
+            continue;
+        }
+        let donor = evaluations[donor_index].result.clone();
+        let prepared = prepare_problem(&evaluations[target_index].problem)?;
+        let mut options = study.solve_options;
+        options.seed = evaluations[target_index].result.seed;
+        if let Some(result) = crate::solver::validated_result_from_placements(
+            &prepared,
+            &options,
+            donor.placements.clone(),
+            &donor,
+        )? {
+            evaluations[target_index].capacity = result.packed_item_count;
+            evaluations[target_index].status = result.status;
+            evaluations[target_index].result = result;
+        }
+    }
     Ok(())
 }
 
@@ -228,10 +275,37 @@ fn apply_parameter(
             Ok(())
         }
         ParameterPath::ContainerWidth => {
-            set_shape_dimension(&mut problem.container.boundary, value, true)
+            let part = first_additive_part(problem)?;
+            set_shape_dimension(&mut part.shape, value, true)
         }
         ParameterPath::ContainerHeight => {
-            set_shape_dimension(&mut problem.container.boundary, value, false)
+            let part = first_additive_part(problem)?;
+            set_shape_dimension(&mut part.shape, value, false)
+        }
+        ParameterPath::ItemQuantity { item_id } => {
+            if value < 1.0 || value.fract().abs() > 1e-9 || value > u32::MAX as f64 {
+                return Err(unsupported("item quantity must be a positive whole number"));
+            }
+            let item = problem
+                .items
+                .iter_mut()
+                .find(|item| &item.id == item_id)
+                .ok_or_else(|| unsupported(format!("unknown item '{item_id}'")))?;
+            item.quantity = value as u32;
+            Ok(())
+        }
+        ParameterPath::ContainerPartWidth { part_id } => {
+            let part = container_part_mut(problem, part_id)?;
+            set_shape_dimension(&mut part.shape, value, true)
+        }
+        ParameterPath::ContainerPartHeight { part_id } => {
+            let part = container_part_mut(problem, part_id)?;
+            set_shape_dimension(&mut part.shape, value, false)
+        }
+        ParameterPath::ContainerPartScale { part_id } => {
+            let part = container_part_mut(problem, part_id)?;
+            scale_shape(&mut part.shape, value);
+            Ok(())
         }
         ParameterPath::ExclusionScale { exclusion_id } => {
             let exclusion = problem
@@ -243,6 +317,29 @@ fn apply_parameter(
             Ok(())
         }
     }
+}
+
+fn container_part_mut<'a>(
+    problem: &'a mut PackingProblem,
+    part_id: &str,
+) -> Result<&'a mut crate::RegionPart, PackingError> {
+    problem
+        .container
+        .parts
+        .iter_mut()
+        .find(|part| part.id == part_id)
+        .ok_or_else(|| unsupported(format!("unknown container part '{part_id}'")))
+}
+
+fn first_additive_part(
+    problem: &mut PackingProblem,
+) -> Result<&mut crate::RegionPart, PackingError> {
+    problem
+        .container
+        .parts
+        .iter_mut()
+        .find(|part| part.operation == crate::RegionOperation::Add)
+        .ok_or_else(|| unsupported("container has no additive part"))
 }
 
 fn compound_part_mut<'a>(
@@ -440,4 +537,74 @@ fn scale_shape(shape: &mut Shape, scale: f64) {
 
 fn unsupported(message: impl Into<String>) -> PackingError {
     PackingError::new(PackingErrorKind::UnsupportedInput, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{SolveOptions, SolveStatus, solve};
+
+    #[test]
+    fn validated_harder_layout_repairs_an_easier_heuristic_result() {
+        let easier: PackingProblem = serde_json::from_str(r#"{
+            "schema_version": 2,
+            "container": {"parts": [{"id":"stock","operation":"add","shape":{"kind":"rectangle","width":10,"height":10},"translation":{"x":0,"y":0},"rotation_deg":0}]},
+            "items": [{"id":"item-a","shape":{"kind":"rectangle","width":1,"height":1},"quantity":1,"rotation_policy":{"kind":"discrete","angles_deg":[0],"coupling":"independent"}}],
+            "fixed_placements": [],
+            "clearance": {"item_to_item":0,"item_to_boundary":0,"item_to_exclusion":0}
+        }"#).unwrap();
+        let mut harder = easier.clone();
+        harder.items[0].shape = Shape::Rectangle {
+            width: 2.0,
+            height: 1.0,
+        };
+        let options = SolveOptions::default();
+        let donor = solve(&harder, &options).unwrap();
+        let mut weak = donor.clone();
+        weak.placements.clear();
+        weak.packed_item_count = 0;
+        weak.packed_count_by_item.clear();
+        weak.objective_score = 0.0;
+        weak.status = SolveStatus::Infeasible;
+        let study = SensitivityStudy {
+            parameter: ParameterPath::ItemWidth {
+                item_id: "item-a".into(),
+            },
+            start: 1.0,
+            end: 2.0,
+            initial_step: 1.0,
+            transition_tolerance: 0.1,
+            strategy: crate::SamplingStrategy::Sampled,
+            solve_options: options,
+            seed_policy: SeedPolicy::Fixed,
+            increasing_is_harder: true,
+        };
+        let mut evaluations = vec![
+            SensitivityPoint {
+                value: 1.0,
+                capacity: 0,
+                status: weak.status,
+                problem: easier,
+                result: weak,
+            },
+            SensitivityPoint {
+                value: 2.0,
+                capacity: donor.packed_item_count,
+                status: donor.status,
+                problem: harder,
+                result: donor,
+            },
+        ];
+
+        repair_monotonic_layouts(&study, &mut evaluations).unwrap();
+
+        assert_eq!(evaluations[0].capacity, 1);
+        assert!(evaluations[0].result.validation.valid);
+        assert!(
+            evaluations[0]
+                .result
+                .solver_strategy
+                .starts_with("sensitivity_carry+")
+        );
+    }
 }

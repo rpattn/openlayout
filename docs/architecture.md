@@ -2,7 +2,7 @@
 
 ## Data flow
 
-A `PackingProblem` is deserialized into explicit domain-neutral types. `validate_problem` rejects malformed shapes, duplicate identifiers, bad rotations, invalid clearances, unavailable references, and exclusions outside the container. `prepare_problem` then polygonizes primitives, expands permitted rotations, removes variants with equivalent bounds, caches bounding boxes, and computes a safe area-and-quantity upper bound.
+A schema-v2 `PackingProblem` is deserialized into explicit domain-neutral types. The container is normalized as `union(additive parts) - union(subtractive parts)` with `i_overlay`, producing components and holes. `validate_problem` rejects malformed shapes, duplicate identifiers, invalid rotation domains, invalid clearances, unavailable references, and exclusions outside the usable region. `prepare_problem` polygonizes primitives, normalizes compound solids, creates coarse, edge-aligned, and locally refined rotation variants, removes symmetry-equivalent variants, caches bounds, and computes a safe area-and-quantity upper bound.
 
 `solve_prepared` runs several bounded strategies against that prepared geometry. Each candidate is checked against the container, exclusions, quantities, and already placed items. The best deterministic layout is converted back to ordinary `Placement` values. Crucially, `validate_placements` reconstructs transformed geometry—including compound snap dependencies—from the original definitions and checks every invariant again rather than trusting candidate state. Only a valid layout becomes a `SolveResult`.
 
@@ -14,7 +14,7 @@ Geometry is a small internal `PolygonSet`: one polygon for ordinary shapes and o
 
 Serialized coordinates are `f64` in a single caller-defined linear unit. Arbitrary rotations inherently produce non-integral coordinates, so the prototype uses a `1e-7` geometric epsilon instead of misleading exact integer claims. Input polygons are normalized to counter-clockwise winding and checked for zero-length edges, zero area, and self-intersection. Closed cubic Bézier inputs retain their knots and incoming/outgoing controls in the model, then tessellate each span at a caller-selected resolution and pass through the same polygon validation and packing path.
 
-Containment combines point-in-polygon, edge-midpoint, boundary-crossing, and boundary-distance checks. Collision checks use segment crossing, strict containment, coincident-edge interior detection, and minimum segment distance. Cached bounds provide the broad phase. This direct implementation keeps the proof inspectable; robust Boolean kernels and no-fit polygons remain roadmap work.
+Containment applies even-odd membership, edge-midpoint, boundary-crossing, and boundary-distance checks across every outer and hole contour. Collision checks use segment crossing, strict solid-region containment, coincident-edge interior detection, and minimum segment distance. Boolean preparation uses a fixed-scale integer-backed overlay kernel; candidate feasibility and independent result validation remain separate paths.
 
 Compound parts are not unioned. Collision and containment operate over every part, which is correct, while the upper bound uses only the largest component area as a guaranteed occupied-area lower bound. Exclusion areas are not subtracted from that bound because overlapping exclusions could otherwise make the claimed upper bound unsafe.
 
@@ -32,7 +32,7 @@ The layout clearance overlay is explanatory rather than part of feasibility calc
 
 `PreparedProblem` owns the validated problem, normalized container and exclusions, item rotation variants, variant indexes by item identifier, cached bounds, and the simple upper bound. This separates geometry work from repeated seeded attempts and sensitivity evaluations.
 
-The portfolio uses structured rows, staggered rows, columns, alternative low/high origins, all prepared rotations, deterministic shuffled restarts, contact/grid greedy insertion, and a bounded directional compaction pass. Candidate scoring is intentionally lexicographic and explicit: feasible candidates are visited from the lower boundary upward and left-to-right, with the layout count as the primary objective and a stable transform key as the tie breaker. More sophisticated scoring belongs after representative cases show which terms matter.
+The portfolio uses structured rows, staggered rows, columns, alternative low/high origins, all prepared rotations, deterministic shuffled restarts, contact/grid greedy insertion, directional compaction, and rotate-and-compact improvement. Continuous domains include cardinal and 15-degree candidates plus dominant item/container edge alignments and 2.5-degree neighbours. Independent mode may mix angles; shared-per-item mode rejects candidates that differ from the first placed copy. Quality profiles control restart and rotation-improvement effort under the same deterministic iteration cap.
 
 ## Validation and result meaning
 

@@ -10,3 +10,4 @@ rand_chacha.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+i_overlay.workspace = true

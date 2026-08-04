@@ -1,6 +1,6 @@
 # OpenLayout
 
-OpenLayout is a private prototype engine and browser studio for generic two-dimensional constrained packing. It accepts polygonal containers, exclusions, parameterized primitive or compound item shapes, permitted rotations, fixed placements, and clearances; prepares reusable geometry; runs a deterministic solver portfolio; independently validates the selected layout; and can sweep a numeric parameter to locate packing-capacity transitions.
+OpenLayout is a private prototype engine and browser studio for generic two-dimensional constrained packing. Schema v2 accepts Boolean containers assembled from additive material and subtractive cut-outs, exclusions, parameterized primitive or compound item shapes, adaptive or discrete rotations, fixed placements, and clearances; prepares reusable geometry; runs a deterministic solver portfolio; independently validates the selected layout; and can sweep a numeric parameter to locate packing-capacity transitions.
 
 The project proves the complete computational and interaction path in one local application. There is no service, persistence layer, public API commitment, or release machinery. Breaking changes are expected whenever they improve the experiment.
 
@@ -9,8 +9,9 @@ The project proves the complete computational and interaction path in one local 
 - Polygon, rectangle, triangle, polygonized-circle, closed cubic Bézier, and compound shapes with transforms
 - Concave single-polygon containers and polygonal exclusions
 - Uniform item, boundary, and exclusion clearances
-- Finite or effectively unlimited quantities, rotations, and fixed placements
-- Cached prepared rotations and bounding boxes with symmetry removal
+- Finite or effectively unlimited quantities, continuous/discrete rotation domains, and fixed placements
+- Independent-copy or shared-per-item angle coupling, with coarse and edge-aligned adaptive candidates
+- Boolean-unioned material, structural holes, disconnected islands, and normalized compound solids
 - Row, column, staggered, seeded greedy, contact, grid, and compacting strategies
 - Deterministic seeded portfolios with iteration/time limits and an observer for progress or cancellation
 - Independent validation of every selected result
@@ -64,7 +65,7 @@ npm run dev
 
 Open the local URL printed by Vite. `npm run build` generates the Wasm bindings, type-checks the application, and creates a production bundle. `npm test` generates the same Wasm module and exercises progress delivery, prepared-problem reuse, deterministic layouts, and compound-part sensitivity directly against the WebAssembly runtime. For the real-browser workflow checks, run `npx playwright install chromium` once and then `npm run test:e2e`.
 
-The studio can interactively edit polygonal or Bézier containers, exclusions, and item definitions from transformed rectangle, triangle, circle, polygon, and Bézier parts; preserve fixed placements; set clearances and deterministic solve limits; import or export problem JSON; watch improving layouts; stop a run by terminating its worker; toggle concise dimension and dashed clearance overlays; inspect validation and solver statistics; and select exact evaluated layouts from a scrollable sensitivity graph. Each transition exposes its last “Before” and first “After” evaluation, making boundary cases such as the maximum width for a capacity directly inspectable.
+The studio can interactively edit multiple additive or subtractive polygonal/Bézier container parts, exclusions, and item definitions from transformed rectangle, triangle, circle, polygon, and Bézier parts; select adaptive or fixed rotation and angle coupling; preserve fixed placements; set clearances and deterministic solve limits; import or export schema-v2 JSON; watch phased progress and improving layouts; stop a run by terminating its worker; toggle concise dimension and dashed clearance overlays; inspect validation and solver statistics; and select exact evaluated layouts from a scrollable sensitivity graph.
 
 The **Shape modeller** tab provides the canvas-first geometry workflow for items, the container, and exclusions. Select or add parts, replace a boundary type, drag geometry directly, resize or rotate with handles, edit Bézier knots and tangents, or enter exact dimensions and transforms in the inspector. Dimensions and effective clearance are shown in-place. Moving an item anchor near another part’s center, edge midpoint, or corner creates a live snap constraint. A snapped part follows its target when target dimensions or rotation change. The lower strip previews the configured sensitivity start, intermediate steps, and end geometry before solving. See [shape modeller details](docs/modeller.md).
 
@@ -89,4 +90,4 @@ All coordinates are `f64` values in one caller-selected linear unit. No unit con
 
 `irregular-rectangles.json` should produce repeated rectangular placements while respecting the container notch. `compound-with-exclusion.json` exercises a multi-part item around a central unavailable region. The sensitivity pair changes a rectangle width and should expose several discrete capacity regions and narrow transition intervals. The studio opens with an editable neutral example combining all three parameterized primitives.
 
-This remains a heuristic prototype. It does not compute no-fit polygons, union compound components, prove infeasibility in general, or provide strong combinatorial upper bounds. Candidate generation is intentionally bounded and the broad phase is cached bounding-box rejection rather than an R-tree. Concave containment uses boundary crossings, vertices, and edge-midpoint checks and is suitable for the supplied simple polygons, not adversarial geometric inputs. See [solver details](docs/solver.md) and the [roadmap](docs/roadmap.md).
+This remains a heuristic prototype. It does not compute no-fit polygons, prove infeasibility in general, or provide strong combinatorial upper bounds. Candidate generation and adaptive angle refinement are intentionally bounded, while exact final validation remains mandatory. See [solver details](docs/solver.md) and the [roadmap](docs/roadmap.md).

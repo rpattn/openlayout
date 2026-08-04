@@ -1,10 +1,105 @@
-use crate::{PackingError, Point, Shape, ShapeAnchor, ShapePart};
+use crate::{PackingError, Point, RegionOperation, RegionPart, Shape, ShapeAnchor, ShapePart};
+use i_overlay::core::fill_rule::FillRule;
+use i_overlay::core::overlay_rule::OverlayRule;
+use i_overlay::float::single::SingleFloatOverlay;
 
 pub(crate) const EPSILON: f64 = 1e-7;
 
 #[derive(Debug, Clone)]
 pub(crate) struct PolygonSet {
+    // Normalized contours. Outer contours are counter-clockwise and holes clockwise.
     pub polygons: Vec<Vec<Point>>,
+}
+
+pub(crate) fn container_region(parts: &[RegionPart]) -> Result<PolygonSet, PackingError> {
+    let mut additions = PolygonSet {
+        polygons: Vec::new(),
+    };
+    let mut subtractions = PolygonSet {
+        polygons: Vec::new(),
+    };
+    for part in parts {
+        let geometry = transform(
+            &shape_to_polygons(&part.shape)?,
+            part.rotation_deg,
+            part.translation.x,
+            part.translation.y,
+        );
+        match part.operation {
+            RegionOperation::Add => additions = overlay(&additions, &geometry, OverlayRule::Union),
+            RegionOperation::Subtract => {
+                subtractions = overlay(&subtractions, &geometry, OverlayRule::Union)
+            }
+        }
+    }
+    if additions.polygons.is_empty() {
+        return Err(PackingError::geometry(
+            "container requires at least one additive region",
+        ));
+    }
+    let result = if subtractions.polygons.is_empty() {
+        additions
+    } else {
+        overlay(&additions, &subtractions, OverlayRule::Difference)
+    };
+    if result.polygons.is_empty() || area(&result) <= EPSILON {
+        return Err(PackingError::geometry("container Boolean result is empty"));
+    }
+    Ok(result)
+}
+
+pub(crate) fn union_set(set: &PolygonSet) -> PolygonSet {
+    set.polygons.iter().fold(
+        PolygonSet {
+            polygons: Vec::new(),
+        },
+        |result, contour| {
+            overlay(
+                &result,
+                &PolygonSet {
+                    polygons: vec![contour.clone()],
+                },
+                OverlayRule::Union,
+            )
+        },
+    )
+}
+
+fn overlay(subject: &PolygonSet, clip: &PolygonSet, rule: OverlayRule) -> PolygonSet {
+    if subject.polygons.is_empty() {
+        return if rule == OverlayRule::Difference {
+            subject.clone()
+        } else {
+            clip.clone()
+        };
+    }
+    if clip.polygons.is_empty() {
+        return subject.clone();
+    }
+    let subject_paths = to_overlay_paths(subject);
+    let clip_paths = to_overlay_paths(clip);
+    let shapes = subject_paths.overlay(&clip_paths, rule, FillRule::NonZero);
+    PolygonSet {
+        polygons: shapes
+            .into_iter()
+            .flat_map(|shape| shape.into_iter())
+            .map(|path| {
+                path.into_iter()
+                    .map(|point| Point {
+                        x: point[0],
+                        y: point[1],
+                    })
+                    .collect()
+            })
+            .collect(),
+    }
+}
+
+fn to_overlay_paths(set: &PolygonSet) -> Vec<Vec<[f64; 2]>> {
+    set.polygons
+        .iter()
+        .map(|path| path.iter().map(|point| [point.x, point.y]).collect())
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -369,15 +464,13 @@ pub(crate) fn bounds(set: &PolygonSet) -> Bounds {
 pub(crate) fn area(set: &PolygonSet) -> f64 {
     set.polygons
         .iter()
-        .map(|polygon| signed_area(polygon).abs())
-        .sum()
+        .map(|polygon| signed_area(polygon))
+        .sum::<f64>()
+        .abs()
 }
 
 pub(crate) fn guaranteed_occupied_area(set: &PolygonSet) -> f64 {
-    set.polygons
-        .iter()
-        .map(|polygon| signed_area(polygon).abs())
-        .fold(0.0, f64::max)
+    area(set)
 }
 
 pub(crate) fn equivalent_geometry(a: &PolygonSet, b: &PolygonSet) -> bool {
@@ -400,9 +493,35 @@ fn equivalent_polygon(a: &[Point], b: &[Point]) -> bool {
 }
 
 pub(crate) fn sets_overlap(a: &PolygonSet, b: &PolygonSet) -> bool {
+    for left in &a.polygons {
+        for right in &b.polygons {
+            for first in 0..left.len() {
+                for second in 0..right.len() {
+                    if segments_cross(
+                        left[first],
+                        left[(first + 1) % left.len()],
+                        right[second],
+                        right[(second + 1) % right.len()],
+                    ) || collinear_interior_overlap(
+                        left[first],
+                        left[(first + 1) % left.len()],
+                        right[second],
+                        right[(second + 1) % right.len()],
+                    ) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
     a.polygons
         .iter()
-        .any(|left| b.polygons.iter().any(|right| polygons_overlap(left, right)))
+        .flatten()
+        .any(|point| point_strictly_in_set(*point, b))
+        || b.polygons
+            .iter()
+            .flatten()
+            .any(|point| point_strictly_in_set(*point, a))
 }
 
 pub(crate) fn set_distance(a: &PolygonSet, b: &PolygonSet) -> f64 {
@@ -428,40 +547,65 @@ pub(crate) fn set_distance(a: &PolygonSet, b: &PolygonSet) -> f64 {
 }
 
 pub(crate) fn set_inside(inner: &PolygonSet, outer: &PolygonSet, clearance: f64) -> bool {
-    if outer.polygons.len() != 1 {
-        return false;
-    }
-    let boundary = &outer.polygons[0];
     for polygon in &inner.polygons {
-        if polygon
-            .iter()
-            .any(|point| !point_in_polygon(*point, boundary))
-        {
+        if polygon.iter().any(|point| !point_in_set(*point, outer)) {
             return false;
         }
         for index in 0..polygon.len() {
             let a = polygon[index];
             let b = polygon[(index + 1) % polygon.len()];
-            for outer_index in 0..boundary.len() {
-                if segments_cross(
-                    a,
-                    b,
-                    boundary[outer_index],
-                    boundary[(outer_index + 1) % boundary.len()],
-                ) {
-                    return false;
+            for boundary in &outer.polygons {
+                for outer_index in 0..boundary.len() {
+                    if segments_cross(
+                        a,
+                        b,
+                        boundary[outer_index],
+                        boundary[(outer_index + 1) % boundary.len()],
+                    ) {
+                        return false;
+                    }
                 }
             }
             let midpoint = Point {
                 x: (a.x + b.x) / 2.0,
                 y: (a.y + b.y) / 2.0,
             };
-            if !point_in_polygon(midpoint, boundary) {
+            if !point_in_set(midpoint, outer) {
                 return false;
             }
         }
     }
-    clearance <= EPSILON || boundary_distance(inner, boundary) + EPSILON >= clearance
+    clearance <= EPSILON
+        || outer
+            .polygons
+            .iter()
+            .all(|boundary| boundary_distance(inner, boundary) + EPSILON >= clearance)
+}
+
+fn point_in_set(point: Point, set: &PolygonSet) -> bool {
+    if set.polygons.iter().any(|polygon| {
+        (0..polygon.len()).any(|index| {
+            point_segment_distance(point, polygon[index], polygon[(index + 1) % polygon.len()])
+                <= EPSILON
+        })
+    }) {
+        return true;
+    }
+    set.polygons.iter().fold(false, |inside, polygon| {
+        inside ^ point_in_polygon(point, polygon)
+    })
+}
+
+fn point_strictly_in_set(point: Point, set: &PolygonSet) -> bool {
+    if set.polygons.iter().any(|polygon| {
+        (0..polygon.len()).any(|index| {
+            point_segment_distance(point, polygon[index], polygon[(index + 1) % polygon.len()])
+                <= EPSILON
+        })
+    }) {
+        return false;
+    }
+    point_in_set(point, set)
 }
 
 fn boundary_distance(inner: &PolygonSet, outer: &[Point]) -> f64 {
@@ -479,41 +623,6 @@ fn boundary_distance(inner: &PolygonSet, outer: &[Point]) -> f64 {
         }
     }
     minimum
-}
-
-fn polygons_overlap(a: &[Point], b: &[Point]) -> bool {
-    for first in 0..a.len() {
-        for second in 0..b.len() {
-            let (a1, a2) = (a[first], a[(first + 1) % a.len()]);
-            let (b1, b2) = (b[second], b[(second + 1) % b.len()]);
-            if segments_cross(a1, a2, b1, b2) || collinear_interior_overlap(a1, a2, b1, b2) {
-                return true;
-            }
-        }
-    }
-    a.iter().any(|point| point_strictly_in_polygon(*point, b))
-        || b.iter().any(|point| point_strictly_in_polygon(*point, a))
-        || point_strictly_in_polygon(centroid(a), b)
-        || point_strictly_in_polygon(centroid(b), a)
-}
-
-fn point_strictly_in_polygon(point: Point, polygon: &[Point]) -> bool {
-    for index in 0..polygon.len() {
-        if point_segment_distance(point, polygon[index], polygon[(index + 1) % polygon.len()])
-            <= EPSILON
-        {
-            return false;
-        }
-    }
-    point_in_polygon(point, polygon)
-}
-
-fn centroid(polygon: &[Point]) -> Point {
-    let count = polygon.len() as f64;
-    Point {
-        x: polygon.iter().map(|point| point.x).sum::<f64>() / count,
-        y: polygon.iter().map(|point| point.y).sum::<f64>() / count,
-    }
 }
 
 fn segments_cross(a: Point, b: Point, c: Point, d: Point) -> bool {

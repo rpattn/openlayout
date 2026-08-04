@@ -1,16 +1,34 @@
 use crate::geometry::{
-    EPSILON, bounds, set_distance, set_inside, sets_overlap, shape_to_polygons, transform,
+    EPSILON, bounds, container_region, set_distance, set_inside, sets_overlap, shape_to_polygons,
+    transform, union_set,
 };
 use crate::{PackingError, PackingProblem, Placement, PreparedProblem, ValidationReport};
 use std::collections::BTreeMap;
 
 pub fn validate_problem(problem: &PackingProblem) -> Result<(), PackingError> {
-    let container = shape_to_polygons(&problem.container.boundary)?;
-    if container.polygons.len() != 1 {
-        return Err(PackingError::geometry(
-            "container must be a single polygonal boundary",
+    if problem.schema_version != 2 {
+        return Err(PackingError::config(
+            "unsupported packing schema; expected schema_version 2",
         ));
     }
+    let mut region_ids = BTreeMap::new();
+    for part in &problem.container.parts {
+        if part.id.trim().is_empty() || region_ids.insert(part.id.clone(), ()).is_some() {
+            return Err(PackingError::config(
+                "container part identifiers must be non-empty and unique",
+            ));
+        }
+        if !part.rotation_deg.is_finite()
+            || !part.translation.x.is_finite()
+            || !part.translation.y.is_finite()
+        {
+            return Err(PackingError::config(
+                "container part transforms must be finite",
+            ));
+        }
+        shape_to_polygons(&part.shape)?;
+    }
+    let container = container_region(&problem.container.parts)?;
     if problem.items.is_empty() {
         return Err(PackingError::config(
             "at least one item definition is required",
@@ -40,13 +58,7 @@ pub fn validate_problem(problem: &PackingProblem) -> Result<(), PackingError> {
                 item.id
             )));
         }
-        if item.rotations.is_empty() || item.rotations.iter().any(|rotation| !rotation.is_finite())
-        {
-            return Err(PackingError::config(format!(
-                "item '{}' requires finite permitted rotations",
-                item.id
-            )));
-        }
+        validate_rotation_policy(item)?;
         shape_to_polygons(&item.shape)?;
     }
     let mut exclusion_ids = BTreeMap::new();
@@ -81,7 +93,7 @@ pub fn validate_problem(problem: &PackingProblem) -> Result<(), PackingError> {
         if !fixed.x.is_finite()
             || !fixed.y.is_finite()
             || !fixed.rotation_deg.is_finite()
-            || !rotation_permitted(fixed.rotation_deg, &item.rotations)
+            || !rotation_permitted(fixed.rotation_deg, &item.rotation_policy)
         {
             return Err(PackingError::config(format!(
                 "fixed placement for '{}' has an invalid transform",
@@ -119,14 +131,14 @@ pub fn validate_placements(
             errors.push(format!("placement {index} has a non-finite transform"));
             continue;
         }
-        if !rotation_permitted(placement.rotation_deg, &item.rotations) {
+        if !rotation_permitted(placement.rotation_deg, &item.rotation_policy) {
             errors.push(format!(
                 "placement {index} uses a rotation not permitted for '{}'",
                 item.id
             ));
             continue;
         }
-        let base = shape_to_polygons(&item.shape)?;
+        let base = union_set(&shape_to_polygons(&item.shape)?);
         let geometry = transform(&base, placement.rotation_deg, placement.x, placement.y);
         if !set_inside(
             &geometry,
@@ -154,6 +166,29 @@ pub fn validate_placements(
         }
         *counts.entry(item.id.clone()).or_default() += 1;
         geometries.push((index, geometry));
+    }
+    for item in &prepared.problem.items {
+        let shared = matches!(
+            item.rotation_policy,
+            crate::RotationPolicy::Discrete {
+                coupling: crate::RotationCoupling::SharedPerItem,
+                ..
+            } | crate::RotationPolicy::Continuous {
+                coupling: crate::RotationCoupling::SharedPerItem,
+                ..
+            }
+        );
+        if shared {
+            let mut rotations = placements
+                .iter()
+                .filter(|placement| placement.item_id == item.id)
+                .map(|placement| placement.rotation_deg);
+            if let Some(first) = rotations.next() {
+                if rotations.any(|angle| !same_rotation(angle, first)) {
+                    errors.push(format!("item '{}' requires one shared rotation", item.id));
+                }
+            }
+        }
     }
     for (item_id, count) in counts {
         let limit = prepared
@@ -222,10 +257,41 @@ fn validate_fixed(prepared: &PreparedProblem, placements: &[Placement], errors: 
     }
 }
 
-pub(crate) fn rotation_permitted(rotation: f64, allowed: &[f64]) -> bool {
-    allowed
-        .iter()
-        .any(|candidate| same_rotation(rotation, *candidate))
+pub(crate) fn rotation_permitted(rotation: f64, policy: &crate::RotationPolicy) -> bool {
+    match policy {
+        crate::RotationPolicy::Discrete { angles_deg, .. } => angles_deg
+            .iter()
+            .any(|candidate| same_rotation(rotation, *candidate)),
+        crate::RotationPolicy::Continuous {
+            min_deg, max_deg, ..
+        } => crate::prepare::angle_in_range(rotation, *min_deg, *max_deg),
+    }
+}
+
+fn validate_rotation_policy(item: &crate::Item) -> Result<(), PackingError> {
+    match &item.rotation_policy {
+        crate::RotationPolicy::Discrete { angles_deg, .. }
+            if angles_deg.is_empty() || angles_deg.iter().any(|angle| !angle.is_finite()) =>
+        {
+            Err(PackingError::config(format!(
+                "item '{}' requires finite discrete rotations",
+                item.id
+            )))
+        }
+        crate::RotationPolicy::Continuous {
+            min_deg, max_deg, ..
+        } if !min_deg.is_finite()
+            || !max_deg.is_finite()
+            || max_deg <= min_deg
+            || max_deg - min_deg > 360.0 + EPSILON =>
+        {
+            Err(PackingError::config(format!(
+                "item '{}' requires a continuous rotation span in (0, 360] degrees",
+                item.id
+            )))
+        }
+        _ => Ok(()),
+    }
 }
 fn same_rotation(a: f64, b: f64) -> bool {
     (a - b).rem_euclid(360.0).min((b - a).rem_euclid(360.0)) < EPSILON

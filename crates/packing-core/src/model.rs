@@ -93,7 +93,26 @@ impl Default for Point {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Container {
-    pub boundary: Shape,
+    #[serde(default)]
+    pub parts: Vec<RegionPart>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegionOperation {
+    Add,
+    Subtract,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RegionPart {
+    pub id: String,
+    pub operation: RegionOperation,
+    pub shape: Shape,
+    #[serde(default)]
+    pub translation: Point,
+    #[serde(default)]
+    pub rotation_deg: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -110,15 +129,47 @@ pub struct Item {
     pub shape: Shape,
     #[serde(default = "unlimited_quantity")]
     pub quantity: u32,
-    #[serde(default = "zero_rotation")]
-    pub rotations: Vec<f64>,
+    #[serde(default)]
+    pub rotation_policy: RotationPolicy,
 }
 
 fn unlimited_quantity() -> u32 {
     u32::MAX
 }
-fn zero_rotation() -> Vec<f64> {
-    vec![0.0]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RotationCoupling {
+    Independent,
+    SharedPerItem,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RotationPolicy {
+    Discrete {
+        angles_deg: Vec<f64>,
+        coupling: RotationCoupling,
+    },
+    Continuous {
+        #[serde(default)]
+        min_deg: f64,
+        #[serde(default = "full_rotation")]
+        max_deg: f64,
+        coupling: RotationCoupling,
+    },
+}
+
+impl Default for RotationPolicy {
+    fn default() -> Self {
+        Self::Discrete {
+            angles_deg: vec![0.0],
+            coupling: RotationCoupling::Independent,
+        }
+    }
+}
+
+fn full_rotation() -> f64 {
+    360.0
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -151,6 +202,8 @@ pub struct FixedPlacement {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PackingProblem {
+    #[serde(default)]
+    pub schema_version: u32,
     pub container: Container,
     #[serde(default)]
     pub exclusions: Vec<Exclusion>,
@@ -175,6 +228,8 @@ pub struct SolveOptions {
     pub grid_step: f64,
     #[serde(default = "default_restarts")]
     pub restarts: u32,
+    #[serde(default)]
+    pub quality: SolveQuality,
 }
 
 fn default_seed() -> u64 {
@@ -190,7 +245,16 @@ fn default_grid_step() -> f64 {
     1.0
 }
 fn default_restarts() -> u32 {
-    3
+    4
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SolveQuality {
+    Fast,
+    #[default]
+    Balanced,
+    Thorough,
 }
 
 impl Default for SolveOptions {
@@ -202,6 +266,7 @@ impl Default for SolveOptions {
             time_limit_ms: None,
             grid_step: default_grid_step(),
             restarts: default_restarts(),
+            quality: SolveQuality::default(),
         }
     }
 }
@@ -251,6 +316,7 @@ pub struct SolveResult {
     pub simple_upper_bound: Option<usize>,
     pub seed: u64,
     pub solver_strategy: String,
+    pub selected_shared_angles: BTreeMap<String, f64>,
     pub statistics: SolveStatistics,
     pub validation: ValidationReport,
     pub warnings: Vec<String>,
@@ -258,10 +324,22 @@ pub struct SolveResult {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SolveProgress {
+    pub phase: SolvePhase,
+    pub completed_fraction: f64,
+    pub max_iterations: u64,
     pub iterations: u64,
     pub packed_item_count: usize,
     pub placements: Vec<Placement>,
     pub solver_strategy: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SolvePhase {
+    Baseline,
+    CoarseRotation,
+    AngleRefinement,
+    NeighbourhoodImprovement,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -278,6 +356,10 @@ pub enum ParameterPath {
     ClearanceItemToBoundary,
     ContainerWidth,
     ContainerHeight,
+    ItemQuantity { item_id: String },
+    ContainerPartWidth { part_id: String },
+    ContainerPartHeight { part_id: String },
+    ContainerPartScale { part_id: String },
     ExclusionScale { exclusion_id: String },
 }
 

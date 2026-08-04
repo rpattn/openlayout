@@ -6,18 +6,28 @@ export interface LayoutDisplayOptions { dimensions?: boolean; clearance?: boolea
 
 export function renderLayout(canvas: HTMLCanvasElement, problem: PackingProblem, placements: Placement[] = [], display: LayoutDisplayOptions = {}): void {
   const context = setup(canvas);
-  const container = polygons(shapeForContainer(problem))[0] ?? [];
-  if (!container.length) return;
-  const bounds = pointBounds(container);
+  const regionPolygons = problem.container.parts.map((part) => ({
+    operation: part.operation,
+    points: polygons(part.shape, part.rotation_deg, part.translation.x, part.translation.y)[0] ?? [],
+  })).filter((entry) => entry.points.length);
+  if (!regionPolygons.length) return;
+  const bounds = pointBounds(regionPolygons.flatMap((entry) => entry.points));
   const padding = Math.max(bounds.width, bounds.height) * 0.08 + 1;
   const viewport = makeViewport(canvas, bounds, padding);
 
   context.fillStyle = "#11151b";
   context.fillRect(0, 0, canvas.width, canvas.height);
   drawGrid(context, viewport);
-  drawPolygon(context, container, viewport, "#252c36", "#77808c", 2);
-  if (display.dimensions) drawDimensions(context, container, viewport);
-  if (display.clearance && problem.clearance.item_to_boundary > 0) drawDashedPolygon(context, offsetPolygon(container, -problem.clearance.item_to_boundary), viewport, "#9ba5b2");
+  for (const region of regionPolygons.filter((entry) => entry.operation === "add")) {
+    drawPolygon(context, region.points, viewport, "#252c36", "#77808c", 2);
+  }
+  for (const region of regionPolygons.filter((entry) => entry.operation === "subtract")) {
+    drawPolygon(context, region.points, viewport, "#11151b", "#ef6f6c", 1.5);
+    hatchPolygon(context, region.points, viewport);
+  }
+  if (display.dimensions) regionPolygons.forEach((region) => drawDimensions(context, region.points, viewport));
+  if (display.clearance && problem.clearance.item_to_boundary > 0) regionPolygons.forEach((region) =>
+    drawDashedPolygon(context, offsetPolygon(region.points, region.operation === "add" ? -problem.clearance.item_to_boundary : problem.clearance.item_to_boundary), viewport, "#9ba5b2"));
 
   for (const exclusion of problem.exclusions) {
     for (const polygon of polygons(exclusion.shape)) {
@@ -126,8 +136,6 @@ export function renderShapePreview(canvas: HTMLCanvasElement, shape: Shape): voi
   context.lineWidth = devicePixelRatio;
   context.beginPath(); context.moveTo(origin.x - 4 * devicePixelRatio, origin.y); context.lineTo(origin.x + 4 * devicePixelRatio, origin.y); context.moveTo(origin.x, origin.y - 4 * devicePixelRatio); context.lineTo(origin.x, origin.y + 4 * devicePixelRatio); context.stroke();
 }
-
-function shapeForContainer(problem: PackingProblem): Shape { return problem.container.boundary; }
 
 function polygons(shape: Shape, rotation = 0, x = 0, y = 0): Point[][] {
   if (shape.kind === "compound") {

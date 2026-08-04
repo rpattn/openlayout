@@ -11,14 +11,18 @@ import type {
 } from "./types";
 
 export const defaultState = (): EditorState => ({
-  container: { id: "container-boundary", kind: "polygon", vertices: [
+  containerParts: [{ id: "stock", operation: "add", primitive: { id: "container-boundary", kind: "polygon", vertices: [
     { x: -15, y: -9 }, { x: 15, y: -9 }, { x: 15, y: 9 },
     { x: 6, y: 9 }, { x: 6, y: 6 }, { x: -15, y: 6 },
-  ], x: 15, y: 9, rotation: 0 },
+  ], x: 15, y: 9, rotation: 0 } }],
   items: [{
     id: "item-a",
     quantity: 80,
+    rotationMode: "continuous",
+    rotationCoupling: "independent",
     rotations: "0, 90, 180, 270",
+    minRotation: 0,
+    maxRotation: 360,
     parts: [
       { id: "body", kind: "rectangle", width: 4, height: 2.4, x: 0, y: 0, rotation: 0 },
       { id: "end-left", kind: "circle", radius: 1.1, segments: 28, x: -2, y: 0, rotation: 0, snap: { targetId: "body", ownAnchor: "center", targetAnchor: "left", offset: { x: 0, y: 0 } } },
@@ -39,6 +43,7 @@ export const defaultState = (): EditorState => ({
     time_limit_ms: null,
     grid_step: 0.5,
     restarts: 3,
+    quality: "balanced",
   },
   study: {
     parameterKey: "part_width:item-a:0",
@@ -54,7 +59,11 @@ export const defaultState = (): EditorState => ({
 
 export function toProblem(state: EditorState): PackingProblem {
   return {
-    container: { boundary: transformedShape(state.container) },
+    schema_version: 2,
+    container: { parts: state.containerParts.map((entry) => ({
+      id: entry.id, operation: entry.operation, shape: primitiveShape(entry.primitive),
+      translation: { x: entry.primitive.x, y: entry.primitive.y }, rotation_deg: entry.primitive.rotation,
+    })) },
     exclusions: state.exclusions.map((entry) => ({
       id: entry.id,
       clearance: entry.clearance,
@@ -63,7 +72,9 @@ export function toProblem(state: EditorState): PackingProblem {
     items: state.items.map((item) => ({
       id: item.id,
       quantity: item.quantity,
-      rotations: parseNumbers(item.rotations),
+      rotation_policy: item.rotationMode === "continuous"
+        ? { kind: "continuous", min_deg: item.minRotation, max_deg: item.maxRotation, coupling: item.rotationCoupling }
+        : { kind: "discrete", angles_deg: parseNumbers(item.rotations), coupling: item.rotationCoupling },
       shape: {
         kind: "compound",
         parts: item.parts.map((part) => toShapePart(part, item.parts)),
@@ -185,11 +196,18 @@ export function makePrimitive(kind: PrimitiveEditor["kind"]): PrimitiveEditor {
 
 export function fromProblem(problem: PackingProblem): EditorState {
   const state = defaultState();
-  state.container = shapeToPrimitive(problem.container.boundary, 0, 0, 0, "container-boundary");
+  state.containerParts = problem.container.parts.map((part) => ({
+    id: part.id, operation: part.operation,
+    primitive: shapeToPrimitive(part.shape, part.translation.x, part.translation.y, part.rotation_deg, `container-${part.id}`),
+  }));
   state.items = problem.items.map((item) => ({
     id: item.id,
     quantity: item.quantity,
-    rotations: item.rotations.join(", "),
+    rotationMode: item.rotation_policy.kind,
+    rotationCoupling: item.rotation_policy.coupling,
+    rotations: item.rotation_policy.kind === "discrete" ? item.rotation_policy.angles_deg.join(", ") : "0, 90, 180, 270",
+    minRotation: item.rotation_policy.kind === "continuous" ? item.rotation_policy.min_deg : 0,
+    maxRotation: item.rotation_policy.kind === "continuous" ? item.rotation_policy.max_deg : 360,
     parts: item.shape.kind === "compound"
       ? fromShapeParts(item.shape.parts)
       : [shapeToPrimitive(item.shape, 0, 0, 0)],

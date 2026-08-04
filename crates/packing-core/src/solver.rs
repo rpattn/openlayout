@@ -2,8 +2,8 @@ use crate::geometry::{
     Bounds, EPSILON, PolygonSet, bounds, set_distance, set_inside, sets_overlap, transform,
 };
 use crate::{
-    PackingError, PackingErrorKind, Placement, PreparedProblem, SolveOptions, SolveProgress,
-    SolveResult, SolveStatistics, SolveStatus, ValidationReport, prepare_problem,
+    PackingError, PackingErrorKind, Placement, PreparedProblem, SolveOptions, SolvePhase,
+    SolveProgress, SolveResult, SolveStatistics, SolveStatus, ValidationReport, prepare_problem,
     validate_placements,
 };
 use rand::prelude::*;
@@ -66,23 +66,43 @@ pub fn solve_with_observer(
     observer: &mut dyn SolveObserver,
 ) -> Result<SolveResult, PackingError> {
     validate_options(options)?;
+    let mut run_options = *options;
+    run_options.max_iterations = effective_iteration_budget(options);
     let started = clock_start();
     let mut counters = Counters::default();
     let fixed = prepare_fixed(prepared)?;
     let mut best = fixed.clone();
     let mut best_strategy = "fixed_only".to_string();
-    let variants = portfolio_orders(prepared, options.seed, options.restarts);
-    for (strategy_index, (strategy, order, stagger, columns, alternating)) in
+    let effective_restarts = match options.quality {
+        crate::SolveQuality::Fast => options.restarts.min(2),
+        crate::SolveQuality::Balanced => options.restarts,
+        crate::SolveQuality::Thorough => options.restarts.max(6),
+    };
+    let variants = portfolio_orders(prepared, options.seed, effective_restarts);
+    let portfolio_count = variants.len();
+    for (strategy_index, (strategy, order, stagger, columns, alternating, cross_high)) in
         variants.into_iter().enumerate()
     {
-        if stop_requested(options, started, &mut counters, observer) {
+        if stop_requested(&run_options, started, &mut counters, observer) {
             break;
         }
+        let remaining_attempts = (portfolio_count - strategy_index) as u64;
+        let remaining_budget = run_options.max_iterations - counters.iterations;
+        let attempt_budget = remaining_budget.div_ceil(remaining_attempts);
+        let attempt_start = counters.iterations;
+        let structured_end = attempt_start + attempt_budget.saturating_mul(30) / 100;
+        let greedy_end = attempt_start + attempt_budget.saturating_mul(85) / 100;
+        let compact_end = attempt_start + attempt_budget.saturating_mul(92) / 100;
+        let attempt_end = (attempt_start + attempt_budget).min(run_options.max_iterations);
+        let mut phase_options = run_options;
+        phase_options.max_iterations = structured_end
+            .max(counters.iterations + 1)
+            .min(run_options.max_iterations);
         let mut placements = fixed.clone();
         if alternating {
             alternating_fill(
                 prepared,
-                options,
+                &phase_options,
                 &mut placements,
                 &mut counters,
                 started,
@@ -91,33 +111,56 @@ pub fn solve_with_observer(
         } else {
             structured_fill(
                 prepared,
-                options,
+                &phase_options,
                 &order,
                 stagger,
                 columns,
+                cross_high,
                 &mut placements,
                 &mut counters,
                 started,
                 observer,
             );
         }
+        clear_local_limit(&mut counters, &run_options);
+        phase_options.max_iterations = greedy_end
+            .max(counters.iterations + 1)
+            .min(run_options.max_iterations);
         greedy_fill(
             prepared,
-            options,
+            &phase_options,
             &order,
             &mut placements,
             &mut counters,
             started,
             observer,
         );
+        clear_local_limit(&mut counters, &run_options);
+        phase_options.max_iterations = compact_end
+            .max(counters.iterations + 1)
+            .min(run_options.max_iterations);
         compact(
             prepared,
-            options,
+            &phase_options,
             &mut placements,
             &mut counters,
             started,
             observer,
         );
+        if options.quality != crate::SolveQuality::Fast {
+            clear_local_limit(&mut counters, &run_options);
+            phase_options.max_iterations = attempt_end
+                .max(counters.iterations + 1)
+                .min(run_options.max_iterations);
+            rotate_and_compact(
+                prepared,
+                &phase_options,
+                &mut placements,
+                &mut counters,
+                started,
+                observer,
+            );
+        }
         if placements.len() > best.len()
             || (placements.len() == best.len() && layout_key(&placements) < layout_key(&best))
         {
@@ -125,15 +168,32 @@ pub fn solve_with_observer(
             best_strategy = format!("{strategy}+greedy+compact");
         }
         let progress = SolveProgress {
+            phase: if strategy_index == 0 {
+                SolvePhase::Baseline
+            } else if strategy_index + 2 < portfolio_count {
+                SolvePhase::CoarseRotation
+            } else {
+                SolvePhase::AngleRefinement
+            },
+            completed_fraction: (counters.iterations as f64 / run_options.max_iterations as f64)
+                .clamp(0.0, 1.0),
+            max_iterations: run_options.max_iterations,
             iterations: counters.iterations,
             packed_item_count: best.len(),
             placements: best.iter().map(|entry| entry.placement.clone()).collect(),
             solver_strategy: best_strategy.clone(),
         };
         observer.on_progress(&progress);
+        if options.quality != crate::SolveQuality::Fast {
+            observer.on_progress(&SolveProgress {
+                phase: SolvePhase::NeighbourhoodImprovement,
+                ..progress
+            });
+        }
         if strategy_index > 0 && Some(best.len()) == prepared.simple_upper_bound {
             break;
         }
+        clear_local_limit(&mut counters, &run_options);
     }
     let best_placements = best
         .iter()
@@ -169,6 +229,20 @@ pub fn solve_with_observer(
     ))
 }
 
+fn effective_iteration_budget(options: &SolveOptions) -> u64 {
+    let multiplier = match options.quality {
+        crate::SolveQuality::Fast | crate::SolveQuality::Balanced => 1,
+        crate::SolveQuality::Thorough => 4,
+    };
+    options.max_iterations.saturating_mul(multiplier)
+}
+
+fn clear_local_limit(counters: &mut Counters, global_options: &SolveOptions) {
+    if !counters.cancelled && counters.iterations < global_options.max_iterations {
+        counters.limit = false;
+    }
+}
+
 fn validate_options(options: &SolveOptions) -> Result<(), PackingError> {
     if options.max_iterations == 0
         || !options.grid_step.is_finite()
@@ -197,7 +271,7 @@ fn portfolio_orders(
     prepared: &PreparedProblem,
     seed: u64,
     restarts: u32,
-) -> Vec<(String, Vec<usize>, bool, bool, bool)> {
+) -> Vec<(String, Vec<usize>, bool, bool, bool, bool)> {
     let mut output = Vec::new();
     let mut base: Vec<_> = (0..prepared.variants.len()).collect();
     base.sort_by(|a, b| {
@@ -213,11 +287,13 @@ fn portfolio_orders(
         false,
         false,
         false,
+        false,
     ));
     output.push((
         "structured_staggered".to_string(),
         base.clone(),
         true,
+        false,
         false,
         false,
     ));
@@ -231,15 +307,41 @@ fn portfolio_orders(
     });
     output.push((
         "structured_columns".to_string(),
-        by_height,
+        by_height.clone(),
         false,
         true,
+        false,
         false,
     ));
     output.push((
         "structured_alternating".to_string(),
         base.clone(),
         false,
+        false,
+        true,
+        false,
+    ));
+    output.push((
+        "structured_rows_top".to_string(),
+        base.clone(),
+        false,
+        false,
+        false,
+        true,
+    ));
+    output.push((
+        "structured_staggered_top".to_string(),
+        base.clone(),
+        true,
+        false,
+        false,
+        true,
+    ));
+    output.push((
+        "structured_columns_right".to_string(),
+        by_height.clone(),
+        false,
+        true,
         false,
         true,
     ));
@@ -253,6 +355,7 @@ fn portfolio_orders(
             restart % 2 == 0,
             restart % 2 == 1,
             false,
+            restart % 3 == 2,
         ));
     }
     output
@@ -350,6 +453,7 @@ fn structured_fill(
     order: &[usize],
     stagger: bool,
     columns: bool,
+    cross_high: bool,
     placed: &mut Vec<CandidatePlacement>,
     counters: &mut Counters,
     started: SolveInstant,
@@ -364,9 +468,23 @@ fn structured_fill(
         for origin_high in [false, true] {
             if columns {
                 let mut column = 0usize;
-                let mut x = prepared.container_bounds.min_x - variant.bounds.min_x
-                    + prepared.problem.clearance.item_to_boundary;
-                while x + variant.bounds.max_x <= prepared.container_bounds.max_x + EPSILON {
+                let mut x = if cross_high {
+                    prepared.container_bounds.max_x
+                        - variant.bounds.max_x
+                        - prepared.problem.clearance.item_to_boundary
+                } else {
+                    prepared.container_bounds.min_x - variant.bounds.min_x
+                        + prepared.problem.clearance.item_to_boundary
+                };
+                loop {
+                    let cross_beyond = if cross_high {
+                        x + variant.bounds.min_x < prepared.container_bounds.min_x - EPSILON
+                    } else {
+                        x + variant.bounds.max_x > prepared.container_bounds.max_x + EPSILON
+                    };
+                    if cross_beyond {
+                        break;
+                    }
                     let offset = if stagger && column % 2 == 1 {
                         pitch_y / 2.0
                     } else {
@@ -393,14 +511,28 @@ fn structured_fill(
                         y += if origin_high { -pitch_y } else { pitch_y };
                     }
                     column += 1;
-                    x += pitch_x;
+                    x += if cross_high { -pitch_x } else { pitch_x };
                 }
                 continue;
             }
             let mut row = 0usize;
-            let mut y = prepared.container_bounds.min_y - variant.bounds.min_y
-                + prepared.problem.clearance.item_to_boundary;
-            while y + variant.bounds.max_y <= prepared.container_bounds.max_y + EPSILON {
+            let mut y = if cross_high {
+                prepared.container_bounds.max_y
+                    - variant.bounds.max_y
+                    - prepared.problem.clearance.item_to_boundary
+            } else {
+                prepared.container_bounds.min_y - variant.bounds.min_y
+                    + prepared.problem.clearance.item_to_boundary
+            };
+            loop {
+                let cross_beyond = if cross_high {
+                    y + variant.bounds.min_y < prepared.container_bounds.min_y - EPSILON
+                } else {
+                    y + variant.bounds.max_y > prepared.container_bounds.max_y + EPSILON
+                };
+                if cross_beyond {
+                    break;
+                }
                 let offset = if stagger && row % 2 == 1 {
                     pitch_x / 2.0
                 } else {
@@ -427,7 +559,7 @@ fn structured_fill(
                     x += if origin_high { -pitch_x } else { pitch_x };
                 }
                 row += 1;
-                y += pitch_y;
+                y += if cross_high { -pitch_y } else { pitch_y };
             }
         }
     }
@@ -490,6 +622,27 @@ fn contact_positions(
             prepared.container_bounds.max_y - variant.bounds.max_y,
         ),
     ];
+    // Exact vertex and edge-midpoint alignment supplies useful contacts for rotated, concave,
+    // and holed containers without materializing a full no-fit polygon.
+    let container_contacts = prepared
+        .container
+        .polygons
+        .iter()
+        .flat_map(|polygon| contact_points(polygon))
+        .take(24)
+        .collect::<Vec<_>>();
+    let item_contacts = variant
+        .geometry
+        .polygons
+        .iter()
+        .flat_map(|polygon| contact_points(polygon))
+        .take(16)
+        .collect::<Vec<_>>();
+    for boundary in &container_contacts {
+        for item in &item_contacts {
+            positions.push((boundary.x - item.x, boundary.y - item.y));
+        }
+    }
     for existing in placed {
         positions.push((
             existing.bounds.max_x + gap - variant.bounds.min_x,
@@ -520,6 +673,19 @@ fn contact_positions(
         ));
     }
     positions
+}
+
+fn contact_points(polygon: &[crate::Point]) -> impl Iterator<Item = crate::Point> + '_ {
+    polygon.iter().enumerate().flat_map(|(index, point)| {
+        let next = polygon[(index + 1) % polygon.len()];
+        [
+            *point,
+            crate::Point {
+                x: (point.x + next.x) / 2.0,
+                y: (point.y + next.y) / 2.0,
+            },
+        ]
+    })
 }
 
 fn compact(
@@ -605,6 +771,17 @@ fn feasible<'a>(
     next: &CandidatePlacement,
     placed: impl Iterator<Item = &'a CandidatePlacement>,
 ) -> bool {
+    let item = &prepared.problem.items[next_item_index(prepared, next)];
+    let shared = matches!(
+        item.rotation_policy,
+        crate::RotationPolicy::Discrete {
+            coupling: crate::RotationCoupling::SharedPerItem,
+            ..
+        } | crate::RotationPolicy::Continuous {
+            coupling: crate::RotationCoupling::SharedPerItem,
+            ..
+        }
+    );
     if !set_inside(
         &next.geometry,
         &prepared.container,
@@ -626,6 +803,12 @@ fn feasible<'a>(
         }
     }
     for existing in placed {
+        if shared
+            && existing.placement.item_id == next.placement.item_id
+            && !same_rotation(existing.placement.rotation_deg, next.placement.rotation_deg)
+        {
+            return false;
+        }
         let required = prepared.problem.clearance.item_to_item;
         if next.bounds.overlaps(existing.bounds, required)
             && (sets_overlap(&next.geometry, &existing.geometry)
@@ -635,6 +818,63 @@ fn feasible<'a>(
         }
     }
     true
+}
+
+fn next_item_index(prepared: &PreparedProblem, next: &CandidatePlacement) -> usize {
+    prepared
+        .problem
+        .items
+        .iter()
+        .position(|item| item.id == next.placement.item_id)
+        .expect("candidate item is prepared")
+}
+
+fn rotate_and_compact(
+    prepared: &PreparedProblem,
+    options: &SolveOptions,
+    placed: &mut Vec<CandidatePlacement>,
+    counters: &mut Counters,
+    started: SolveInstant,
+    observer: &mut dyn SolveObserver,
+) {
+    for index in 0..placed.len() {
+        if placed[index].placement.fixed {
+            continue;
+        }
+        let item_id = placed[index].placement.item_id.clone();
+        let original = placed[index].clone();
+        for variant_index in prepared
+            .variants_by_item
+            .get(&item_id)
+            .into_iter()
+            .flatten()
+        {
+            if stop_requested(options, started, counters, observer) {
+                return;
+            }
+            let variant = &prepared.variants[*variant_index];
+            if same_rotation(variant.rotation_deg, original.placement.rotation_deg) {
+                continue;
+            }
+            let moved = candidate(variant, original.placement.x, original.placement.y, false);
+            counters.evaluated += 1;
+            counters.iterations += 1;
+            if feasible(
+                prepared,
+                &moved,
+                placed
+                    .iter()
+                    .enumerate()
+                    .filter(|(other, _)| *other != index)
+                    .map(|(_, entry)| entry),
+            ) {
+                counters.valid += 1;
+                placed[index] = moved;
+                break;
+            }
+        }
+    }
+    compact(prepared, options, placed, counters, started, observer);
 }
 
 fn candidate(
@@ -697,8 +937,29 @@ fn build_result(
         .map(|entry| entry.placement)
         .collect::<Vec<_>>();
     let mut counts = BTreeMap::new();
+    let mut selected_shared_angles = BTreeMap::new();
     for placement in &placements {
         *counts.entry(placement.item_id.clone()).or_default() += 1;
+        let item = prepared
+            .problem
+            .items
+            .iter()
+            .find(|item| item.id == placement.item_id)
+            .unwrap();
+        if matches!(
+            item.rotation_policy,
+            crate::RotationPolicy::Discrete {
+                coupling: crate::RotationCoupling::SharedPerItem,
+                ..
+            } | crate::RotationPolicy::Continuous {
+                coupling: crate::RotationCoupling::SharedPerItem,
+                ..
+            }
+        ) {
+            selected_shared_angles
+                .entry(placement.item_id.clone())
+                .or_insert(placement.rotation_deg);
+        }
     }
     SolveResult {
         layout_id: layout_id(prepared, options, &placements),
@@ -710,6 +971,7 @@ fn build_result(
         simple_upper_bound: prepared.simple_upper_bound,
         seed: options.seed,
         solver_strategy: strategy,
+        selected_shared_angles,
         statistics: SolveStatistics {
             candidates_evaluated: counters.evaluated,
             valid_candidates: counters.valid,
@@ -719,6 +981,68 @@ fn build_result(
         validation,
         warnings: Vec::new(),
     }
+}
+
+pub(crate) fn validated_result_from_placements(
+    prepared: &PreparedProblem,
+    options: &SolveOptions,
+    placements: Vec<Placement>,
+    donor: &SolveResult,
+) -> Result<Option<SolveResult>, PackingError> {
+    let validation = validate_placements(prepared, &placements)?;
+    if !validation.valid {
+        return Ok(None);
+    }
+    let mut counts = BTreeMap::new();
+    let mut selected_shared_angles = BTreeMap::new();
+    for placement in &placements {
+        *counts.entry(placement.item_id.clone()).or_default() += 1;
+        let item = prepared
+            .problem
+            .items
+            .iter()
+            .find(|item| item.id == placement.item_id)
+            .expect("validated placement item exists");
+        if matches!(
+            item.rotation_policy,
+            crate::RotationPolicy::Discrete {
+                coupling: crate::RotationCoupling::SharedPerItem,
+                ..
+            } | crate::RotationPolicy::Continuous {
+                coupling: crate::RotationCoupling::SharedPerItem,
+                ..
+            }
+        ) {
+            selected_shared_angles
+                .entry(placement.item_id.clone())
+                .or_insert(placement.rotation_deg);
+        }
+    }
+    let packed_item_count = placements.len();
+    let status = if Some(packed_item_count) == prepared.simple_upper_bound {
+        SolveStatus::ProvenOptimal
+    } else {
+        SolveStatus::BestFound
+    };
+    let mut warnings = donor.warnings.clone();
+    warnings.push(
+        "layout carried from a harder sensitivity point and independently revalidated".to_string(),
+    );
+    Ok(Some(SolveResult {
+        layout_id: layout_id(prepared, options, &placements),
+        status,
+        placements,
+        packed_item_count,
+        packed_count_by_item: counts,
+        objective_score: packed_item_count as f64,
+        simple_upper_bound: prepared.simple_upper_bound,
+        seed: options.seed,
+        solver_strategy: format!("sensitivity_carry+{}", donor.solver_strategy),
+        selected_shared_angles,
+        statistics: donor.statistics.clone(),
+        validation,
+        warnings,
+    }))
 }
 
 fn layout_id(

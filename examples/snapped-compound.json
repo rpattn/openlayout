@@ -1,10 +1,11 @@
 {
-  "container": { "boundary": { "kind": "rectangle", "width": 20, "height": 8 } },
+  "schema_version": 2,
+  "container": { "parts": [{ "id": "stock", "operation": "add", "shape": { "kind": "rectangle", "width": 20, "height": 8 }, "translation": { "x": 0, "y": 0 }, "rotation_deg": 0 }] },
   "items": [
     {
       "id": "item-a",
       "quantity": 40,
-      "rotations": [0, 180],
+      "rotation_policy": { "kind": "discrete", "angles_deg": [0, 180], "coupling": "independent" },
       "shape": {
         "kind": "compound",
         "parts": [
@@ -41,4 +42,3 @@
   ],
   "clearance": { "item_to_item": 0.2, "item_to_boundary": 0.2, "item_to_exclusion": 0 }
 }
-

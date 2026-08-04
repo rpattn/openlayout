@@ -1,12 +1,12 @@
 # Shape modeller
 
-The Shape modeller is the geometry-focused workspace in the browser studio. Its target selector switches between item definitions, the container boundary, and every exclusion. All three use the same direct manipulation vocabulary and serialize back into the domain-neutral problem model.
+The Shape modeller is the geometry-focused workspace in the browser studio. Its target selector switches between item definitions, every additive/subtractive container part, and every exclusion. All targets use the same direct manipulation vocabulary and serialize back into the schema-v2 problem model.
 
 ## Canvas workflow
 
 Choose a geometry target from the toolbar, then add rectangles, triangles, circles, custom polygons, or closed cubic Bézier paths. The layer list selects overlapping item parts. Selected geometry shows its rotated bounding box and nine anchors: center, four edge midpoints, and four corners. Drag a part freely, pull an edge or corner handle to resize it symmetrically, or drag the amber handle to rotate it. Bézier parts expose solid knots and hollow incoming/outgoing tangent handles directly on the canvas. When any item-shape anchor comes near a compatible anchor on another part, the canvas shows alignment guides and creates a snap on release.
 
-Selecting the container or an exclusion changes the shape buttons from adding compound parts to replacing that boundary while preserving its centre and overall dimensions. This makes switching an existing polygonal container to a Bézier boundary practical. Container and exclusion geometry can then be moved, resized, rotated, or reshaped directly. The selected shape always shows width and height dimensions, and a dashed outline shows the active item envelope, inward boundary clearance, or effective exclusion clearance.
+Selecting a container part or exclusion changes the shape buttons from adding compound parts to replacing that shape while preserving its centre and overall dimensions. Container parts can be marked additive material or subtractive cut-outs in the packing editor. The selected shape always shows width and height dimensions; dashed clearance runs inward for additive material and outward around structural cut-outs and exclusions.
 
 Exact dimensions, rotation, and free coordinates remain editable in the inspector. A constraint can also be configured explicitly by choosing the target, own anchor, target anchor, and numeric offset. “Detach at current position” converts the resolved snapped position back into free coordinates. Dependency choices that would immediately create a cycle are omitted.
 
