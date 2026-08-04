@@ -2,7 +2,7 @@
 
 OpenLayout is a private prototype engine and browser studio for generic two-dimensional constrained packing. Schema v2 accepts Boolean containers assembled from additive material and subtractive cut-outs, exclusions, parameterized primitive or compound item shapes, adaptive or discrete rotations, fixed placements, and clearances; prepares reusable geometry; runs a deterministic solver portfolio; independently validates the selected layout; and can sweep a numeric parameter to locate packing-capacity transitions.
 
-The project proves the complete computational and interaction path in one local application. There is no service, persistence layer, public API commitment, or release machinery. Breaking changes are expected whenever they improve the experiment.
+The project proves the complete computational and interaction path in one local application. There is no service, server-side persistence, public API commitment, or release machinery. Browser projects persist only in versioned on-device storage. Breaking changes are expected whenever they improve the experiment.
 
 ## Current capabilities
 
@@ -19,8 +19,8 @@ The project proves the complete computational and interaction path in one local 
 - Sampled and adaptively refined sensitivity studies with non-monotonicity warnings
 - Structured results containing transforms, counts, strategy, bounds, search statistics, validation, and warnings
 - The same `packing-core` library behind a native CLI and a thin `wasm-bindgen` adapter
-- A local TypeScript studio for composing multi-part shapes, configuring runs, rendering incremental layouts, cancelling workers, and inspecting sensitivity transitions with live study progress
-- A canvas-first shape modeller with direct dragging, nine-point snapping, constraint editing, and visual sensitivity extremes
+- A local TypeScript studio with on-device projects, switching, automatic/manual saves, bounded undo/redo, and light/dark themes
+- Dedicated Packing, unified canvas Modeller, and Sensitivity workspaces with incremental layouts, cancellation, visual geometry extremes, and transition inspection
 
 The workspace is deliberately small:
 
@@ -66,9 +66,13 @@ npm run dev
 
 Open the local URL printed by Vite. `npm run build` generates the Wasm bindings, type-checks the application, and creates a production bundle. `npm test` generates the same Wasm module and exercises progress delivery, prepared-problem reuse, deterministic layouts, and compound-part sensitivity directly against the WebAssembly runtime. For the real-browser workflow checks, run `npx playwright install chromium` once and then `npm run test:e2e`.
 
-The studio can interactively edit multiple additive or subtractive polygonal/Bézier container parts, exclusions, and item definitions from transformed rectangle, triangle, circle, polygon, and Bézier parts; select adaptive or fixed rotation and angle coupling; preserve fixed placements; set clearances and deterministic solve limits; import or export schema-v2 JSON; watch phased progress and improving layouts; stop a run by terminating its worker; toggle concise dimension and dashed clearance overlays; inspect validation and solver statistics; and select exact evaluated layouts from a scrollable sensitivity graph.
+The studio stores multiple named projects entirely in browser `localStorage`; projects can be created, switched, renamed, duplicated, explicitly saved, or removed and survive browser and device restarts. Workspace edits also auto-save. Undo/redo uses bounded state snapshots and supports toolbar buttons plus standard keyboard shortcuts. The theme preference is stored beside the projects.
 
-The **Shape modeller** tab provides the canvas-first geometry workflow for items, the container, and exclusions. Select or add parts, replace a boundary type, drag geometry directly, resize or rotate with handles, edit Bézier knots and tangents, or enter exact dimensions and transforms in the inspector. Dimensions and effective clearance are shown in-place. Moving an item anchor near another part’s center, edge midpoint, or corner creates a live snap constraint. A snapped part follows its target when target dimensions or rotation change. The lower strip previews the configured sensitivity start, intermediate steps, and end geometry before solving. See [shape modeller details](docs/modeller.md).
+The read-only **Packing** geometry overview shows the container, exclusions, and each item definition without exposing source transforms. It retains clearance and deterministic run configuration, phased progress, cancellation, result metrics, diagnostics, and dimension/clearance overlays. All geometry definition, transform, rotation, Boolean-region, exclusion, and fixed-placement edits live in the **Modeller**.
+
+The unified **Modeller** creates and deletes item definitions, additive material, subtractive cut-outs, and exclusions from one target selector. Select or add parts, replace a boundary type, drag geometry directly, resize or rotate with handles, edit Bézier knots and tangents, manage fixed placements, or enter exact dimensions and transforms in the inspector. Independent toggles control in-place dimensions and effective-clearance outlines. Moving an item anchor near another part’s center, edge midpoint, or corner creates a live snap constraint. See [shape modeller details](docs/modeller.md).
+
+The dedicated **Sensitivity** workspace owns the parameter, range, sampling, seed, run progress, capacity graph, transitions, and selected-result layout. Its geometry strip previews start, intermediate, and end states for item, clearance, exclusion, and container parameters; container studies therefore show the field itself changing rather than an unrelated item preview.
 
 [`examples/wasm-usage.js`](examples/wasm-usage.js) shows module loading, solving, reading placements, and sensitivity execution. The Wasm exports are `validate_problem`, `solve_problem`, and `run_sensitivity`.
 

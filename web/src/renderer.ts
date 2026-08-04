@@ -6,6 +6,7 @@ export interface LayoutDisplayOptions { dimensions?: boolean; clearance?: boolea
 
 export function renderLayout(canvas: HTMLCanvasElement, problem: PackingProblem, placements: Placement[] = [], display: LayoutDisplayOptions = {}): void {
   const context = setup(canvas);
+  const theme = canvasTheme();
   const regionPolygons = problem.container.parts.map((part) => ({
     operation: part.operation,
     points: polygons(part.shape, part.rotation_deg, part.translation.x, part.translation.y)[0] ?? [],
@@ -15,24 +16,24 @@ export function renderLayout(canvas: HTMLCanvasElement, problem: PackingProblem,
   const padding = Math.max(bounds.width, bounds.height) * 0.08 + 1;
   const viewport = makeViewport(canvas, bounds, padding);
 
-  context.fillStyle = "#11151b";
+  context.fillStyle = theme.canvas;
   context.fillRect(0, 0, canvas.width, canvas.height);
   drawGrid(context, viewport);
   for (const region of regionPolygons.filter((entry) => entry.operation === "add")) {
-    drawPolygon(context, region.points, viewport, "#252c36", "#77808c", 2);
+    drawPolygon(context, region.points, viewport, theme.region, theme.muted, 2);
   }
   for (const region of regionPolygons.filter((entry) => entry.operation === "subtract")) {
-    drawPolygon(context, region.points, viewport, "#11151b", "#ef6f6c", 1.5);
+    drawPolygon(context, region.points, viewport, theme.canvas, theme.danger, 1.5);
     hatchPolygon(context, region.points, viewport);
   }
   if (display.dimensions) regionPolygons.forEach((region) => drawDimensions(context, region.points, viewport));
   if (display.clearance && problem.clearance.item_to_boundary > 0) regionPolygons.forEach((region) =>
-    drawDashedPolygon(context, offsetPolygon(region.points, region.operation === "add" ? -problem.clearance.item_to_boundary : problem.clearance.item_to_boundary), viewport, "#9ba5b2"));
+    drawDashedPolygon(context, offsetPolygon(region.points, region.operation === "add" ? -problem.clearance.item_to_boundary : problem.clearance.item_to_boundary), viewport, theme.muted));
 
   for (const exclusion of problem.exclusions) {
     for (const polygon of polygons(exclusion.shape)) {
-      if (display.clearance) drawDashedPolygon(context, offsetPolygon(polygon, Math.max(problem.clearance.item_to_exclusion, exclusion.clearance)), viewport, "#ef6f6c");
-      drawPolygon(context, polygon, viewport, "rgba(239,111,108,.26)", "#ef6f6c", 1.5);
+      if (display.clearance) drawDashedPolygon(context, offsetPolygon(polygon, Math.max(problem.clearance.item_to_exclusion, exclusion.clearance)), viewport, theme.danger);
+      drawPolygon(context, polygon, viewport, theme.dangerFill, theme.danger, 1.5);
       hatchPolygon(context, polygon, viewport);
     }
     if (display.dimensions) drawDimensions(context, polygons(exclusion.shape).flat(), viewport);
@@ -54,13 +55,14 @@ export function renderLayout(canvas: HTMLCanvasElement, problem: PackingProblem,
 }
 
 export function renderSensitivity(canvas: HTMLCanvasElement, result: SensitivityResult | null, selectedValue: number | null = null): void {
+  const theme = canvasTheme();
   const availableWidth = canvas.parentElement?.clientWidth ?? 0;
   canvas.style.width = result ? `${Math.max(availableWidth, result.evaluations.length * 58 + 72)}px` : "100%";
   const context = setup(canvas);
-  context.fillStyle = "#171c24";
+  context.fillStyle = theme.surface;
   context.fillRect(0, 0, canvas.width, canvas.height);
   if (!result || result.evaluations.length === 0) {
-    context.fillStyle = "#7f8996";
+    context.fillStyle = theme.muted;
     context.font = `${14 * devicePixelRatio}px system-ui`;
     context.fillText("Run a sensitivity study to inspect capacity transitions", 20 * devicePixelRatio, 36 * devicePixelRatio);
     return;
@@ -75,7 +77,7 @@ export function renderSensitivity(canvas: HTMLCanvasElement, result: Sensitivity
   const left = 46 * scale, right = canvas.width - 18 * scale, top = 18 * scale, bottom = canvas.height - 32 * scale;
   const x = (value: number) => left + (value - minX) / Math.max(maxX - minX, 1e-9) * (right - left);
   const y = (capacity: number) => bottom - (capacity - minY) / Math.max(maxY - minY, 1) * (bottom - top);
-  context.strokeStyle = "#3a424e";
+  context.strokeStyle = theme.line;
   context.lineWidth = scale;
   context.beginPath(); context.moveTo(left, top); context.lineTo(left, bottom); context.lineTo(right, bottom); context.stroke();
   for (const transition of result.transitions) {
@@ -83,7 +85,7 @@ export function renderSensitivity(canvas: HTMLCanvasElement, result: Sensitivity
     context.fillStyle = "rgba(244,184,96,.09)";
     context.fillRect(lower, top, Math.max(upper - lower, 2 * scale), bottom - top);
   }
-  context.strokeStyle = "#4fc3a1";
+  context.strokeStyle = theme.accent;
   context.lineWidth = 2 * scale;
   context.beginPath();
   result.evaluations.forEach((entry, index) => {
@@ -94,13 +96,13 @@ export function renderSensitivity(canvas: HTMLCanvasElement, result: Sensitivity
   for (const entry of result.evaluations) {
     const selected = selectedValue !== null && Math.abs(entry.value - selectedValue) < 1e-9;
     if (selected) {
-      context.strokeStyle = "#eefaf7"; context.lineWidth = 2 * scale;
+      context.strokeStyle = theme.text; context.lineWidth = 2 * scale;
       context.beginPath(); context.arc(x(entry.value), y(entry.capacity), 7 * scale, 0, Math.PI * 2); context.stroke();
     }
-    context.fillStyle = selected ? "#eefaf7" : "#f4b860";
+    context.fillStyle = selected ? theme.text : theme.amber;
     context.beginPath(); context.arc(x(entry.value), y(entry.capacity), 3.2 * scale, 0, Math.PI * 2); context.fill();
   }
-  context.fillStyle = "#9ba5b2";
+  context.fillStyle = theme.muted;
   context.font = `${11 * scale}px system-ui`;
   context.fillText(format(minX), left, canvas.height - 10 * scale);
   context.fillText(format(maxX), right - 28 * scale, canvas.height - 10 * scale);
@@ -119,7 +121,8 @@ export function sensitivityValueAt(canvas: HTMLCanvasElement, result: Sensitivit
 
 export function renderShapePreview(canvas: HTMLCanvasElement, shape: Shape): void {
   const context = setup(canvas);
-  context.fillStyle = "#141a21";
+  const theme = canvasTheme();
+  context.fillStyle = theme.canvas;
   context.fillRect(0, 0, canvas.width, canvas.height);
   const shapePolygons = polygons(shape);
   const points = shapePolygons.flat();
@@ -132,7 +135,7 @@ export function renderShapePreview(canvas: HTMLCanvasElement, shape: Shape): voi
     drawPolygon(context, polygon, viewport, `${color}73`, color, 1.2);
   });
   const origin = screen({ x: 0, y: 0 }, viewport);
-  context.strokeStyle = "rgba(255,255,255,.25)";
+  context.strokeStyle = theme.line;
   context.lineWidth = devicePixelRatio;
   context.beginPath(); context.moveTo(origin.x - 4 * devicePixelRatio, origin.y); context.lineTo(origin.x + 4 * devicePixelRatio, origin.y); context.moveTo(origin.x, origin.y - 4 * devicePixelRatio); context.lineTo(origin.x, origin.y + 4 * devicePixelRatio); context.stroke();
 }
@@ -228,7 +231,8 @@ function drawDimensions(context: CanvasRenderingContext2D, points: Point[], view
   if (!points.length) return;
   const bounds = pointBounds(points), topLeft = screen({ x: bounds.minX, y: bounds.maxY }, viewport), bottomRight = screen({ x: bounds.maxX, y: bounds.minY }, viewport);
   const offset = 8 * devicePixelRatio;
-  context.save(); context.strokeStyle = "rgba(238,250,247,.78)"; context.fillStyle = "#eefaf7"; context.lineWidth = devicePixelRatio; context.font = `${8 * devicePixelRatio}px DM Mono, monospace`; context.textAlign = "center";
+  const theme = canvasTheme();
+  context.save(); context.strokeStyle = theme.text; context.fillStyle = theme.text; context.globalAlpha = .82; context.lineWidth = devicePixelRatio; context.font = `${8 * devicePixelRatio}px ui-monospace, monospace`; context.textAlign = "center";
   context.beginPath(); context.moveTo(topLeft.x, topLeft.y - offset); context.lineTo(bottomRight.x, topLeft.y - offset); context.moveTo(topLeft.x, topLeft.y - offset * 1.35); context.lineTo(topLeft.x, topLeft.y - offset * .65); context.moveTo(bottomRight.x, topLeft.y - offset * 1.35); context.lineTo(bottomRight.x, topLeft.y - offset * .65); context.stroke();
   context.fillText(format(bounds.width), (topLeft.x + bottomRight.x) / 2, topLeft.y - offset - 3 * devicePixelRatio);
   context.beginPath(); context.moveTo(bottomRight.x + offset, topLeft.y); context.lineTo(bottomRight.x + offset, bottomRight.y); context.moveTo(bottomRight.x + offset * .65, topLeft.y); context.lineTo(bottomRight.x + offset * 1.35, topLeft.y); context.moveTo(bottomRight.x + offset * .65, bottomRight.y); context.lineTo(bottomRight.x + offset * 1.35, bottomRight.y); context.stroke();
@@ -268,7 +272,7 @@ function hatchPolygon(context: CanvasRenderingContext2D, points: Point[], viewpo
 
 function drawGrid(context: CanvasRenderingContext2D, viewport: ReturnType<typeof makeViewport>): void {
   const step = viewport.scale < 16 ? 5 : 1;
-  context.strokeStyle = "rgba(255,255,255,.035)"; context.lineWidth = devicePixelRatio;
+  context.strokeStyle = canvasTheme().grid; context.lineWidth = devicePixelRatio;
   for (let x = Math.floor(viewport.world.minX / step) * step; x <= viewport.world.maxX; x += step) {
     const a = screen({ x, y: viewport.world.minY }, viewport), b = screen({ x, y: viewport.world.maxY }, viewport);
     context.beginPath(); context.moveTo(a.x, a.y); context.lineTo(b.x, b.y); context.stroke();
@@ -281,3 +285,16 @@ function drawGrid(context: CanvasRenderingContext2D, viewport: ReturnType<typeof
 
 function canvasDiagonal(canvas: HTMLCanvasElement): number { return Math.hypot(canvas.width, canvas.height); }
 function format(value: number): string { return Number.isInteger(value) ? String(value) : value.toFixed(2); }
+
+function canvasTheme() {
+  const style = getComputedStyle(document.documentElement);
+  const value = (name: string, fallback: string) => style.getPropertyValue(name).trim() || fallback;
+  return {
+    canvas: value("--canvas", "#10161d"), surface: value("--surface", "#151b23"),
+    region: value("--surface-soft", "#202a35"), text: value("--text", "#e8edf3"),
+    muted: value("--muted", "#8793a2"), line: value("--line", "#2b3541"),
+    accent: value("--accent", "#51c6a4"), amber: value("--amber", "#f2b65d"),
+    danger: value("--danger", "#ee716f"), dangerFill: value("--danger-soft", "rgba(238,113,111,.09)"),
+    grid: document.documentElement.dataset.theme === "light" ? "rgba(25,35,45,.055)" : "rgba(255,255,255,.04)",
+  };
+}

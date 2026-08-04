@@ -1,14 +1,16 @@
 # Shape modeller
 
-The Shape modeller is the geometry-focused workspace in the browser studio. Its target selector switches between item definitions, every additive/subtractive container part, and every exclusion. All targets use the same direct manipulation vocabulary and serialize back into the schema-v2 problem model.
+The Modeller is the geometry-focused workspace in the browser studio. Its target selector switches between item definitions, every additive/subtractive container part, and every exclusion. Definition-level toolbar actions create and delete all four target classes without returning to Packing. All targets use the same direct manipulation vocabulary and serialize back into the schema-v2 problem model.
 
 ## Canvas workflow
 
 Choose a geometry target from the toolbar, then add rectangles, triangles, circles, custom polygons, or closed cubic Bézier paths. The layer list selects overlapping item parts. Selected geometry shows its rotated bounding box and nine anchors: center, four edge midpoints, and four corners. Drag a part freely, pull an edge or corner handle to resize it symmetrically, or drag the amber handle to rotate it. Bézier parts expose solid knots and hollow incoming/outgoing tangent handles directly on the canvas. When any item-shape anchor comes near a compatible anchor on another part, the canvas shows alignment guides and creates a snap on release.
 
-Selecting a container part or exclusion changes the shape buttons from adding compound parts to replacing that shape while preserving its centre and overall dimensions. Container parts can be marked additive material or subtractive cut-outs in the packing editor. The selected shape always shows width and height dimensions; dashed clearance runs inward for additive material and outward around structural cut-outs and exclusions.
+Selecting a container part or exclusion changes the shape buttons from adding compound parts to replacing that shape while preserving its centre and overall dimensions. Container parts can be changed between additive material and subtractive cut-outs in the target settings. Dimension and clearance toggles independently control the annotations; dashed clearance runs inward for additive material and outward around structural cut-outs and exclusions.
 
 Exact dimensions, rotation, and free coordinates remain editable in the inspector. A constraint can also be configured explicitly by choosing the target, own anchor, target anchor, and numeric offset. “Detach at current position” converts the resolved snapped position back into free coordinates. Dependency choices that would immediately create a cycle are omitted.
+
+The definition settings edit item identity, quantity, rotation policy and angle coupling, container identity and Boolean operation, or exclusion identity and clearance. Fixed placements are also created, transformed, reassigned, and deleted here so the Packing workspace remains a read-only view of problem geometry.
 
 Dragging a constrained part preserves the relationship and edits its snap offset. A relationship is removed only with “Detach at current position” or Escape; both preserve the current resolved position instead of allowing the part to jump back to stale fallback coordinates.
 
@@ -30,4 +32,4 @@ Sensitivity mutation happens before this resolution. If circles have their cente
 
 ## Sensitivity preview
 
-The lower strip uses the active item parameter, start, end, and step. It renders the two extremes and up to five intermediate geometries immediately, resolving the same dependency relationships. This is a geometry preview rather than a predicted packing result. Running the study still invokes the Wasm solver; each returned evaluation includes its mutated `PackingProblem`, allowing capacity layouts to use the exact geometry shown in the preview.
+Sensitivity preview now lives on the dedicated Sensitivity page. It renders the two extremes and up to five intermediate geometries immediately, resolving the same dependency relationships. Item parameters show the changing item definition; container, exclusion, and clearance parameters show the changing field. This is a geometry preview rather than a predicted packing result. Running the study still invokes the Wasm solver; each returned evaluation includes its mutated `PackingProblem`, allowing capacity layouts to use the exact geometry shown in the preview.

@@ -323,6 +323,10 @@ export function cloneItemAtParameter(item: EditorItem, parameterKey: string, val
   const clone = structuredClone(item);
   const [kind, itemId, indexText] = parameterKey.split(":");
   if (itemId !== item.id) return clone;
+  if (kind === "item_scale") {
+    clone.parts.forEach((entry) => { entry.x *= value; entry.y *= value; if (entry.snap) { entry.snap.offset.x *= value; entry.snap.offset.y *= value; } scalePrimitive(entry, value); });
+    return clone;
+  }
   const part = clone.parts[Number(indexText)];
   if (!part) return clone;
   if (kind === "part_width") {
@@ -336,7 +340,6 @@ export function cloneItemAtParameter(item: EditorItem, parameterKey: string, val
     else if (part.kind === "bezier") scaleBezierAxis(part.knots, value, "y");
   } else if (kind === "part_radius" && part.kind === "circle") part.radius = value;
   else if (kind === "part_scale") scalePrimitive(part, value);
-  else if (kind === "item_scale") clone.parts.forEach((entry) => { entry.x *= value; entry.y *= value; if (entry.snap) { entry.snap.offset.x *= value; entry.snap.offset.y *= value; } scalePrimitive(entry, value); });
   return clone;
 }
 

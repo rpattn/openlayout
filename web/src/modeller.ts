@@ -1,5 +1,5 @@
 import {
-  cloneItemAtParameter, makePrimitive, primitiveAnchor, primitiveShape,
+  makePrimitive, primitiveAnchor, primitiveShape,
   resolveEditorTranslations, shapePoints, transformPoint,
 } from "./problem";
 import type { AnchorName, EditorItem, EditorState, Point, PrimitiveEditor } from "./types";
@@ -18,7 +18,6 @@ export class ShapeModeller {
   private view: ViewBounds;
   private readonly svg: SVGSVGElement;
   private readonly side: HTMLElement;
-  private readonly sensitivity: HTMLElement;
   private readonly keyHandler = (event: KeyboardEvent): void => {
     if (event.key === "Escape" && this.selected?.snap) {
       const position = resolveEditorTranslations(this.item.parts).get(this.selected.id)!;
@@ -32,17 +31,20 @@ export class ShapeModeller {
     private readonly state: EditorState,
     target: number | string,
     private readonly onChange: () => void,
-    private readonly onClose: () => void,
+    private readonly onClose?: () => void,
+    private readonly display = { dimensions: true, clearance: true },
   ) {
     this.targetKey = typeof target === "number" ? `item:${target}` : target;
     this.selectedId = this.item.parts[0]?.id ?? "";
     this.view = fitView(this.item.parts);
     root.innerHTML = `
       <div class="model-toolbar">
-        <button class="button ghost" id="model-back">← Back to packing</button>
-        <div class="model-title"><small>SHAPE MODELLER</small><strong>Constraint-aware item geometry</strong></div>
+        ${this.onClose ? '<button class="button ghost" id="model-back">← Back to packing</button>' : ""}
+        <div class="model-title"><small>GEOMETRY WORKSPACE</small><strong>Unified shape modeller</strong></div>
         <label>Editing<select id="model-target-select">${this.targetOptions()}</select></label>
+        <div class="model-target-actions"><button data-add-target="item">+ Item</button><button data-add-target="material">+ Material</button><button data-add-target="cutout">+ Cut-out</button><button data-add-target="exclusion">+ Exclusion</button><button id="delete-model-target" class="danger-text">Delete</button></div>
         <div class="model-add"><span>Shape</span>${(["rectangle", "triangle", "circle", "polygon", "bezier"] as const).map((kind) => `<button data-add-shape="${kind}">${kind}</button>`).join("")}</div>
+        <div class="model-overlay-tools"><label><input id="model-toggle-dimensions" type="checkbox" ${this.display.dimensions ? "checked" : ""}> Dimensions</label><label><input id="model-toggle-clearance" type="checkbox" ${this.display.clearance ? "checked" : ""}> Clearance</label></div>
       </div>
       <div class="model-body">
         <aside id="model-side" class="model-side"></aside>
@@ -50,11 +52,9 @@ export class ShapeModeller {
           <div class="stage-help"><span>Drag to move · corners resize · amber handle rotates</span><span>Bézier knots and tangents edit the curve</span><span>Nearby anchors snap</span></div>
           <svg id="model-canvas" class="model-canvas" aria-label="Interactive item shape modeller"></svg>
         </section>
-      </div>
-      <section id="model-sensitivity" class="model-sensitivity"></section>`;
+      </div>`;
     this.svg = root.querySelector<SVGSVGElement>("#model-canvas")!;
     this.side = root.querySelector("#model-side")!;
-    this.sensitivity = root.querySelector("#model-sensitivity")!;
     this.bindShell();
     this.render();
   }
@@ -83,11 +83,15 @@ export class ShapeModeller {
   }
 
   private bindShell(): void {
-    this.root.querySelector("#model-back")!.addEventListener("click", this.onClose);
+    this.root.querySelector("#model-back")?.addEventListener("click", () => this.onClose?.());
     this.root.querySelector<HTMLSelectElement>("#model-target-select")!.addEventListener("change", (event) => {
       this.targetKey = (event.target as HTMLSelectElement).value;
       this.selectedId = this.item.parts[0]?.id ?? ""; this.view = fitView(this.item.parts); this.render();
     });
+    this.root.querySelectorAll<HTMLButtonElement>("[data-add-target]").forEach((button) => button.addEventListener("click", () => this.addTarget(button.dataset.addTarget!)));
+    this.root.querySelector("#delete-model-target")!.addEventListener("click", () => this.deleteTarget());
+    this.root.querySelector<HTMLInputElement>("#model-toggle-dimensions")!.addEventListener("change", (event) => { this.display.dimensions = (event.target as HTMLInputElement).checked; this.renderCanvas(); });
+    this.root.querySelector<HTMLInputElement>("#model-toggle-clearance")!.addEventListener("change", (event) => { this.display.clearance = (event.target as HTMLInputElement).checked; this.renderCanvas(); });
     this.root.querySelectorAll<HTMLButtonElement>("[data-add-shape]").forEach((button) => button.addEventListener("click", () => {
       const primitive = makePrimitive(button.dataset.addShape as PrimitiveEditor["kind"]);
       const center = { x: this.view.minX + this.view.width / 2, y: this.view.minY + this.view.height / 2 };
@@ -106,15 +110,23 @@ export class ShapeModeller {
     window.addEventListener("keydown", this.keyHandler);
   }
 
-  private render(): void { this.renderSide(); this.renderCanvas(); this.renderSensitivity(); }
+  private render(): void { this.renderTargetOptions(); this.renderSide(); this.renderCanvas(); }
+
+  private renderTargetOptions(): void {
+    const select = this.root.querySelector<HTMLSelectElement>("#model-target-select");
+    if (select) select.innerHTML = this.targetOptions();
+  }
 
   private renderSide(): void {
     const selected = this.selected;
     this.side.innerHTML = `
       <div class="model-side-heading"><div><small>PARTS</small><strong>${escapeHtml(this.item.id)}</strong></div><span>${this.item.parts.length}</span></div>
+      ${this.targetSettingsHtml()}
       <div class="layer-list">${this.item.parts.map((part, index) => `<button class="layer ${part.id === this.selectedId ? "selected" : ""}" data-layer="${part.id}"><span class="shape-icon ${part.kind}"></span><span><strong>${escapeHtml(part.id)}</strong><small>${part.kind}${part.snap ? " · snapped" : ""}</small></span><em>${index + 1}</em></button>`).join("")}</div>
+      ${this.fixedPlacementsHtml()}
       ${selected ? this.inspectorHtml(selected) : '<div class="empty-inspector">Add or select a shape part.</div>'}`;
     this.side.querySelectorAll<HTMLButtonElement>("[data-layer]").forEach((button) => button.addEventListener("click", () => { this.selectedId = button.dataset.layer!; this.render(); }));
+    this.bindTargetSettings();
     if (!selected) return;
     this.side.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>("[data-model-field]").forEach((input) => input.addEventListener("change", () => {
       const value = input instanceof HTMLInputElement && input.type === "number" ? Number(input.value) : input.value;
@@ -144,6 +156,44 @@ export class ShapeModeller {
     this.side.querySelector("#delete-part-model")?.addEventListener("click", () => this.deleteSelected());
   }
 
+  private targetSettingsHtml(): string {
+    if (this.isItem) {
+      const item = this.state.items[this.itemIndex];
+      return `<section class="target-settings"><div class="inspector-title"><div><small>ITEM DEFINITION</small><strong>${escapeHtml(item.id)}</strong></div></div><div class="field-grid two"><label>ID<input data-target-field="id" value="${escapeHtml(item.id)}"></label>${targetNumber("Quantity", "quantity", item.quantity, 1)}<label>Rotation search<select data-target-field="rotationMode"><option value="continuous" ${item.rotationMode === "continuous" ? "selected" : ""}>Adaptive</option><option value="discrete" ${item.rotationMode === "discrete" ? "selected" : ""}>Fixed angles</option></select></label><label>Angle coupling<select data-target-field="rotationCoupling"><option value="independent" ${item.rotationCoupling === "independent" ? "selected" : ""}>Independent</option><option value="shared_per_item" ${item.rotationCoupling === "shared_per_item" ? "selected" : ""}>Shared</option></select></label>${item.rotationMode === "continuous" ? targetNumber("Minimum°", "minRotation", item.minRotation, 1) + targetNumber("Maximum°", "maxRotation", item.maxRotation, 1) : `<label class="wide">Angles<input data-target-field="rotations" value="${escapeHtml(item.rotations)}"></label>`}</div></section>`;
+    }
+    if (this.isContainer) {
+      const region = this.state.containerParts[this.containerIndex];
+      return `<section class="target-settings"><div class="inspector-title"><div><small>CONTAINER REGION</small><strong>${escapeHtml(region.id)}</strong></div></div><div class="field-grid two"><label>ID<input data-target-field="id" value="${escapeHtml(region.id)}"></label><label>Boolean operation<select data-target-field="operation"><option value="add" ${region.operation === "add" ? "selected" : ""}>Add material</option><option value="subtract" ${region.operation === "subtract" ? "selected" : ""}>Subtract cut-out</option></select></label></div></section>`;
+    }
+    const exclusion = this.state.exclusions[this.exclusionIndex];
+    return `<section class="target-settings"><div class="inspector-title"><div><small>EXCLUSION</small><strong>${escapeHtml(exclusion.id)}</strong></div></div><div class="field-grid two"><label>ID<input data-target-field="id" value="${escapeHtml(exclusion.id)}"></label>${targetNumber("Clearance", "clearance", exclusion.clearance, .05)}</div></section>`;
+  }
+
+  private bindTargetSettings(): void {
+    this.side.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-target-field]").forEach((input) => input.addEventListener("change", () => {
+      const value = input instanceof HTMLInputElement && input.type === "number" ? Number(input.value) : input.value;
+      if (this.isItem) setField(this.state.items[this.itemIndex], input.dataset.targetField!, value);
+      else if (this.isContainer) setField(this.state.containerParts[this.containerIndex], input.dataset.targetField!, value);
+      else setField(this.state.exclusions[this.exclusionIndex], input.dataset.targetField!, value);
+      this.changed();
+    }));
+    this.side.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-fixed-field]").forEach((input) => input.addEventListener("change", () => {
+      const placement = this.state.fixedPlacements[Number(input.dataset.fixedIndex)];
+      setField(placement, input.dataset.fixedField!, input instanceof HTMLInputElement && input.type === "number" ? Number(input.value) : input.value);
+      this.changed();
+    }));
+    this.side.querySelector("#add-fixed-model")?.addEventListener("click", () => {
+      this.state.fixedPlacements.push({ item_id: this.state.items[0]?.id ?? "", x: 0, y: 0, rotation_deg: 0 }); this.changed();
+    });
+    this.side.querySelectorAll<HTMLButtonElement>("[data-delete-fixed]").forEach((button) => button.addEventListener("click", () => {
+      this.state.fixedPlacements.splice(Number(button.dataset.deleteFixed), 1); this.changed();
+    }));
+  }
+
+  private fixedPlacementsHtml(): string {
+    return `<section class="target-settings fixed-settings"><div class="inspector-title"><div><small>FIXED PLACEMENTS</small><strong>${this.state.fixedPlacements.length || "None"}</strong></div><button id="add-fixed-model" class="text-button">+ Add</button></div>${this.state.fixedPlacements.map((placement, index) => `<div class="fixed-model-row"><label>Item<select data-fixed-field="item_id" data-fixed-index="${index}">${this.state.items.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === placement.item_id ? "selected" : ""}>${escapeHtml(item.id)}</option>`).join("")}</select></label><label>X<input type="number" step=".1" value="${placement.x}" data-fixed-field="x" data-fixed-index="${index}"></label><label>Y<input type="number" step=".1" value="${placement.y}" data-fixed-field="y" data-fixed-index="${index}"></label><label>Rotation°<input type="number" step="1" value="${placement.rotation_deg}" data-fixed-field="rotation_deg" data-fixed-index="${index}"></label><button class="icon-action danger-text" data-delete-fixed="${index}" aria-label="Delete fixed placement">×</button></div>`).join("") || '<p class="hint">Pin exact item transforms here; the Packing page remains read-only.</p>'}</section>`;
+  }
+
   private inspectorHtml(part: PrimitiveEditor): string {
     const resolved = resolveEditorTranslations(this.item.parts).get(part.id) ?? { x: part.x, y: part.y };
     const dimensionFields = part.kind === "rectangle" ? modelNumber("Width", "width", part.width) + modelNumber("Height", "height", part.height)
@@ -170,27 +220,13 @@ export class ShapeModeller {
     const selected = this.selected;
     this.svg.setAttribute("viewBox", `${this.view.minX} ${-this.view.minY - this.view.height} ${this.view.width} ${this.view.height}`);
     this.svg.innerHTML = `<rect x="${this.view.minX}" y="${-this.view.minY - this.view.height}" width="${this.view.width}" height="${this.view.height}" class="model-bg"/>${grid}
-      ${clearanceMarkup(this.item.parts, translations, this.isContainer && this.state.containerParts[this.containerIndex].operation === "add" ? -this.targetClearance() : this.targetClearance())}
+      ${this.display.clearance ? clearanceMarkup(this.item.parts, translations, this.isContainer && this.state.containerParts[this.containerIndex].operation === "add" ? -this.targetClearance() : this.targetClearance()) : ""}
       ${this.item.parts.map((part, index) => {
         const position = translations.get(part.id) ?? { x: part.x, y: part.y };
         return `<path data-part-id="${part.id}" class="model-shape ${part.id === this.selectedId ? "selected" : ""}" d="${pathForPart(part, position)}" fill="${COLORS[index % COLORS.length]}66" stroke="${COLORS[index % COLORS.length]}"/>`;
       }).join("")}
-      ${selected ? selectionMarkup(selected, translations.get(selected.id)!, Math.max(this.view.width / Math.max(this.svg.clientWidth, 1) * 32, .35)) : ""}
+      ${selected ? selectionMarkup(selected, translations.get(selected.id)!, Math.max(this.view.width / Math.max(this.svg.clientWidth, 1) * 32, .35), this.display.dimensions) : ""}
       ${this.snapCandidate ? `<line class="snap-guide" x1="${this.snapCandidate.point.x - this.view.width}" y1="${-this.snapCandidate.point.y}" x2="${this.snapCandidate.point.x + this.view.width}" y2="${-this.snapCandidate.point.y}"/><line class="snap-guide" x1="${this.snapCandidate.point.x}" y1="${-this.snapCandidate.point.y - this.view.height}" x2="${this.snapCandidate.point.x}" y2="${-this.snapCandidate.point.y + this.view.height}"/>` : ""}`;
-  }
-
-  private renderSensitivity(): void {
-    if (!this.isItem) {
-      this.sensitivity.innerHTML = `<div class="geometry-context"><div><small>PROBLEM GEOMETRY</small><strong>${escapeHtml(this.item.id)}</strong></div><p>Use the same canvas handles to move, resize, rotate, or reshape this boundary. Dimensions are shown on the selected shape and the dashed outline is its active clearance.</p><dl><dt>Geometry</dt><dd>${this.selected?.kind ?? "—"}</dd><dt>Clearance</dt><dd>${format(this.targetClearance())}</dd></dl></div>`;
-      return;
-    }
-    const parameterOptions = modelParameterOptions(this.item);
-    if (!parameterOptions.some(([value]) => value === this.state.study.parameterKey)) this.state.study.parameterKey = parameterOptions[0]?.[0] ?? "";
-    const values = studyValues(this.state.study.start, this.state.study.end, this.state.study.initial_step);
-    this.sensitivity.innerHTML = `<div class="sensitivity-controls"><div><small>SENSITIVITY PREVIEW</small><strong>Geometry across the study</strong></div><label>Parameter<select id="model-study-parameter">${parameterOptions.map(([value, label]) => `<option value="${value}" ${value === this.state.study.parameterKey ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}</select></label>${studyNumber("Start", "start", this.state.study.start)}${studyNumber("End", "end", this.state.study.end)}${studyNumber("Step", "initial_step", this.state.study.initial_step)}</div>
-      <div class="sensitivity-steps">${values.map((value, index) => `<article class="shape-step ${index === 0 || index === values.length - 1 ? "extreme" : ""}"><header><strong>${format(value)}</strong><span>${index === 0 ? "START" : index === values.length - 1 ? "END" : `STEP ${index}`}</span></header>${itemSvg(cloneItemAtParameter(this.item, this.state.study.parameterKey, value))}</article>`).join("")}</div>`;
-    this.sensitivity.querySelector<HTMLSelectElement>("#model-study-parameter")!.addEventListener("change", (event) => { this.state.study.parameterKey = (event.target as HTMLSelectElement).value; this.onChange(); this.renderSensitivity(); });
-    this.sensitivity.querySelectorAll<HTMLInputElement>("[data-model-study]").forEach((input) => input.addEventListener("change", () => { setField(this.state.study, input.dataset.modelStudy!, Number(input.value)); this.onChange(); this.renderSensitivity(); }));
   }
 
   private pointerDown(event: PointerEvent): void {
@@ -231,7 +267,7 @@ export class ShapeModeller {
       const startAngle = Math.atan2(this.drag.start.y - this.drag.original.y, this.drag.start.x - this.drag.original.x);
       const currentAngle = Math.atan2(current.y - this.drag.original.y, current.x - this.drag.original.x);
       part.rotation = Math.round((this.drag.initialRotation! + (currentAngle - startAngle) * 180 / Math.PI) * 10) / 10;
-      this.drag.moved = true; this.renderCanvas(); this.renderSensitivity(); return;
+      this.drag.moved = true; this.renderCanvas(); return;
     }
     if (this.drag.mode === "bezier" && part.kind === "bezier") {
       const knot = part.knots[this.drag.bezierIndex!], handle = this.drag.bezierHandle!;
@@ -240,13 +276,12 @@ export class ShapeModeller {
         const delta = { x: local.x - knot.point.x, y: local.y - knot.point.y };
         knot.point = local; knot.control_in.x += delta.x; knot.control_in.y += delta.y; knot.control_out.x += delta.x; knot.control_out.y += delta.y;
       } else knot[handle] = local;
-      this.drag.moved = true; this.renderCanvas(); this.renderSensitivity(); return;
+      this.drag.moved = true; this.renderCanvas(); return;
     }
     if (this.drag.mode === "resize") {
       resizePart(part, this.drag.original, current, this.drag.anchor!);
       this.drag.moved = true;
       this.renderCanvas();
-      this.renderSensitivity();
       return;
     }
     const raw = { x: this.drag.original.x + current.x - this.drag.start.x, y: this.drag.original.y + current.y - this.drag.start.y };
@@ -281,8 +316,38 @@ export class ShapeModeller {
     const selected = this.selected; if (!selected || !this.isItem) return; const copy = structuredClone(selected); let suffix = 1; do { copy.id = `${selected.id}-copy-${suffix++}`; } while (this.item.parts.some((part) => part.id === copy.id)); copy.x += .7; copy.y += .7; delete copy.snap; this.item.parts.push(copy); this.selectedId = copy.id; this.changed(true);
   }
 
+  private addTarget(kind: string): void {
+    if (kind === "item") {
+      const id = uniqueId("item", this.state.items.map((item) => item.id));
+      this.state.items.push({ id, quantity: 50, rotationMode: "continuous", rotationCoupling: "independent", rotations: "0, 90", minRotation: 0, maxRotation: 360, parts: [makePrimitive("rectangle")] });
+      this.targetKey = `item:${this.state.items.length - 1}`;
+    } else if (kind === "exclusion") {
+      this.state.exclusions.push({ id: uniqueId("exclusion", this.state.exclusions.map((entry) => entry.id)), clearance: 0, primitive: makePrimitive("rectangle") });
+      this.targetKey = `exclusion:${this.state.exclusions.length - 1}`;
+    } else {
+      const operation = kind === "material" ? "add" : "subtract";
+      this.state.containerParts.push({ id: uniqueId(operation === "add" ? "material" : "cutout", this.state.containerParts.map((entry) => entry.id)), operation, primitive: makePrimitive("rectangle") });
+      this.targetKey = `container:${this.state.containerParts.length - 1}`;
+    }
+    this.selectedId = this.item.parts[0]?.id ?? ""; this.view = fitView(this.item.parts); this.changed(true);
+  }
+
+  private deleteTarget(): void {
+    if (this.isItem) {
+      if (this.state.items.length === 1) return;
+      this.state.items.splice(this.itemIndex, 1); this.targetKey = "item:0";
+    } else if (this.isContainer) {
+      const target = this.state.containerParts[this.containerIndex];
+      if (target.operation === "add" && this.state.containerParts.filter((entry) => entry.operation === "add").length === 1) return;
+      this.state.containerParts.splice(this.containerIndex, 1); this.targetKey = "container:0";
+    } else {
+      this.state.exclusions.splice(this.exclusionIndex, 1); this.targetKey = this.state.items.length ? "item:0" : "container:0";
+    }
+    this.selectedId = this.item.parts[0]?.id ?? ""; this.view = fitView(this.item.parts); this.changed(true);
+  }
+
   private deleteSelected(): void {
-    if (!this.selected || !this.isItem) return; const id = this.selected.id; const item = this.item; item.parts = item.parts.filter((part) => part.id !== id); item.parts.forEach((part) => { if (part.snap?.targetId === id) delete part.snap; }); this.selectedId = item.parts[0]?.id ?? ""; this.changed(true);
+    if (!this.selected || !this.isItem || this.item.parts.length === 1) return; const id = this.selected.id; const item = this.item; item.parts = item.parts.filter((part) => part.id !== id); item.parts.forEach((part) => { if (part.snap?.targetId === id) delete part.snap; }); this.selectedId = item.parts[0]?.id ?? ""; this.changed(true);
   }
 
   private targetClearance(): number {
@@ -315,7 +380,7 @@ function dependsOn(parts: PrimitiveEditor[], startId: string, targetId: string):
   return false;
 }
 
-function selectionMarkup(part: PrimitiveEditor, position: Point, handleOffset: number): string {
+function selectionMarkup(part: PrimitiveEditor, position: Point, handleOffset: number, showDimensions: boolean): string {
   const points = ANCHORS.map((anchor) => ({ anchor, point: primitiveAnchor(part, anchor, position) }));
   const byAnchor = new Map(points.map((entry) => [entry.anchor, entry.point]));
   const center = byAnchor.get("center")!, top = byAnchor.get("top")!;
@@ -323,7 +388,7 @@ function selectionMarkup(part: PrimitiveEditor, position: Point, handleOffset: n
   const rotate = { x: top.x + (top.x - center.x) / length * handleOffset, y: top.y + (top.y - center.y) / length * handleOffset };
   const outline = ["top_left", "top_right", "bottom_right", "bottom_left"].map((anchor) => byAnchor.get(anchor as AnchorName)!);
   const bezier = part.kind === "bezier" ? bezierControlMarkup(part, position) : "";
-  return `<path class="selection-box" d="${outline.map((point, index) => `${index ? "L" : "M"}${point.x},${-point.y}`).join(" ")} Z"/>${dimensionMarkup(byAnchor, handleOffset)}<line class="rotate-stem" x1="${top.x}" y1="${-top.y}" x2="${rotate.x}" y2="${-rotate.y}"/><circle class="rotate-handle" data-rotate-handle cx="${rotate.x}" cy="${-rotate.y}" r=".13"/>${points.map(({ anchor, point }) => `<circle class="anchor-handle ${anchor === "center" ? "center" : anchor}" data-anchor="${anchor}" ${anchor === "center" ? "" : `data-resize-anchor="${anchor}"`} cx="${point.x}" cy="${-point.y}" r=".11"/>`).join("")}${bezier}`;
+  return `<path class="selection-box" d="${outline.map((point, index) => `${index ? "L" : "M"}${point.x},${-point.y}`).join(" ")} Z"/>${showDimensions ? dimensionMarkup(byAnchor, handleOffset) : ""}<line class="rotate-stem" x1="${top.x}" y1="${-top.y}" x2="${rotate.x}" y2="${-rotate.y}"/><circle class="rotate-handle" data-rotate-handle cx="${rotate.x}" cy="${-rotate.y}" r=".13"/>${points.map(({ anchor, point }) => `<circle class="anchor-handle ${anchor === "center" ? "center" : anchor}" data-anchor="${anchor}" ${anchor === "center" ? "" : `data-resize-anchor="${anchor}"`} cx="${point.x}" cy="${-point.y}" r=".11"/>`).join("")}${bezier}`;
 }
 
 function positionForSnap(part: PrimitiveEditor, parts: PrimitiveEditor[]): Point {
@@ -428,13 +493,6 @@ function pathForPart(part: PrimitiveEditor, position: Point): string {
   return points.map((point, index) => `${index ? "L" : "M"}${point.x},${-point.y}`).join(" ") + " Z";
 }
 
-function itemSvg(item: EditorItem): string {
-  const translations = resolveEditorTranslations(item.parts); const polygons = item.parts.map((part) => shapePoints(primitiveShape(part)).map((point) => transformPoint(point, part.rotation, translations.get(part.id)!.x, translations.get(part.id)!.y)));
-  const all = polygons.flat(); const bounds = boundsOf(all); const padding = Math.max(bounds.width, bounds.height) * .18 + .2;
-  const view = `${bounds.minX - padding} ${-bounds.maxY - padding} ${bounds.width + padding * 2} ${bounds.height + padding * 2}`;
-  return `<svg viewBox="${view}" aria-label="Sensitivity shape at parameter value">${polygons.map((points, index) => `<path d="${points.map((point, pointIndex) => `${pointIndex ? "L" : "M"}${point.x},${-point.y}`).join(" ")} Z" fill="${COLORS[index % COLORS.length]}66" stroke="${COLORS[index % COLORS.length]}" vector-effect="non-scaling-stroke"/>`).join("")}</svg>`;
-}
-
 function fitView(parts: PrimitiveEditor[]): ViewBounds {
   if (!parts.length) return { minX: -7, minY: -5, width: 14, height: 10 };
   const translations = resolveEditorTranslations(parts); const points = parts.flatMap((part) => shapePoints(primitiveShape(part)).map((point) => transformPoint(point, part.rotation, translations.get(part.id)!.x, translations.get(part.id)!.y)));
@@ -444,13 +502,12 @@ function fitView(parts: PrimitiveEditor[]): ViewBounds {
 
 function boundsOf(points: Point[]) { const xs = points.map((point) => point.x), ys = points.map((point) => point.y); const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys); return { minX, maxX, minY, maxY, width: maxX - minX, height: maxY - minY }; }
 function gridLines(view: ViewBounds): string { const step = 1, lines: string[] = []; for (let x = Math.floor(view.minX); x <= view.minX + view.width; x += step) lines.push(`<line class="model-grid" x1="${x}" y1="${-view.minY - view.height}" x2="${x}" y2="${-view.minY}"/>`); for (let y = Math.floor(view.minY); y <= view.minY + view.height; y += step) lines.push(`<line class="model-grid" x1="${view.minX}" y1="${-y}" x2="${view.minX + view.width}" y2="${-y}"/>`); return lines.join(""); }
-function studyValues(start: number, end: number, step: number): number[] { const values = [start]; if (step > 0) for (let value = start + step; value < end && values.length < 6; value += step) values.push(value); if (end !== start) values.push(end); return values; }
-function modelParameterOptions(item: EditorItem): Array<[string, string]> { const values: Array<[string, string]> = [[`item_scale:${item.id}`, "Whole item scale"]]; item.parts.forEach((part, index) => { values.push([`part_scale:${item.id}:${index}`, `${part.id} · scale`]); if (part.kind === "rectangle" || part.kind === "triangle" || part.kind === "polygon" || part.kind === "bezier") values.push([`part_width:${item.id}:${index}`, `${part.id} · width/base`], [`part_height:${item.id}:${index}`, `${part.id} · height`]); if (part.kind === "circle") values.push([`part_radius:${item.id}:${index}`, `${part.id} · radius`]); }); return values; }
 function anchorOptions(selected: AnchorName): string { return ANCHORS.map((anchor) => `<option value="${anchor}" ${anchor === selected ? "selected" : ""}>${anchor.replaceAll("_", " ")}</option>`).join(""); }
 function modelNumber(label: string, field: string, value: number, step = .1, disabled = false): string { return `<label>${label}<input type="number" value="${value}" step="${step}" data-model-field="${field}" ${disabled ? "disabled" : ""}></label>`; }
-function studyNumber(label: string, field: string, value: number): string { return `<label>${label}<input type="number" value="${value}" step=".1" data-model-study="${field}"></label>`; }
+function targetNumber(label: string, field: string, value: number, step = .1): string { return `<label>${label}<input type="number" value="${value}" step="${step}" data-target-field="${field}"></label>`; }
 function setField(target: object, field: string, value: unknown): void { (target as Record<string, unknown>)[field] = value; }
 function capitalize(value: string): string { return value[0].toUpperCase() + value.slice(1); }
 function format(value: number): string { return Number.isInteger(value) ? String(value) : value.toFixed(3).replace(/0+$/, ""); }
 function escapeHtml(value: unknown): string { return String(value).replace(/[&<>"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[character]!); }
 function shellItem(id: string, primitive: PrimitiveEditor): EditorItem { return { id, quantity: 1, rotationMode: "discrete", rotationCoupling: "independent", rotations: "0", minRotation: 0, maxRotation: 0, parts: [primitive] }; }
+function uniqueId(prefix: string, ids: string[]): string { let index = 1; while (ids.includes(`${prefix}-${index}`)) index++; return `${prefix}-${index}`; }
