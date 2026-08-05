@@ -1,7 +1,7 @@
 use crate::{
     PackingError, PackingErrorKind, PackingProblem, ParameterPath, SeedPolicy, SensitivityPoint,
     SensitivityResult, SensitivityStudy, Shape, TransitionInterval, prepare_problem,
-    solve_prepared,
+    solve_prepared, solve_prepared_with_warm_start,
 };
 use std::collections::BTreeMap;
 
@@ -141,7 +141,17 @@ fn evaluate(
     if study.seed_policy == SeedPolicy::DeriveFromValue {
         options.seed ^= value.to_bits().rotate_left(17);
     }
-    let result = solve_prepared(&prepared, &options)?;
+    if phase == crate::SensitivityPhase::Refining {
+        options.quality = crate::SolveQuality::Thorough;
+    }
+    let nearest = evaluations
+        .iter()
+        .min_by(|a, b| (a.value - value).abs().total_cmp(&(b.value - value).abs()));
+    let result = if let Some(previous) = nearest {
+        solve_prepared_with_warm_start(&prepared, &options, &previous.result.placements)?
+    } else {
+        solve_prepared(&prepared, &options)?
+    };
     let capacity = result.packed_item_count;
     evaluations.push(SensitivityPoint {
         value,

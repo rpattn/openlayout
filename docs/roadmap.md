@@ -1,31 +1,49 @@
 # Roadmap
 
-Work is ordered by evidence needed for the private planning tool. Stages describe the next useful proof, not compatibility or release promises.
+Work is ordered by evidence needed for the intended private interactive application. None of these stages promises a stable public API, package, migration system, or extension framework.
 
-## Stage 1: complete concept proof
+## Current engine milestone
 
-This repository establishes the first vertical slice: core polygon geometry, explicit clearances, irregular containers, exclusions, primitive and compound items, structured and greedy packing, bounded compaction, independent result validation, sampled and adaptive sensitivity sweeps, Wasm execution, and native JSON inspection. Representative generic inputs and five integration tests protect the important behavior.
+The engine now has reusable prepared rotations and bounds, a measured greedy baseline, explicit contact candidates, staged broad/exact collision work, bounded beam states, conservative deduplication and pruning, remove/repack repair, target feasibility, adjacent sensitivity warm starts, transition-focused stronger search, and optional finite conflict-graph refinement. Native and Wasm adapters call the same core, and every accepted layout is independently validated. [Performance notes](performance.md) record where the current modes spend time.
 
-Remaining Stage 1 work should be driven only by failures found while exercising those examples: tighten geometric predicates if a reproducible valid input defeats them, and compare CLI results across native and Wasm runtimes.
+## Worker integration
 
-## Stage 2: frontend-ready engine
+- A deterministic two-to-four-worker pool now separates direct and clearance-continuation lanes,
+  runs bounded alternate seeds, tolerates individual lane failure, reports real browser phase time,
+  and terminates every worker on cancellation.
+- Make progress events cover preparation and every long graph-building phase consistently.
+- Check cooperative cancellation inside all candidate generation and graph edge loops, in addition to worker termination.
+- Report incremental best layouts without repeatedly cloning more geometry than the UI needs.
+- Settle stable-enough internal frontend input/output fields from actual studio use, without compatibility machinery.
 
-The first frontend now runs against the current JSON: it provides stable-enough internal field names for this one application, deterministic layout identifiers, cached prepared geometry for solve-only changes, direct parameter editing for compound primitives, and a canvas modeller with persistent anchor constraints.
+## Repeated-work caching
 
-Wasm runs in a Web Worker with progress snapshots, cancellation, and incremental best results without making browser threads a core requirement. The studio preserves and renders representative sensitivity layouts, exposes transition diagnostics, and reports malformed geometry. Continue refining this interaction only from actual use; none of it is a compatibility promise.
+- Clearance continuation now clones one canonical prepared problem, repairs each adjacent stage
+  first, and invokes a small targeted beam before a reduced full fallback.
+- Add bounded layout caching keyed by problem, mode, options, and seed.
+- Cache sensitivity points and repaired layouts across interrupted studies.
+- Reuse safe contact frontiers or pair-conflict calculations only after profiles show a net memory win.
+- Define browser memory ceilings and eviction behavior for prepared geometry and candidate graphs.
 
-## Stage 3: stronger packing quality
+## Transition reliability
 
-Expand the current reference corpus and compare every algorithm change against it. Learned contact lattices, complementary motifs, field decomposition, in-place rotation, and a bounded three-item remove/reinsert neighbourhood now provide the first quality baseline. Evaluate full no-fit polygons or conflict-graph candidate selection only where the corpus demonstrates that the bounded contact methods remain weak.
+- Exercise warm starts on changes that invalidate only part of a layout and record repair effectiveness.
+- Refine transitions with feasibility targets before launching full optimization.
+- Preserve and explain unresolved or non-monotonic points when bounded searches disagree.
+- Add diagnostics identifying the active upper bound, exhausted search budget, and high-quality failed contacts when a count cannot be improved.
 
-Develop useful shape-aware upper bounds, warm-start adjacent sensitivity cases, and make transition refinement reuse nearby layouts. Compare strategies by capacity, runtime, and validation failures. Treat consistent transition locations—not isolated best counts—as a solver-quality metric.
+## Geometry and performance robustness
 
-## Stage 4: production robustness
+- Set representative latency, state-count, exact-check, and memory budgets for fast, balanced, and thorough modes.
+- Reduce thorough-mode candidate regeneration, currently its clearest measured bottleneck.
+- Strengthen predicates or adopt a more robust offset/Minkowski facility only for reproduced failures.
+- Reconsider cached no-fit polygons only if difficult repeated shapes justify their complexity and clearance conventions can be proven.
+- Keep deterministic native/Wasm fixtures and independent validation at the acceptance boundary.
 
-Production means dependable enough for the intended private interactive planning application. Replace or reinforce geometric predicates with a robust clipping/offset kernel where adversarial inputs show need. Establish deterministic fixtures across native and Wasm builds, cancellation latency for long solves, browser memory ceilings, and representative performance targets.
+## Application-facing results
 
-Fuzz malformed inputs without turning the project into a public hardening exercise. Continue validating every returned layout. Recover from individual failed sensitivity points and retain diagnostics. Add persistence-ready result records and export-ready transformed geometry only when the application begins saving or exporting work. Express operational constraints through generic regions, metadata, and explicit scoring terms, keeping application interpretation outside the engine.
+- Export transformed generic geometry and diagnostics suitable for visualization.
+- Explain bounded, timed-out, finite-candidate optimal, and unrestricted proven results distinctly.
+- Add generic operational constraints only when the application supplies a real case; keep application terminology outside the engine.
 
-## Stage 5: optional later possibilities
-
-These are not part of the current goal and should not shape current abstractions: richer frontend integration, DXF or SVG import, more advanced optimization, multithreaded browser execution, public packaging, stable APIs, broader documentation, and public-repository polish. Adopt any of them only when actual use demonstrates the need.
+Server execution, databases, authentication, public APIs, versioning, plugins, package publishing, cloud infrastructure, browser shared-memory threading, machine learning, genetic algorithms, and unrestricted continuous-optimum proofs remain non-goals.

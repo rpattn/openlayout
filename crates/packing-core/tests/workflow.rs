@@ -55,6 +55,10 @@ fn options() -> SolveOptions {
         grid_step: 0.5,
         restarts: 2,
         quality: SolveQuality::Balanced,
+        beam_width: None,
+        max_candidates_per_state: None,
+        max_search_states: None,
+        candidate_generation_density: None,
     }
 }
 
@@ -212,6 +216,187 @@ fn adaptive_sensitivity_finds_a_capacity_transition() {
             .all(|pair| pair[1].capacity <= pair[0].capacity)
     );
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert!(
+        result
+            .evaluations
+            .iter()
+            .skip(1)
+            .any(|point| point.result.warm_start_status != WarmStartStatus::FromEmpty)
+    );
+    assert!(
+        result
+            .evaluations
+            .iter()
+            .all(|point| point.result.validation.valid)
+    );
+}
+
+#[test]
+fn feasibility_stops_at_a_target_and_rejects_one_above_a_valid_bound() {
+    let problem = rectangle_problem(4.0, 4.0, 2.0, 2.0);
+    let prepared = prepare_problem(&problem).unwrap();
+    let feasible = solve_prepared_feasibility(&prepared, &options(), 4).unwrap();
+    assert_eq!(feasible.status, FeasibilityStatus::Feasible);
+    assert_eq!(feasible.result.unwrap().packed_item_count, 4);
+
+    let impossible = solve_prepared_feasibility(&prepared, &options(), 5).unwrap();
+    assert_eq!(impossible.status, FeasibilityStatus::ImpossibleByBound);
+    assert!(impossible.result.is_none());
+    assert_eq!(impossible.valid_upper_bound, Some(4));
+
+    let optimized = solve_prepared(&prepared, &options()).unwrap();
+    assert_eq!(optimized.packed_item_count, 4);
+    assert!(optimized.statistics.pruned_search_states > 0);
+    assert!(optimized.statistics.projection_bound_prunes > 0);
+}
+
+#[test]
+fn bounded_mode_never_loses_the_greedy_lower_bound() {
+    let mut problem = rectangle_problem(11.0, 7.0, 3.0, 2.0);
+    problem.container.parts[0].shape = Shape::Polygon {
+        vertices: vec![
+            Point { x: 0.0, y: 0.0 },
+            Point { x: 11.0, y: 0.0 },
+            Point { x: 11.0, y: 7.0 },
+            Point { x: 7.0, y: 7.0 },
+            Point { x: 7.0, y: 5.0 },
+            Point { x: 0.0, y: 5.0 },
+        ],
+    };
+    let prepared = prepare_problem(&problem).unwrap();
+    let mut fast_options = options();
+    fast_options.quality = SolveQuality::Fast;
+    let fast = solve_prepared(&prepared, &fast_options).unwrap();
+    let mut width_one_options = fast_options;
+    width_one_options.beam_width = Some(1);
+    let width_one = solve_prepared(&prepared, &width_one_options).unwrap();
+    let balanced = solve_prepared(&prepared, &options()).unwrap();
+
+    assert!(width_one.packed_item_count >= fast.packed_item_count);
+    assert!(width_one.statistics.explored_search_states > 0);
+    assert!(balanced.packed_item_count >= fast.packed_item_count);
+    assert!(balanced.packed_item_count >= balanced.statistics.greedy_lower_bound);
+    assert!(balanced.validation.valid);
+
+    let mut tiny_fast_options = fast_options;
+    tiny_fast_options.max_iterations = 50;
+    tiny_fast_options.restarts = 1;
+    let tiny_fast = solve_prepared(&prepared, &tiny_fast_options).unwrap();
+    let mut tiny_beam_options = tiny_fast_options;
+    tiny_beam_options.quality = SolveQuality::Balanced;
+    let tiny_beam = solve_prepared(&prepared, &tiny_beam_options).unwrap();
+    assert!(tiny_beam.packed_item_count > tiny_fast.packed_item_count);
+    assert!(tiny_beam.validation.valid);
+}
+
+#[test]
+fn published_dighe2_target_bounds_and_validates_the_current_result() {
+    // Dighe2 from the ESICUP irregular strip-packing corpus has ten fixed-orientation polygons
+    // whose total area exactly tiles a 100 by 100 field.
+    let polygons: &[&[(f64, f64)]] = &[
+        &[(-16.5, -9.5), (16.5, -9.5), (16.5, 9.5), (-13.5, 1.5)],
+        &[(-21.0, -15.0), (21.0, -15.0), (16.0, 15.0), (-21.0, 4.0)],
+        &[(-10.0, -25.5), (15.0, -25.5), (15.0, 25.5), (-15.0, 4.5)],
+        &[
+            (-4.0, -19.0),
+            (-1.0, -8.0),
+            (3.0, 14.0),
+            (4.0, 19.0),
+            (-4.0, 17.0),
+        ],
+        &[
+            (-33.5, -14.5),
+            (-3.5, -6.5),
+            (33.5, 4.5),
+            (22.5, 14.5),
+            (-29.5, 7.5),
+        ],
+        &[
+            (-3.5, -35.0),
+            (26.5, -14.0),
+            (26.5, 35.0),
+            (-7.5, 35.0),
+            (-19.5, 7.0),
+            (-26.5, -12.0),
+            (-14.5, -25.0),
+        ],
+        &[
+            (-26.0, -19.5),
+            (26.0, -12.5),
+            (14.0, 0.5),
+            (21.0, 19.5),
+            (-23.0, 10.5),
+            (-25.0, -14.5),
+        ],
+        &[
+            (-6.0, -32.0),
+            (2.0, -30.0),
+            (4.0, -5.0),
+            (6.0, 32.0),
+            (-6.0, 32.0),
+        ],
+        &[(-22.0, -18.5), (22.0, -9.5), (-6.0, 18.5), (-20.0, 18.5)],
+        &[(-20.0, 14.0), (8.0, -14.0), (20.0, 14.0)],
+    ];
+    let problem = PackingProblem {
+        schema_version: 2,
+        container: container(Shape::Rectangle {
+            width: 100.0,
+            height: 100.0,
+        }),
+        exclusions: Vec::new(),
+        items: polygons
+            .iter()
+            .enumerate()
+            .map(|(index, vertices)| Item {
+                id: format!("piece-{index}"),
+                shape: Shape::Polygon {
+                    vertices: vertices
+                        .iter()
+                        .map(|(x, y)| Point { x: *x, y: *y })
+                        .collect(),
+                },
+                quantity: 1,
+                rotation_policy: discrete(vec![0.0]),
+            })
+            .collect(),
+        fixed_placements: Vec::new(),
+        clearance: Clearance::default(),
+    };
+    let mut solve_options = options();
+    solve_options.quality = SolveQuality::Balanced;
+    solve_options.max_iterations = 20_000;
+    solve_options.restarts = 2;
+    solve_options.beam_width = Some(8);
+    solve_options.max_candidates_per_state = Some(16);
+    solve_options.max_search_states = Some(20_000);
+    let result = solve(&problem, &solve_options).unwrap();
+
+    assert_eq!(result.simple_upper_bound, Some(10));
+    assert!(result.packed_item_count <= 10);
+    assert!(result.validation.valid);
+    if result.packed_item_count == 10 {
+        assert_eq!(result.status, SolveStatus::ProvenOptimal);
+    }
+}
+
+#[test]
+fn thorough_mode_can_certify_a_finite_candidate_set() {
+    let mut problem = rectangle_problem(8.0, 6.0, 2.0, 2.0);
+    problem.items[0].quantity = 1;
+    let prepared = prepare_problem(&problem).unwrap();
+    let mut thorough = options();
+    thorough.quality = SolveQuality::Thorough;
+    thorough.max_iterations = 2_000;
+    let result = solve_prepared(&prepared, &thorough).unwrap();
+
+    assert_eq!(result.packed_item_count, 1);
+    assert_eq!(
+        result.statistics.conflict_graph_status,
+        ConflictGraphStatus::CandidateSetOptimal
+    );
+    assert!(result.statistics.conflict_graph_candidates > 0);
+    assert!(result.validation.valid);
 }
 
 #[test]
@@ -609,7 +794,7 @@ fn learned_decomposition_fills_offset_disconnected_regions() {
 }
 
 #[test]
-fn thorough_capsule_case_reaches_the_sensitivity_sweep_reference() {
+fn capsule_quality_and_studio_twenty_item_witness_are_validated() {
     let exclusion_vertices = (0..32)
         .map(|index| {
             let angle = std::f64::consts::TAU * index as f64 / 32.0;
@@ -619,7 +804,7 @@ fn thorough_capsule_case_reaches_the_sensitivity_sweep_reference() {
             }
         })
         .collect();
-    let problem = PackingProblem {
+    let mut problem = PackingProblem {
         schema_version: 2,
         container: Container {
             parts: vec![RegionPart {
@@ -720,4 +905,46 @@ fn thorough_capsule_case_reaches_the_sensitivity_sweep_reference() {
         result.solver_strategy
     );
     assert!(result.validation.valid);
+
+    let Shape::Compound { parts } = &mut problem.items[0].shape else {
+        unreachable!();
+    };
+    let Shape::Rectangle { width, .. } = parts[0].shape.as_mut() else {
+        unreachable!();
+    };
+    *width = 4.0;
+    let witness = [
+        (0.0, 1.2500025078227548, -6.477806219485838),
+        (0.0, -5.297998495127322, -6.3917095788562275),
+        (0.0, 7.79800351077354, -6.3917095788562275),
+        (2.5, -11.48011630962844, -5.136737561706125),
+        (0.0, -5.249998495157124, -3.619708580391047),
+        (177.5, -11.502887729328119, -2.1971122695542937),
+        (0.0, 5.750003510802987, -0.8195143005609893),
+        (2.5, -5.374278065339664, -0.774278067947367),
+        (0.0, -11.399999998137355, 0.6999999992549419),
+        (75.0, 11.676749080935835, 1.5310824296507146),
+        (2.5, -5.198554629561742, 2.1041238447872477),
+        (2.5, 5.250003510803342, 2.0526799791918657),
+        (0.0, -11.399999998137355, 3.4860976384106857),
+        (2.5, 1.2500025078231096, 4.924874258960971),
+        (0.0, -5.297998495127676, 4.972874258947418),
+        (0.0, 7.798003510773185, 4.92487425897722),
+        (2.5, 9.600000001862645, 8.199999999254942),
+        (0.0, 1.3000025078231083, -3.619708580391047),
+        (0.0, 7.85000351080334, -3.619708580391047),
+        (75.0, 13.023249919064165, -4.668916570349285),
+    ]
+    .into_iter()
+    .map(|(rotation_deg, x, y)| Placement {
+        item_id: "item-a".into(),
+        x: x + 15.0,
+        y: y + 8.0,
+        rotation_deg,
+        fixed: false,
+    })
+    .collect::<Vec<_>>();
+    let prepared = prepare_problem(&problem).unwrap();
+    let validation = validate_placements(&prepared, &witness).unwrap();
+    assert!(validation.valid, "{}", validation.errors.join("; "));
 }

@@ -321,7 +321,8 @@ function showPackingResult(problem: PackingProblem, result: SolveResult): void {
   renderLayout(element("layout-canvas"), problem, result.placements, display);
   element("layout-title").textContent = `${result.packed_item_count} packed items`;
   element("metrics").innerHTML = metricsHtml(result);
-  element("diagnostics").innerHTML = `<dl><dt>Status</dt><dd>${humanStatus(result.status)}</dd><dt>Strategy</dt><dd>${escapeHtml(result.solver_strategy)}</dd><dt>Layout</dt><dd>${result.layout_id}</dd><dt>Seed</dt><dd>${result.seed}</dd><dt>Iterations</dt><dd>${result.statistics.iterations.toLocaleString()}</dd><dt>Counts</dt><dd>${Object.entries(result.packed_count_by_item).map(([key, value]) => `${escapeHtml(key)}: ${value}`).join(" · ")}</dd></dl>${result.warnings.length ? `<div class="warning">${result.warnings.map(escapeHtml).join("<br>")}</div>` : '<div class="validation-ok">✓ Independent final validation passed</div>'}`;
+  const phases = result.runtime_timing ? Object.entries(result.runtime_timing.phase_ms).map(([phase, elapsed]) => `<dt>${humanStatus(phase)}</dt><dd>${formatDuration(elapsed ?? 0)}</dd>`).join("") : "";
+  element("diagnostics").innerHTML = `<dl><dt>Status</dt><dd>${humanStatus(result.status)}</dd><dt>Strategy</dt><dd>${escapeHtml(result.solver_strategy)}</dd><dt>Layout</dt><dd>${result.layout_id}</dd><dt>Seed</dt><dd>${result.seed}</dd><dt>Workers</dt><dd>${result.runtime_timing?.worker_count ?? 1}</dd><dt>Iterations</dt><dd>${result.statistics.iterations.toLocaleString()}</dd><dt>Counts</dt><dd>${Object.entries(result.packed_count_by_item).map(([key, value]) => `${escapeHtml(key)}: ${value}`).join(" · ")}</dd>${phases}</dl>${result.warnings.length ? `<div class="warning">${result.warnings.map(escapeHtml).join("<br>")}</div>` : '<div class="validation-ok">✓ Independent final validation passed</div>'}`;
 }
 
 function renderSensitivityResults(): void {
@@ -444,12 +445,13 @@ function itemIndexForParameter(key: string): number { const [kind, id] = key.spl
 function studyValues(start: number, end: number, step: number): number[] { const values = [start]; if (step > 0) for (let value = start + step; value < end && values.length < 6; value += step) values.push(value); if (end !== start) values.push(end); return values; }
 function numberField(label: string, scope: string, field: string, value: number, step: number): string { return `<label>${label}<input type="number" value="${value}" step="${step}" data-pack-scope="${scope}" data-field="${field}"></label>`; }
 function studyNumber(label: string, field: string, value: number, step: number): string { return `<label>${label}<input type="number" value="${value}" step="${step}" data-study-field="${field}"></label>`; }
-function metricsHtml(result: SolveResult): string { return metricHtml("Packed", result.packed_item_count) + metricHtml("Upper bound", result.simple_upper_bound ?? "—") + metricHtml("Candidates", result.statistics.candidates_evaluated.toLocaleString()) + metricHtml("Elapsed", `${result.statistics.elapsed_ms} ms`) + metricHtml("Validation", result.validation.valid ? "Passed" : "Failed"); }
+function metricsHtml(result: SolveResult): string { return metricHtml("Packed", result.packed_item_count) + metricHtml("Upper bound", result.simple_upper_bound ?? "—") + metricHtml("Candidates", result.statistics.candidates_evaluated.toLocaleString()) + metricHtml("Elapsed", formatDuration(result.runtime_timing?.total_ms ?? result.statistics.elapsed_ms)) + metricHtml("Validation", result.validation.valid ? "Passed" : "Failed"); }
 function metricHtml(label: string, value: string | number): string { return `<div><small>${label}</small><strong>${value}</strong></div>`; }
 function rotationSummary(item: EditorState["items"][number]): string { return item.rotationMode === "continuous" ? `${format(item.minRotation)}–${format(item.maxRotation)}° adaptive` : `${item.rotations}°`; }
 function setField(target: object, field: string, value: unknown): void { (target as Record<string, unknown>)[field] = value; }
 function humanStatus(value: string): string { return value.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase()); }
 function format(value: number): string { return Number.isInteger(value) ? String(value) : value.toFixed(3).replace(/0+$/, ""); }
+function formatDuration(value: number): string { return value >= 1000 ? `${(value / 1000).toFixed(2)} s` : `${Math.round(value)} ms`; }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function escapeHtml(value: unknown): string { return String(value).replace(/[&<>"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[character]!); }
 function element<T extends HTMLElement = HTMLElement>(id: string): T { return document.getElementById(id) as T; }

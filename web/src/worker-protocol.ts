@@ -1,13 +1,15 @@
 import type { PackingProblem, SensitivityProgress, SensitivityResult, SensitivityStudy, SolveOptions, SolveProgress, SolveResult } from "./types";
 
+export type SolveLane = "full" | "direct" | "clearance_continuation";
+
 export type WorkerRequest =
   | { id: number; type: "validate"; problem: PackingProblem }
-  | { id: number; type: "solve"; problem: PackingProblem; options: SolveOptions }
+  | { id: number; type: "solve"; problem: PackingProblem; options: SolveOptions; lane?: SolveLane }
   | { id: number; type: "sensitivity"; problem: PackingProblem; study: SensitivityStudy };
 
 export type WorkerRequestPayload =
   | { type: "validate"; problem: PackingProblem }
-  | { type: "solve"; problem: PackingProblem; options: SolveOptions }
+  | { type: "solve"; problem: PackingProblem; options: SolveOptions; lane?: SolveLane }
   | { type: "sensitivity"; problem: PackingProblem; study: SensitivityStudy };
 
 export type WorkerResponse =

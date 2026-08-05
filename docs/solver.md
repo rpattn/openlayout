@@ -1,42 +1,97 @@
 # Solver
 
-## Structured patterns
+The core separates immutable geometry preparation from bounded search. Every successful path ends in `validate_placements`, which reconstructs geometry from the input model; search-state geometry is never trusted as final proof.
 
-Each prepared variant supplies a width, height, geometry, item identity, and permitted rotation. Structured runs scan regular rows from both horizontal origins, stagger every second row by half a pitch, and scan columns from both vertical origins. Pitch includes the requested item separation and a small numeric guard. Concave boundaries and exclusions naturally reject positions that a rectangular pattern proposes outside usable space.
+## Original baseline and measured hot path
 
-Variants are ordered by width or height for the primary runs. Seeded restarts deterministically shuffle them. Trying each rotation sequentially also allows later variants to fill gaps left by earlier orientations without introducing a separate alternating-pattern abstraction.
+The retained baseline learns repeated lattices and two-variant motifs, seeds non-overlapping rectangular subregions, tries structured rows, staggered rows and columns, then performs bottom-left contact/grid insertion. Directional compaction, in-place rotation, and a three-item remove/reinsert neighbourhood complete each portfolio attempt. `fast` runs this baseline and remains the lowest-latency mode and lower-bound source.
 
-## Greedy candidates and scoring
+Before bounded search was added, the expensive repeated work was candidate transformation, containment, exclusion distance, and pair collision checks. A full grid/contact list and placed-geometry scan were rebuilt after placements; subdivision coordinates were rebuilt for each solve; transformed geometry lived in every accepted candidate. Preparation already avoided the worst repetition by polygonizing and rotating once, but its cost was not visible.
 
-Greedy insertion combines:
+`SolveStatistics` now records preparation, candidate generation, containment, collision, scoring and subdivision time; generated and accepted candidates; broad-phase rejections and exact geometry checks; explored, deduplicated and pruned states; lower and upper bounds; local repair; warm starts; and conflict-graph work. Timers are deliberately coarse and removable. Operation counts are the more stable comparison. See [performance](performance.md).
 
-- container bounding-box corners;
-- positions adjacent to each placed item on four sides;
-- positions adjacent to exclusion bounds;
-- a configurable coarse grid across the container bounds.
+## Prepared geometry and geometric staging
 
-Candidates are sorted by `y` and then `x`, deduplicated with the geometry epsilon, and evaluated in that order. This is an explicit bottom-left compactness preference. Feasibility uses cached bounding boxes before polygon work. Counts and a stable placement transform key choose between completed layouts. Candidate, valid-candidate, and iteration counters make strategy behavior visible.
+`PreparedProblem` owns the normalized container and exclusions, usable area, cached boundaries and bounds, item indexes, and every permitted rotation variant. Each variant has a stable run-local integer identifier, normalized polygon set, bounding box, and guaranteed occupied area. Equivalent rotations are removed geometrically. Search candidates refer to a variant identifier and transform rather than storing a polygon copy.
 
-This scoring is intentionally modest. Balance, centreline distance, regularity, preserved future positions, and conflict graphs should be added only when representative cases demonstrate value and can compare the resulting layouts.
+Feasibility is staged:
+
+1. reject a candidate outside the container bounding box;
+2. test exact containment and boundary clearance;
+3. reject non-overlapping exclusion and placement bounds;
+4. query nearby placements through a deterministic uniform spatial index;
+5. perform polygon overlap and distance checks only on broad-phase matches.
+
+The index is small and state-local. Copying it would cost more complexity than rebuilding it once per expanded state at current beam widths. Accepted placements cache transformed geometry; immutable source geometry remains shared.
+
+## Explicit contact candidates
+
+A candidate contains a stable identifier, prepared variant, reference position, translated bounds, source category, and transient score. Sources are container vertices and edge midpoints, exclusion contacts, placed-item contacts, simultaneous vertex alignments, container extrema, and a quality-dependent structured grid. Positions are quantized and deduplicated, then totally ordered. Boundary clearance is included in extrema and grid origins.
+
+Contact candidates receive a modest ordering bonus, followed by extrema and structured positions. Alignment, bottom-first compactness, and a stable identifier break ties. Feasibility always precedes state scoring, and packed count always dominates secondary compactness.
+
+Full no-fit polygons were investigated but not adopted. The current geometry stack supplies reliable Boolean overlay but no robust Minkowski/no-fit operation with holes, disconnected solids, and clearance conventions. Vertex/midpoint contacts plus learned separation give useful touching placements without a fragile partial NFP. If an NFP is later justified, its cache must remain isolated and define whether coordinates represent physical boundaries or half-clearance envelopes.
+
+## Beam search, ordering, and deduplication
+
+`balanced` retains eight states and expands up to twelve feasible children per state. `thorough` retains twenty-four and expands up to twenty-four; it receives the larger iteration budget already associated with that mode. `fast` skips the beam unless an explicit beam width is supplied. Four experimental overrides—beam width, candidates per state, search-state limit, and candidate density—cover useful investigations without exposing every internal weight. A width-one configuration follows the same expansion and ordering rules as a single-path constructive solve.
+
+A state contains selected placement records, per-item counts, a secondary score, and its optimistic upper bound. It references prepared variants and clones only the modest selected-placement vector. Branch ordering prefers the largest bound, then packed count, compactness, and the canonical signature. The signature sorts `(variant, quantized x, quantized y)` records, preventing insertion-order duplicates while using a fine enough quantum to avoid merging materially different futures.
+
+The baseline layout initializes the lower bound. Therefore bounded modes cannot return fewer items than their completed greedy portfolio. The beam starts from fixed placements so it can explore genuinely different construction paths rather than only append to the incumbent.
+
+## Valid upper bounds
+
+The tightest applicable bound is used:
+
+- The area/quantity bound subtracts guaranteed occupied area and divides by the smallest remaining guaranteed item area. Exclusions are intentionally not subtracted because they may overlap.
+- The split-region bound sums contour capacities only when every item solid is connected. Hole contours are treated as extra usable area, which can only loosen the result; disconnected items disable this bound because they could span components.
+- The projection bound is enabled only when every variant is its complete axis-aligned bounding rectangle. It packs minimum width and height projections into the container bounding box. Other geometry disables the bound rather than risking an underestimate.
+
+Bounds are conservative. A state is pruned only when it cannot exceed the validated lower bound. Per-bound prune counters make this testable. Equality between a feasible count and the unrestricted safe bound permits `ProvenOptimal`; conflict-graph proof has a narrower meaning described below.
 
 ## Local improvement
 
-After structured and greedy insertion, non-fixed placements move left and then down in grid-sized increments while the layout stays valid. Permitted variants are then tried in place. Finally, a bounded destroy/repair neighbourhood selects several boundary placements, removes each one with its two nearest movable neighbours, and greedily reinserts the released quantities across the strategy's rotation order. A trial replaces the incumbent only when it packs more items or has a deterministic lower layout key; fixed placements are never removed. This is deliberately a small interactive neighbourhood, not an unbounded metaheuristic or full item-type exchange search.
+Non-fast modes retain the bounded remove-and-repack pass. It chooses deterministic boundary anchors, removes the anchor and up to two nearest movable placements, rebuilds candidates through greedy insertion, and accepts a higher count or a stable equal-count compactness improvement. Fixed placements are never removed. Attempts and accepted changes are reported. This is intentionally not a generic metaheuristic framework.
 
-## Determinism, limits, and progress
+## Feasibility solving
 
-The portfolio uses ordered vectors, `BTreeMap` result counts, total float ordering, and `ChaCha8Rng` seeded only from `SolveOptions.seed` and the restart number. Equal problem, options, and seed therefore produce the same layout, strategy, and search counts in deterministic mode; `elapsed_ms` naturally varies. Deterministic mode rejects a wall-clock limit because time cannot define a reproducible stopping candidate. Set `deterministic` to `false` to opt into time-bounded execution, or retain the default and use the iteration bound.
+`solve_prepared_feasibility` asks whether at least `k` items can be packed. It returns:
 
-The loop checks the maximum iteration count, native time budget, and `SolveObserver::should_cancel`. It reports complete best-placement snapshots after portfolio attempts through `on_progress`. The observer is deliberately a pair of callbacks rather than an event system. In the browser, a Web Worker owns the Wasm instance, forwards those snapshots, and provides immediate cancellation by termination; a replacement worker is created for the next run.
+- `feasible`, with an independently validated layout, as soon as the beam reaches the target;
+- `impossible_by_bound` when a valid upper bound is below the target;
+- `not_found_within_limit` when bounded search ends without a witness.
 
-Learned lattices may use the first 25% of the global budget and complementary motifs may extend learning through 40%; the remaining budget is shared fairly between general portfolio attempts. Within each attempt the shares are 30% structured placement, 55% greedy insertion, 7% compaction, 4% in-place rotation, and 4% remove/reinsert improvement. This prevents any one grid or motif sweep from starving later orientations and strategies. Fast and balanced respect the base iteration budget; thorough uses four times that budget and adds top-down, right-to-left, and extra seeded attempts. For a sensitivity parameter declared monotonic, a better layout from a harder point is carried to easier points only after independent validation against the easier geometry.
+The last outcome is not evidence of infeasibility. The CLI exposes the same operation as `feasible <problem> <count> [options]`, and the Wasm engine has a thin `feasible` method.
 
-Before the general portfolio, the solver learns small repeatable packing cells directly from exact geometry predicates. For each rotation it measures the minimum safe row separation at aligned and half-shifted offsets; this recovers rectangular grids and hexagonal disk rows without testing the shape kind. For independent rotation policies it also aligns vertices and edge midpoints between pairs of variants, ranks the resulting non-overlapping motifs by bounding-box waste, and tiles the strongest motifs. Complementary triangles therefore become a square cell automatically. Concave, holed, or disconnected fields are split at container and exclusion coordinates into a bounded set of exact non-overlapping rectangular regions; each region receives an independently aligned lattice seed. These are bounded local analogues of no-fit-polygon placement: inexpensive enough for an interactive first solution, while every generated placement still passes ordinary feasibility and final independent validation.
+## Warm-started sensitivity
 
-This direction follows established irregular-packing results: bottom-left placement becomes substantially stronger when driven by no-fit contact geometry, and competitive methods combine constructive placement with local or metaheuristic improvement. See Burke et al., [A New Bottom-Left-Fill Heuristic Algorithm](https://doi.org/10.1287/opre.1060.0293), Burke et al., [Irregular Packing Using the Line and Arc No-Fit Polygon](https://doi.org/10.1287/opre.1090.0770), and Imamichi et al., [Iterated Local Search for Irregular Strip Packing](https://doi.org/10.1016/j.disopt.2009.04.002).
+After the first sensitivity point, the nearest evaluated layout becomes a warm start. Each placement is reconstructed against newly prepared geometry and inserted only if it remains valid with the already retained placements. Invalid rotations, quantities, containment, exclusions, and collisions are discarded. The resulting retained or partially repaired state supplies the stronger solver's lower bound; if nothing useful survives, the solve reports `restarted`.
 
-## Feasibility and optimality
+For a repeated single item with positive pair clearance, balanced and thorough ordinary solves also
+use a bounded clearance continuation when their direct portfolio leaves a gap. The solver starts
+from relaxed separation, raises it through deterministic stages, repairs the prior placement set,
+and first attempts to retain the incumbent at every stage. A damaged stage uses a bounded target
+beam before a reduced-budget full warm solve; an intact stage performs no portfolio search.
+Prepared variants, normalized regions, contacts, and bounds are cloned from one canonical prepared
+problem rather than rebuilt. Continuation runs in a container-centred coordinate frame so an
+equivalent translation of the entire problem cannot select a different search path; placements
+are translated back before validation. The final stage uses the requested clearance, and the
+normal independent validator still decides whether the result is accepted. This path recovers the
+studio start problem's 20-item layout, which direct greedy and beam starts miss.
 
-Every returned placement set is independently validated. That proves geometric feasibility, not packing optimality. `BestFound` means the selected valid heuristic result after the configured portfolio. `LimitReached` and `Cancelled` preserve the best valid result available at termination. `ProvenOptimal` requires equality with the safe simple upper bound; because that bound is loose, this is uncommon.
+Adaptive midpoint evaluations automatically use `thorough`, concentrating work around observed capacity transitions. Easier and harder changes follow the same validation-first repair path. Non-monotonic capacities remain visible as warnings rather than being rewritten.
 
-Failure modes include sparse candidate sets for tightly interlocking shapes, polygon approximation error for low-segment circles, weak layouts when grid step is too coarse, costly scans when it is too fine, and geometry near the numeric epsilon. Sensitivity runs can also reveal inconsistent heuristic capacities. Those are reported verbatim instead of forced into a monotonic curve.
+## Optional conflict graph
+
+Thorough mode may refine a finite set of at most 96 feasible candidates when the geometric lower/upper gap is at most two. Bounding boxes avoid most edge checks; exact polygon checks create conflict edges, stored as a `u128` bitset. Selection starts with deterministic greedy independent-set construction, then a bounded include/exclude branch-and-bound with quantity and shared-rotation constraints. This bounded search subsumes small swaps.
+
+`best_found`, `limit_reached`, and `candidate_set_optimal` describe the graph search. Candidate-set optimality says nothing about placements absent from the finite contact/grid set and never proves the unrestricted continuous geometric optimum.
+
+## Determinism, limits, progress, and failures
+
+Ordered vectors and maps, total float comparisons, canonical signatures, stable candidate identifiers, and `ChaCha8Rng` seeded only from `SolveOptions.seed` make deterministic runs repeat their selected layout and operation counts. Elapsed time may vary. Deterministic mode rejects wall-clock limits; use iteration/state limits, or opt out of determinism for a native time limit.
+
+Long portfolio, beam, neighbourhood, and graph loops use bounded budgets; portfolio and beam loops check cancellation. Progress distinguishes baseline, beam, neighbourhood, and refinement phases. Browser cancellation remains immediate by terminating the owning Web Worker, without browser APIs or threading in the core.
+
+Expected failures are sparse finite candidates for tight interlocks, weak bounds on concave or disconnected geometry, high candidate-generation cost in thorough mode, polygon approximation error at low segment counts, and numeric ambiguity near the epsilon. All accepted results still pass the independent validator. `BestFound` and `LimitReached` are honest heuristic outcomes, not optimality claims.

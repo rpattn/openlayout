@@ -3,7 +3,8 @@ use packing_core::{
     PackingProblem, PreparedProblem, SensitivityObserver, SensitivityProgress, SensitivityStudy,
     SolveObserver, SolveOptions, SolveProgress, prepare_problem,
     run_sensitivity as core_run_sensitivity, run_sensitivity_with_observer, solve_prepared,
-    solve_with_observer, validate_problem as core_validate_problem,
+    solve_prepared_feasibility, solve_with_observer, solve_with_observer_clearance_continuation,
+    solve_with_observer_direct, validate_problem as core_validate_problem,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -55,6 +56,57 @@ impl PackingEngine {
             return Err(JsError::new(&error));
         }
         encode(&result)
+    }
+
+    pub fn solve_direct_with_progress(
+        &mut self,
+        input_json: &str,
+        options_json: &str,
+        callback: Function,
+    ) -> Result<String, JsError> {
+        let options = parse_options(options_json)?;
+        let prepared = self.prepare(input_json)?;
+        let mut observer = JavaScriptObserver {
+            callback,
+            callback_error: None,
+        };
+        let result =
+            solve_with_observer_direct(prepared, &options, &mut observer).map_err(core_error)?;
+        if let Some(error) = observer.callback_error {
+            return Err(JsError::new(&error));
+        }
+        encode(&result)
+    }
+
+    pub fn solve_clearance_continuation_with_progress(
+        &mut self,
+        input_json: &str,
+        options_json: &str,
+        callback: Function,
+    ) -> Result<String, JsError> {
+        let options = parse_options(options_json)?;
+        let prepared = self.prepare(input_json)?;
+        let mut observer = JavaScriptObserver {
+            callback,
+            callback_error: None,
+        };
+        let result = solve_with_observer_clearance_continuation(prepared, &options, &mut observer)
+            .map_err(core_error)?;
+        if let Some(error) = observer.callback_error {
+            return Err(JsError::new(&error));
+        }
+        encode(&result)
+    }
+
+    pub fn feasible(
+        &mut self,
+        input_json: &str,
+        options_json: &str,
+        target_count: usize,
+    ) -> Result<String, JsError> {
+        let options = parse_options(options_json)?;
+        let prepared = self.prepare(input_json)?;
+        encode(&solve_prepared_feasibility(prepared, &options, target_count).map_err(core_error)?)
     }
 
     pub fn sensitivity(&mut self, input_json: &str, study_json: &str) -> Result<String, JsError> {

@@ -230,6 +230,14 @@ pub struct SolveOptions {
     pub restarts: u32,
     #[serde(default)]
     pub quality: SolveQuality,
+    #[serde(default)]
+    pub beam_width: Option<usize>,
+    #[serde(default)]
+    pub max_candidates_per_state: Option<usize>,
+    #[serde(default)]
+    pub max_search_states: Option<u64>,
+    #[serde(default)]
+    pub candidate_generation_density: Option<f64>,
 }
 
 fn default_seed() -> u64 {
@@ -267,6 +275,10 @@ impl Default for SolveOptions {
             grid_step: default_grid_step(),
             restarts: default_restarts(),
             quality: SolveQuality::default(),
+            beam_width: None,
+            max_candidates_per_state: None,
+            max_search_states: None,
+            candidate_generation_density: None,
         }
     }
 }
@@ -303,6 +315,80 @@ pub struct SolveStatistics {
     pub valid_candidates: u64,
     pub iterations: u64,
     pub elapsed_ms: u64,
+    #[serde(default)]
+    pub preparation_ms: u64,
+    #[serde(default)]
+    pub candidate_generation_ms: u64,
+    #[serde(default)]
+    pub containment_check_ms: u64,
+    #[serde(default)]
+    pub collision_check_ms: u64,
+    #[serde(default)]
+    pub candidate_scoring_ms: u64,
+    #[serde(default)]
+    pub subdivision_ms: u64,
+    #[serde(default)]
+    pub generated_candidates: u64,
+    #[serde(default)]
+    pub broad_phase_rejections: u64,
+    #[serde(default)]
+    pub exact_geometry_checks: u64,
+    #[serde(default)]
+    pub accepted_placements: u64,
+    #[serde(default)]
+    pub explored_search_states: u64,
+    #[serde(default)]
+    pub deduplicated_search_states: u64,
+    #[serde(default)]
+    pub pruned_search_states: u64,
+    #[serde(default)]
+    pub area_bound_prunes: u64,
+    #[serde(default)]
+    pub region_bound_prunes: u64,
+    #[serde(default)]
+    pub projection_bound_prunes: u64,
+    #[serde(default)]
+    pub greedy_lower_bound: usize,
+    #[serde(default)]
+    pub final_upper_bound: Option<usize>,
+    #[serde(default)]
+    pub bound_gap: Option<usize>,
+    #[serde(default)]
+    pub local_improvement_attempts: u64,
+    #[serde(default)]
+    pub local_improvements_accepted: u64,
+    #[serde(default)]
+    pub continuation_stages: u64,
+    #[serde(default)]
+    pub continuation_repair_only_stages: u64,
+    #[serde(default)]
+    pub continuation_search_stages: u64,
+    #[serde(default)]
+    pub continuation_full_solve_stages: u64,
+    #[serde(default)]
+    pub conflict_graph_candidates: usize,
+    #[serde(default)]
+    pub conflict_graph_status: ConflictGraphStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ConflictGraphStatus {
+    #[default]
+    NotRun,
+    BestFound,
+    CandidateSetOptimal,
+    LimitReached,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WarmStartStatus {
+    #[default]
+    FromEmpty,
+    Retained,
+    PartiallyRepaired,
+    Restarted,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -318,6 +404,10 @@ pub struct SolveResult {
     pub solver_strategy: String,
     pub selected_shared_angles: BTreeMap<String, f64>,
     pub statistics: SolveStatistics,
+    #[serde(default)]
+    pub strategies_used: Vec<String>,
+    #[serde(default)]
+    pub warm_start_status: WarmStartStatus,
     pub validation: ValidationReport,
     pub warnings: Vec<String>,
 }
@@ -336,10 +426,32 @@ pub struct SolveProgress {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SolvePhase {
+    PreparingGeometry,
+    GeneratingCandidates,
     Baseline,
+    BeamSearch,
     CoarseRotation,
     AngleRefinement,
     NeighbourhoodImprovement,
+    ClearanceContinuation,
+    ConflictGraph,
+    Validating,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FeasibilityStatus {
+    Feasible,
+    ImpossibleByBound,
+    NotFoundWithinLimit,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FeasibilityResult {
+    pub status: FeasibilityStatus,
+    pub target_count: usize,
+    pub result: Option<SolveResult>,
+    pub valid_upper_bound: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

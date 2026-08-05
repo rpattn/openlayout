@@ -13,10 +13,12 @@ The project proves the complete computational and interaction path in one local 
 - Independent-copy or shared-per-item angle coupling, with coarse and edge-aligned adaptive candidates
 - Boolean-unioned material, structural holes, disconnected islands, and normalized compound solids
 - Shape-agnostic learned lattices, exact container-region seeds, and complementary two-piece motifs for dense repeated patterns
-- Row, column, staggered, seeded greedy, contact, grid, compacting, rotation, and bounded remove/reinsert strategies
+- Row, column, staggered, seeded greedy, explicit contact/grid candidates, bounded beam search, compacting, rotation, and remove/reinsert strategies
+- Safe area, disconnected-region, quantity, and certified rectangular projection bounds with state pruning
+- Target-count feasibility solving and optional finite conflict-graph refinement in thorough mode
 - Deterministic seeded portfolios with iteration/time limits and an observer for progress or cancellation
 - Independent validation of every selected result
-- Sampled and adaptively refined sensitivity studies with non-monotonicity warnings
+- Warm-started sampled and adaptively refined sensitivity studies with non-monotonicity warnings
 - Structured results containing transforms, counts, strategy, bounds, search statistics, validation, and warnings
 - The same `packing-core` library behind a native CLI and a thin `wasm-bindgen` adapter
 - A local TypeScript studio with on-device projects, switching, automatic/manual saves, bounded undo/redo, and light/dark themes
@@ -44,11 +46,12 @@ cargo test --workspace
 cargo run -p packing-cli -- validate examples/irregular-rectangles.json
 cargo run -p packing-cli -- solve examples/irregular-rectangles.json
 cargo run -p packing-cli -- solve examples/compound-with-exclusion.json
+cargo run -p packing-cli -- feasible examples/irregular-rectangles.json 18
 cargo run -p packing-cli -- sensitivity examples/sensitivity-problem.json examples/sensitivity-study.json
 cargo run -p packing-cli -- sensitivity examples/snapped-compound.json examples/snapped-width-study.json
 ```
 
-`solve` optionally accepts a third JSON file containing `SolveOptions`. Output is formatted JSON on stdout, making a representative command a repeatable manual benchmark: the result includes `statistics.elapsed_ms`, candidate counts, and iteration count. Deterministic mode is enabled by default and accepts iteration limits, not wall-clock limits; set `deterministic` to `false` when a time cutoff matters more than an identical stopping point.
+`solve` optionally accepts a third JSON file containing `SolveOptions`; `feasible` accepts a target count and then the same optional file. The three quality modes are `fast` (greedy portfolio), `balanced` (small beam plus local repair), and `thorough` (larger beam and optional conflict graph). Output is formatted JSON on stdout and includes phase timings, geometry checks, state counts, bounds, repair, warm-start, graph, and validation statistics. Deterministic mode is enabled by default and accepts iteration limits, not wall-clock limits; set `deterministic` to `false` when a time cutoff matters more than an identical stopping point.
 
 Install `wasm-pack`, then build the browser package with:
 
@@ -95,6 +98,6 @@ All coordinates are `f64` values in one caller-selected linear unit. No unit con
 
 `irregular-rectangles.json` should produce repeated rectangular placements while respecting the container notch. `compound-with-exclusion.json` exercises a multi-part item around a central unavailable region. The sensitivity pair changes a rectangle width and should expose several discrete capacity regions and narrow transition intervals. The studio opens with an editable neutral example combining all three parameterized primitives.
 
-This remains a heuristic prototype. It does not compute no-fit polygons, prove infeasibility in general, or provide strong combinatorial upper bounds. Candidate generation and adaptive angle refinement are intentionally bounded, while exact final validation remains mandatory. See [solver details](docs/solver.md) and the [roadmap](docs/roadmap.md).
+This remains a heuristic prototype. It does not compute no-fit polygons or prove infeasibility in general. A result is globally proven only when its feasible count meets a safe unrestricted bound; conflict-graph optimality applies only to the generated finite candidate set. Candidate generation, beam breadth, local repair, graph search, and adaptive angles are bounded, while exact final validation remains mandatory. See [solver details](docs/solver.md), [published benchmark validation](docs/benchmarks.md), [performance notes](docs/performance.md), and the [roadmap](docs/roadmap.md).
 
 Reference fixtures keep generic pattern learning honest: `2×2` rectangles tile a `10×6` field with exactly 15 items, complementary right triangles tile a `10×10` field with exactly 50 items and reach `ProvenOptimal`, offset disconnected fields align independently, and unit disks discover a five-row hexagonal lattice containing `5+4+5+4+5 = 23` disks without circle-specific solver code. The original snapped-capsule sensitivity case also holds at least 17 items at width `4.375` with half its former effective search budget. “Sphere packing” in this two-dimensional engine means disk packing; true 3D spheres are outside its model.

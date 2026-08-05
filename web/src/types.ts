@@ -43,6 +43,10 @@ export interface SolveOptions {
   grid_step: number;
   restarts: number;
   quality: "fast" | "balanced" | "thorough";
+  beam_width?: number | null;
+  max_candidates_per_state?: number | null;
+  max_search_states?: number | null;
+  candidate_generation_density?: number | null;
 }
 
 export interface Placement {
@@ -54,7 +58,7 @@ export interface Placement {
 }
 
 export interface SolveProgress {
-  phase: "baseline" | "coarse_rotation" | "angle_refinement" | "neighbourhood_improvement";
+  phase: "preparing_geometry" | "generating_candidates" | "baseline" | "beam_search" | "coarse_rotation" | "angle_refinement" | "neighbourhood_improvement" | "clearance_continuation" | "conflict_graph" | "validating";
   completed_fraction: number;
   max_iterations: number;
   iterations: number;
@@ -79,9 +83,43 @@ export interface SolveResult {
     valid_candidates: number;
     iterations: number;
     elapsed_ms: number;
+    preparation_ms: number;
+    candidate_generation_ms: number;
+    containment_check_ms: number;
+    collision_check_ms: number;
+    candidate_scoring_ms: number;
+    subdivision_ms: number;
+    generated_candidates: number;
+    broad_phase_rejections: number;
+    exact_geometry_checks: number;
+    accepted_placements: number;
+    explored_search_states: number;
+    deduplicated_search_states: number;
+    pruned_search_states: number;
+    area_bound_prunes: number;
+    region_bound_prunes: number;
+    projection_bound_prunes: number;
+    greedy_lower_bound: number;
+    final_upper_bound: number | null;
+    bound_gap: number | null;
+    local_improvement_attempts: number;
+    local_improvements_accepted: number;
+    continuation_stages: number;
+    continuation_repair_only_stages: number;
+    continuation_search_stages: number;
+    continuation_full_solve_stages: number;
+    conflict_graph_candidates: number;
+    conflict_graph_status: "not_run" | "best_found" | "candidate_set_optimal" | "limit_reached";
   };
+  strategies_used: string[];
+  warm_start_status: "from_empty" | "retained" | "partially_repaired" | "restarted";
   validation: { valid: boolean; errors: string[] };
   warnings: string[];
+  runtime_timing?: {
+    total_ms: number;
+    phase_ms: Partial<Record<SolveProgress["phase"], number>>;
+    worker_count: number;
+  };
 }
 
 export type ParameterPath =

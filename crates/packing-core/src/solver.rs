@@ -1,6 +1,7 @@
 use crate::geometry::{
     Bounds, EPSILON, PolygonSet, area, bounds, set_distance, set_inside, sets_overlap, transform,
 };
+use crate::search::{SearchMetrics, bounded_search};
 use crate::{
     PackingError, PackingErrorKind, Placement, PreparedProblem, SolveOptions, SolvePhase,
     SolveProgress, SolveResult, SolveStatistics, SolveStatus, ValidationReport, prepare_problem,
@@ -36,6 +37,20 @@ struct Counters {
     iterations: u64,
     limit: bool,
     cancelled: bool,
+    search: SearchMetrics,
+    greedy_lower_bound: usize,
+    local_improvement_attempts: u64,
+    local_improvements_accepted: u64,
+    continuation_stages: u64,
+    continuation_repair_only_stages: u64,
+    continuation_search_stages: u64,
+    continuation_full_solve_stages: u64,
+    warm_start_status: crate::WarmStartStatus,
+    containment_check_ms: u64,
+    collision_check_ms: u64,
+    subdivision_ms: u64,
+    broad_phase_rejections: u64,
+    exact_geometry_checks: u64,
 }
 
 #[derive(Clone)]
@@ -60,10 +75,202 @@ pub fn solve_prepared(
     solve_with_observer(prepared, options, &mut NoObserver)
 }
 
+pub fn solve_prepared_with_warm_start(
+    prepared: &PreparedProblem,
+    options: &SolveOptions,
+    placements: &[Placement],
+) -> Result<SolveResult, PackingError> {
+    solve_with_observer_internal(prepared, options, &mut NoObserver, Some(placements), true)
+}
+
+pub fn solve_prepared_direct(
+    prepared: &PreparedProblem,
+    options: &SolveOptions,
+) -> Result<SolveResult, PackingError> {
+    solve_with_observer_direct(prepared, options, &mut NoObserver)
+}
+
+pub fn solve_prepared_clearance_continuation(
+    prepared: &PreparedProblem,
+    options: &SolveOptions,
+) -> Result<SolveResult, PackingError> {
+    solve_with_observer_clearance_continuation(prepared, options, &mut NoObserver)
+}
+
+pub fn solve_feasibility(
+    problem: &crate::PackingProblem,
+    options: &SolveOptions,
+    target_count: usize,
+) -> Result<crate::FeasibilityResult, PackingError> {
+    let prepared = prepare_problem(problem)?;
+    solve_prepared_feasibility(&prepared, options, target_count)
+}
+
+pub fn solve_prepared_feasibility(
+    prepared: &PreparedProblem,
+    options: &SolveOptions,
+    target_count: usize,
+) -> Result<crate::FeasibilityResult, PackingError> {
+    validate_options(options)?;
+    if prepared
+        .simple_upper_bound
+        .is_some_and(|upper| upper < target_count)
+    {
+        return Ok(crate::FeasibilityResult {
+            status: crate::FeasibilityStatus::ImpossibleByBound,
+            target_count,
+            result: None,
+            valid_upper_bound: prepared.simple_upper_bound,
+        });
+    }
+    let started = clock_start();
+    let fixed = prepare_fixed(prepared)?;
+    let fixed_placements = fixed
+        .iter()
+        .map(|entry| entry.placement.clone())
+        .collect::<Vec<_>>();
+    let mut search_options = *options;
+    if search_options.quality == crate::SolveQuality::Fast {
+        search_options.quality = crate::SolveQuality::Balanced;
+    }
+    let Some(outcome) = bounded_search(
+        prepared,
+        &search_options,
+        &fixed_placements,
+        Some(target_count),
+        &mut NoObserver,
+    ) else {
+        unreachable!("feasibility search always enables a bounded beam")
+    };
+    if outcome.placements.len() < target_count {
+        return Ok(crate::FeasibilityResult {
+            status: crate::FeasibilityStatus::NotFoundWithinLimit,
+            target_count,
+            result: None,
+            valid_upper_bound: Some(outcome.upper_bound),
+        });
+    }
+    let entries = candidate_entries_from_placements(prepared, &outcome.placements)?;
+    let validation = validate_placements(prepared, &outcome.placements)?;
+    if !validation.valid {
+        return Err(PackingError::validation(
+            "feasibility search produced an invalid layout",
+        ));
+    }
+    let counters = Counters {
+        search: outcome.metrics,
+        greedy_lower_bound: fixed.len(),
+        ..Counters::default()
+    };
+    let result = build_result(
+        prepared,
+        options,
+        entries,
+        outcome.strategy,
+        counters,
+        started,
+        validation,
+        SolveStatus::Feasible,
+    );
+    Ok(crate::FeasibilityResult {
+        status: crate::FeasibilityStatus::Feasible,
+        target_count,
+        valid_upper_bound: Some(outcome.upper_bound),
+        result: Some(result),
+    })
+}
+
 pub fn solve_with_observer(
     prepared: &PreparedProblem,
     options: &SolveOptions,
     observer: &mut dyn SolveObserver,
+) -> Result<SolveResult, PackingError> {
+    solve_with_observer_internal(prepared, options, observer, None, true)
+}
+
+pub fn solve_with_observer_direct(
+    prepared: &PreparedProblem,
+    options: &SolveOptions,
+    observer: &mut dyn SolveObserver,
+) -> Result<SolveResult, PackingError> {
+    solve_with_observer_internal(prepared, options, observer, None, false)
+}
+
+pub fn solve_with_observer_clearance_continuation(
+    prepared: &PreparedProblem,
+    options: &SolveOptions,
+    observer: &mut dyn SolveObserver,
+) -> Result<SolveResult, PackingError> {
+    validate_options(options)?;
+    if options.quality == crate::SolveQuality::Fast
+        || options.max_iterations < 40_000
+        || prepared.problem.items.len() != 1
+        || prepared.problem.clearance.item_to_item <= EPSILON
+    {
+        return solve_with_observer_direct(prepared, options, observer);
+    }
+    let started = clock_start();
+    let fixed = prepare_fixed(prepared)?;
+    let fixed_placements = fixed
+        .iter()
+        .map(|entry| entry.placement.clone())
+        .collect::<Vec<_>>();
+    let continuation = clearance_continuation(prepared, options, observer, &fixed_placements)?;
+    let mut counters = Counters {
+        continuation_stages: continuation.stages,
+        continuation_repair_only_stages: continuation.repair_only_stages,
+        continuation_search_stages: continuation.search_stages,
+        continuation_full_solve_stages: continuation.full_solve_stages,
+        warm_start_status: crate::WarmStartStatus::PartiallyRepaired,
+        ..Counters::default()
+    };
+    let best = repair_warm_start(prepared, &fixed, &continuation.placements);
+    counters.greedy_lower_bound = best.len();
+    let placements = best
+        .iter()
+        .map(|entry| entry.placement.clone())
+        .collect::<Vec<_>>();
+    observer.on_progress(&SolveProgress {
+        phase: SolvePhase::Validating,
+        completed_fraction: 1.0,
+        max_iterations: options.max_iterations,
+        iterations: 0,
+        packed_item_count: placements.len(),
+        placements: placements.clone(),
+        solver_strategy: "clearance_continuation".to_string(),
+    });
+    let validation = validate_placements(prepared, &placements)?;
+    if !validation.valid {
+        return Err(PackingError::validation(format!(
+            "clearance continuation produced an invalid result: {}",
+            validation.errors.join("; ")
+        )));
+    }
+    let status = if Some(best.len()) == prepared.simple_upper_bound {
+        SolveStatus::ProvenOptimal
+    } else if best.is_empty() {
+        SolveStatus::Infeasible
+    } else {
+        SolveStatus::BestFound
+    };
+    Ok(build_result(
+        prepared,
+        options,
+        best,
+        "clearance_continuation".to_string(),
+        counters,
+        started,
+        validation,
+        status,
+    ))
+}
+
+fn solve_with_observer_internal(
+    prepared: &PreparedProblem,
+    options: &SolveOptions,
+    observer: &mut dyn SolveObserver,
+    warm_start: Option<&[Placement]>,
+    allow_continuation: bool,
 ) -> Result<SolveResult, PackingError> {
     validate_options(options)?;
     let mut run_options = *options;
@@ -73,6 +280,42 @@ pub fn solve_with_observer(
     let fixed = prepare_fixed(prepared)?;
     let mut best = fixed.clone();
     let mut best_strategy = "fixed_only".to_string();
+    if let Some(placements) = warm_start {
+        let repaired = repair_warm_start(prepared, &fixed, placements);
+        if repaired.len() > fixed.len() {
+            counters.warm_start_status = if repaired.len() == placements.len() {
+                crate::WarmStartStatus::Retained
+            } else {
+                crate::WarmStartStatus::PartiallyRepaired
+            };
+            best = repaired;
+            best_strategy = "warm_start".to_string();
+        } else {
+            counters.warm_start_status = crate::WarmStartStatus::Restarted;
+        }
+    }
+    if best.len() > fixed.len() {
+        let mut repaired = best.clone();
+        let order = (0..prepared.variants.len()).collect::<Vec<_>>();
+        let mut repair_options = run_options;
+        repair_options.max_iterations = (run_options.max_iterations / 10).max(1);
+        greedy_fill(
+            prepared,
+            &repair_options,
+            &order,
+            &mut repaired,
+            &mut counters,
+            started,
+            observer,
+        );
+        if repaired.len() > best.len()
+            || (repaired.len() == best.len() && layout_key(&repaired) < layout_key(&best))
+        {
+            best = repaired;
+            best_strategy = "warm_start+repair".to_string();
+        }
+        clear_local_limit(&mut counters, &run_options);
+    }
     let mut learning_options = run_options;
     learning_options.max_iterations = (run_options.max_iterations.saturating_mul(25) / 100).max(1);
     for (strategy, placements) in learned_lattice_layouts(
@@ -213,6 +456,7 @@ pub fn solve_with_observer(
             phase_options.max_iterations = attempt_end
                 .max(counters.iterations + 1)
                 .min(run_options.max_iterations);
+            counters.local_improvement_attempts += 1;
             neighbourhood_improved = remove_reinsert(
                 prepared,
                 &phase_options,
@@ -222,6 +466,9 @@ pub fn solve_with_observer(
                 started,
                 observer,
             );
+            if neighbourhood_improved {
+                counters.local_improvements_accepted += 1;
+            }
         }
         if placements.len() > best.len()
             || (placements.len() == best.len() && layout_key(&placements) < layout_key(&best))
@@ -261,10 +508,65 @@ pub fn solve_with_observer(
         }
         clear_local_limit(&mut counters, &run_options);
     }
+    if allow_continuation
+        && warm_start.is_none()
+        && options.quality != crate::SolveQuality::Fast
+        && options.max_iterations >= 40_000
+        && prepared.problem.items.len() == 1
+        && prepared.problem.items[0].quantity as usize > best.len()
+        && prepared.problem.clearance.item_to_item > EPSILON
+    {
+        let preview_seed = best
+            .iter()
+            .map(|entry| entry.placement.clone())
+            .collect::<Vec<_>>();
+        let continuation = clearance_continuation(prepared, options, observer, &preview_seed)?;
+        counters.continuation_stages += continuation.stages;
+        counters.continuation_repair_only_stages += continuation.repair_only_stages;
+        counters.continuation_search_stages += continuation.search_stages;
+        counters.continuation_full_solve_stages += continuation.full_solve_stages;
+        let repaired = repair_warm_start(prepared, &fixed, &continuation.placements);
+        if repaired.len() > best.len()
+            || (repaired.len() == best.len() && layout_key(&repaired) < layout_key(&best))
+        {
+            best = repaired;
+            best_strategy = "clearance_continuation".to_string();
+            counters.warm_start_status = crate::WarmStartStatus::PartiallyRepaired;
+        }
+    }
+    counters.greedy_lower_bound = best.len();
+    let baseline_placements = best
+        .iter()
+        .map(|entry| entry.placement.clone())
+        .collect::<Vec<_>>();
+    if let Some(outcome) =
+        bounded_search(prepared, &run_options, &baseline_placements, None, observer)
+    {
+        counters.search = outcome.metrics;
+        counters.cancelled |= counters.search.cancelled;
+        counters.limit |= counters.search.limit_reached;
+        if outcome.placements.len() > best.len()
+            || (outcome.placements.len() == best.len()
+                && placement_layout_key(&outcome.placements)
+                    < placement_layout_key(&baseline_placements))
+        {
+            best = candidate_entries_from_placements(prepared, &outcome.placements)?;
+            best_strategy = outcome.strategy;
+        }
+    }
     let best_placements = best
         .iter()
         .map(|entry| entry.placement.clone())
         .collect::<Vec<_>>();
+    observer.on_progress(&SolveProgress {
+        phase: SolvePhase::Validating,
+        completed_fraction: 1.0,
+        max_iterations: run_options.max_iterations,
+        iterations: counters.iterations,
+        packed_item_count: best_placements.len(),
+        placements: best_placements.clone(),
+        solver_strategy: best_strategy.clone(),
+    });
     let validation = validate_placements(prepared, &best_placements)?;
     if !validation.valid {
         return Err(PackingError::validation(format!(
@@ -295,6 +597,194 @@ pub fn solve_with_observer(
     ))
 }
 
+fn clearance_continuation(
+    prepared: &PreparedProblem,
+    options: &SolveOptions,
+    observer: &mut dyn SolveObserver,
+    preview_seed: &[Placement],
+) -> Result<ContinuationOutcome, PackingError> {
+    let target_clearance = prepared.problem.clearance.item_to_item;
+    let origin_x = (prepared.container_bounds.min_x + prepared.container_bounds.max_x) / 2.0;
+    let origin_y = (prepared.container_bounds.min_y + prepared.container_bounds.max_y) / 2.0;
+    let centered = centered_prepared_problem(prepared, origin_x, origin_y);
+    let mut preview = preview_seed.to_vec();
+    let mut donor = Vec::new();
+    let mut repair_only_stages = 0;
+    let mut search_stages = 0;
+    let mut full_solve_stages = 0;
+    let mut continuation_options = *options;
+    continuation_options.quality = crate::SolveQuality::Thorough;
+    continuation_options.max_iterations = (options.max_iterations / 2).max(2_000);
+    continuation_options.restarts = continuation_options.restarts.min(2);
+    continuation_options.beam_width = Some(4);
+    continuation_options.max_candidates_per_state = Some(8);
+    continuation_options.max_search_states = Some(
+        continuation_options
+            .max_iterations
+            .saturating_div(4)
+            .max(128),
+    );
+    let fractions = [0.0, 0.15, 0.3, 0.45, 0.6, 0.75, 0.9, 1.0];
+    for (stage, fraction) in fractions.into_iter().enumerate() {
+        let mut relaxed_prepared = centered.clone();
+        relaxed_prepared.problem.clearance.item_to_item = target_clearance * fraction;
+        donor = if donor.is_empty() {
+            full_solve_stages += 1;
+            solve_with_observer_internal(
+                &relaxed_prepared,
+                &continuation_options,
+                &mut NoObserver,
+                Some(&donor),
+                false,
+            )?
+            .placements
+        } else {
+            let outcome =
+                incremental_clearance_stage(&relaxed_prepared, &continuation_options, &donor)?;
+            match outcome.kind {
+                ContinuationStageKind::RepairOnly => repair_only_stages += 1,
+                ContinuationStageKind::Search => search_stages += 1,
+                ContinuationStageKind::FullSolve => full_solve_stages += 1,
+            }
+            outcome.placements
+        };
+        let translated = donor
+            .iter()
+            .cloned()
+            .map(|mut placement| {
+                placement.x += origin_x;
+                placement.y += origin_y;
+                placement
+            })
+            .collect::<Vec<_>>();
+        // Relaxed-stage layouts are valid only for their temporary clearance and must never be
+        // rendered against the requested problem. The final stage uses the requested clearance;
+        // its solver path has already validated the translated-equivalent geometry.
+        if stage + 1 == fractions.len() {
+            preview = translated;
+        }
+        observer.on_progress(&SolveProgress {
+            phase: SolvePhase::ClearanceContinuation,
+            completed_fraction: (stage + 1) as f64 / fractions.len() as f64,
+            max_iterations: continuation_options.max_iterations,
+            iterations: 0,
+            packed_item_count: preview.len(),
+            placements: preview.clone(),
+            solver_strategy: "clearance_continuation".to_string(),
+        });
+    }
+    for placement in &mut donor {
+        placement.x += origin_x;
+        placement.y += origin_y;
+    }
+    Ok(ContinuationOutcome {
+        placements: donor,
+        stages: fractions.len() as u64,
+        repair_only_stages,
+        search_stages,
+        full_solve_stages,
+    })
+}
+
+struct ContinuationOutcome {
+    placements: Vec<Placement>,
+    stages: u64,
+    repair_only_stages: u64,
+    search_stages: u64,
+    full_solve_stages: u64,
+}
+
+enum ContinuationStageKind {
+    RepairOnly,
+    Search,
+    FullSolve,
+}
+
+struct ContinuationStageOutcome {
+    placements: Vec<Placement>,
+    kind: ContinuationStageKind,
+}
+
+fn incremental_clearance_stage(
+    prepared: &PreparedProblem,
+    options: &SolveOptions,
+    donor: &[Placement],
+) -> Result<ContinuationStageOutcome, PackingError> {
+    let target_count = donor.len();
+    let fixed = prepare_fixed(prepared)?;
+    let repaired = repair_warm_start(prepared, &fixed, donor);
+    if repaired.len() >= target_count {
+        return Ok(ContinuationStageOutcome {
+            placements: repaired.into_iter().map(|entry| entry.placement).collect(),
+            kind: ContinuationStageKind::RepairOnly,
+        });
+    }
+    let baseline = repaired
+        .iter()
+        .map(|entry| entry.placement.clone())
+        .collect::<Vec<_>>();
+    let mut search_options = *options;
+    search_options.max_search_states = Some(512);
+    if let Some(outcome) = bounded_search(
+        prepared,
+        &search_options,
+        &baseline,
+        Some(target_count),
+        &mut NoObserver,
+    ) && outcome.placements.len() > baseline.len()
+    {
+        return Ok(ContinuationStageOutcome {
+            placements: outcome.placements,
+            kind: ContinuationStageKind::Search,
+        });
+    }
+    let mut fallback_options = *options;
+    fallback_options.max_iterations = (options.max_iterations.saturating_mul(3) / 4).max(2_000);
+    Ok(ContinuationStageOutcome {
+        placements: solve_with_observer_internal(
+            prepared,
+            &fallback_options,
+            &mut NoObserver,
+            Some(donor),
+            false,
+        )?
+        .placements,
+        kind: ContinuationStageKind::FullSolve,
+    })
+}
+
+fn centered_prepared_problem(
+    prepared: &PreparedProblem,
+    origin_x: f64,
+    origin_y: f64,
+) -> PreparedProblem {
+    let mut centered = prepared.clone();
+    centered.container = transform(&centered.container, 0.0, -origin_x, -origin_y);
+    centered.container_bounds = centered.container_bounds.translated(-origin_x, -origin_y);
+    centered.exclusions = centered
+        .exclusions
+        .iter()
+        .map(|geometry| transform(geometry, 0.0, -origin_x, -origin_y))
+        .collect();
+    for point in &mut centered.container_contacts {
+        point.x -= origin_x;
+        point.y -= origin_y;
+    }
+    for point in &mut centered.exclusion_contacts {
+        point.x -= origin_x;
+        point.y -= origin_y;
+    }
+    for part in &mut centered.problem.container.parts {
+        part.translation.x -= origin_x;
+        part.translation.y -= origin_y;
+    }
+    for placement in &mut centered.problem.fixed_placements {
+        placement.x -= origin_x;
+        placement.y -= origin_y;
+    }
+    centered
+}
+
 fn effective_iteration_budget(options: &SolveOptions) -> u64 {
     let multiplier = match options.quality {
         crate::SolveQuality::Fast | crate::SolveQuality::Balanced => 1,
@@ -314,9 +804,15 @@ fn validate_options(options: &SolveOptions) -> Result<(), PackingError> {
         || !options.grid_step.is_finite()
         || options.grid_step <= 0.0
         || options.restarts == 0
+        || options.beam_width == Some(0)
+        || options.max_candidates_per_state == Some(0)
+        || options.max_search_states == Some(0)
+        || options
+            .candidate_generation_density
+            .is_some_and(|density| !density.is_finite() || density <= 0.0)
     {
         return Err(PackingError::config(
-            "solve options require positive iterations, grid step, and restart count",
+            "solve options require positive iteration, grid, restart, beam, state, candidate, and density values",
         ));
     }
     if options.deterministic && options.time_limit_ms.is_some() {
@@ -436,7 +932,9 @@ fn learned_lattice_layouts(
     observer: &mut dyn SolveObserver,
 ) -> Vec<(String, Vec<CandidatePlacement>)> {
     let mut layouts = Vec::new();
+    let subdivision_started = clock_start();
     let decomposed_cells = decomposed_regions(prepared);
+    counters.subdivision_ms += elapsed_ms(subdivision_started);
     for variant in &prepared.variants {
         let horizontal_pitch = variant.bounds.width() + prepared.problem.clearance.item_to_item;
         for shift_fraction in [0.0, 0.5] {
@@ -872,11 +1370,12 @@ fn try_place_pair(
     let second_candidate = candidate(second, x + offset.x, y + offset.y, false);
     counters.evaluated += 2;
     counters.iterations += 2;
-    if feasible(prepared, &first_candidate, placed.iter())
+    if feasible(prepared, &first_candidate, placed.iter(), counters)
         && feasible(
             prepared,
             &second_candidate,
             placed.iter().chain(std::iter::once(&first_candidate)),
+            counters,
         )
     {
         counters.valid += 2;
@@ -1269,11 +1768,10 @@ fn contact_positions(
     // Exact vertex and edge-midpoint alignment supplies useful contacts for rotated, concave,
     // and holed containers without materializing a full no-fit polygon.
     let container_contacts = prepared
-        .container
-        .polygons
+        .container_contacts
         .iter()
-        .flat_map(|polygon| contact_points(polygon))
         .take(24)
+        .copied()
         .collect::<Vec<_>>();
     let item_contacts = variant
         .geometry
@@ -1374,6 +1872,7 @@ fn compact(
                         .enumerate()
                         .filter(|(other, _)| *other != index)
                         .map(|(_, entry)| entry),
+                    counters,
                 );
                 counters.evaluated += 1;
                 counters.iterations += 1;
@@ -1404,7 +1903,7 @@ fn try_place(
         return;
     }
     let next = candidate(variant, x, y, false);
-    if feasible(prepared, &next, placed.iter()) {
+    if feasible(prepared, &next, placed.iter(), counters) {
         counters.valid += 1;
         placed.push(next);
     }
@@ -1414,6 +1913,7 @@ fn feasible<'a>(
     prepared: &PreparedProblem,
     next: &CandidatePlacement,
     placed: impl Iterator<Item = &'a CandidatePlacement>,
+    counters: &mut Counters,
 ) -> bool {
     let item = &prepared.problem.items[next_item_index(prepared, next)];
     let shared = matches!(
@@ -1426,23 +1926,33 @@ fn feasible<'a>(
             ..
         }
     );
-    if !set_inside(
+    let containment_started = clock_start();
+    counters.exact_geometry_checks += 1;
+    let inside = set_inside(
         &next.geometry,
         &prepared.container,
         prepared.problem.clearance.item_to_boundary,
-    ) {
+    );
+    counters.containment_check_ms += elapsed_ms(containment_started);
+    if !inside {
         return false;
     }
+    let collision_started = clock_start();
     for (index, exclusion) in prepared.exclusions.iter().enumerate() {
         let required = prepared
             .problem
             .clearance
             .item_to_exclusion
             .max(prepared.problem.exclusions[index].clearance);
-        if next.bounds.overlaps(bounds(exclusion), required)
-            && (sets_overlap(&next.geometry, exclusion)
-                || set_distance(&next.geometry, exclusion) + EPSILON < required)
+        if !next.bounds.overlaps(bounds(exclusion), required) {
+            counters.broad_phase_rejections += 1;
+            continue;
+        }
+        counters.exact_geometry_checks += 1;
+        if sets_overlap(&next.geometry, exclusion)
+            || set_distance(&next.geometry, exclusion) + EPSILON < required
         {
+            counters.collision_check_ms += elapsed_ms(collision_started);
             return false;
         }
     }
@@ -1454,13 +1964,19 @@ fn feasible<'a>(
             return false;
         }
         let required = prepared.problem.clearance.item_to_item;
-        if next.bounds.overlaps(existing.bounds, required)
-            && (sets_overlap(&next.geometry, &existing.geometry)
-                || set_distance(&next.geometry, &existing.geometry) + EPSILON < required)
+        if !next.bounds.overlaps(existing.bounds, required) {
+            counters.broad_phase_rejections += 1;
+            continue;
+        }
+        counters.exact_geometry_checks += 1;
+        if sets_overlap(&next.geometry, &existing.geometry)
+            || set_distance(&next.geometry, &existing.geometry) + EPSILON < required
         {
+            counters.collision_check_ms += elapsed_ms(collision_started);
             return false;
         }
     }
+    counters.collision_check_ms += elapsed_ms(collision_started);
     true
 }
 
@@ -1511,6 +2027,7 @@ fn rotate_and_compact(
                     .enumerate()
                     .filter(|(other, _)| *other != index)
                     .map(|(_, entry)| entry),
+                counters,
             ) {
                 counters.valid += 1;
                 placed[index] = moved;
@@ -1718,6 +2235,41 @@ fn build_result(
                 .or_insert(placement.rotation_deg);
         }
     }
+    let bound_gap = prepared
+        .simple_upper_bound
+        .map(|upper| upper.saturating_sub(placements.len()));
+    let accepted_placements = placements.len() as u64;
+    let mut strategies_used = vec!["greedy_baseline".to_string()];
+    for used in strategy.split('+') {
+        if !strategies_used.iter().any(|existing| existing == used) {
+            strategies_used.push(used.to_string());
+        }
+    }
+    if counters.local_improvement_attempts > 0 {
+        strategies_used.push("remove_repack".to_string());
+    }
+    if options.quality != crate::SolveQuality::Fast {
+        strategies_used.push("bounded_beam".to_string());
+    }
+    if counters.search.conflict_graph_status != crate::ConflictGraphStatus::NotRun {
+        strategies_used.push("conflict_graph".to_string());
+    }
+    let mut warnings = Vec::new();
+    if let Some(upper) = prepared
+        .simple_upper_bound
+        .filter(|upper| *upper > placements.len())
+    {
+        warnings.push(format!(
+            "the {}-item layout is independently valid, but optimality is not proven; the safe upper bound is {upper}",
+            placements.len()
+        ));
+    }
+    if counters.search.conflict_graph_status == crate::ConflictGraphStatus::CandidateSetOptimal {
+        warnings.push(
+            "conflict-graph optimality applies only to the finite generated candidate set"
+                .to_string(),
+        );
+    }
     SolveResult {
         layout_id: layout_id(prepared, options, &placements),
         status,
@@ -1730,13 +2282,45 @@ fn build_result(
         solver_strategy: strategy,
         selected_shared_angles,
         statistics: SolveStatistics {
-            candidates_evaluated: counters.evaluated,
-            valid_candidates: counters.valid,
+            candidates_evaluated: counters.evaluated + counters.search.evaluated_candidates,
+            valid_candidates: counters.valid + counters.search.valid_candidates,
             iterations: counters.iterations,
             elapsed_ms: elapsed_ms(started),
+            preparation_ms: prepared.preparation_ms,
+            candidate_generation_ms: counters.search.candidate_generation_ms,
+            containment_check_ms: counters.containment_check_ms
+                + counters.search.containment_check_ms,
+            collision_check_ms: counters.collision_check_ms + counters.search.collision_check_ms,
+            candidate_scoring_ms: counters.search.candidate_scoring_ms,
+            subdivision_ms: counters.subdivision_ms,
+            generated_candidates: counters.evaluated + counters.search.generated_candidates,
+            broad_phase_rejections: counters.broad_phase_rejections
+                + counters.search.broad_phase_rejections,
+            exact_geometry_checks: counters.exact_geometry_checks
+                + counters.search.exact_geometry_checks,
+            accepted_placements,
+            explored_search_states: counters.search.explored_states,
+            deduplicated_search_states: counters.search.deduplicated_states,
+            pruned_search_states: counters.search.pruned_states,
+            area_bound_prunes: counters.search.area_bound_prunes,
+            region_bound_prunes: counters.search.region_bound_prunes,
+            projection_bound_prunes: counters.search.projection_bound_prunes,
+            greedy_lower_bound: counters.greedy_lower_bound,
+            final_upper_bound: prepared.simple_upper_bound,
+            bound_gap,
+            local_improvement_attempts: counters.local_improvement_attempts,
+            local_improvements_accepted: counters.local_improvements_accepted,
+            continuation_stages: counters.continuation_stages,
+            continuation_repair_only_stages: counters.continuation_repair_only_stages,
+            continuation_search_stages: counters.continuation_search_stages,
+            continuation_full_solve_stages: counters.continuation_full_solve_stages,
+            conflict_graph_candidates: counters.search.conflict_graph_candidates,
+            conflict_graph_status: counters.search.conflict_graph_status,
         },
+        strategies_used,
+        warm_start_status: counters.warm_start_status,
         validation,
-        warnings: Vec::new(),
+        warnings,
     }
 }
 
@@ -1797,6 +2381,12 @@ pub(crate) fn validated_result_from_placements(
         solver_strategy: format!("sensitivity_carry+{}", donor.solver_strategy),
         selected_shared_angles,
         statistics: donor.statistics.clone(),
+        strategies_used: {
+            let mut strategies = donor.strategies_used.clone();
+            strategies.insert(0, "sensitivity_warm_start".to_string());
+            strategies
+        },
+        warm_start_status: crate::WarmStartStatus::Retained,
         validation,
         warnings,
     }))
@@ -1858,4 +2448,151 @@ fn layout_key(entries: &[CandidatePlacement]) -> Vec<(String, u64, u64, u64)> {
             )
         })
         .collect()
+}
+
+fn placement_layout_key(entries: &[Placement]) -> Vec<(String, u64, u64, u64)> {
+    entries
+        .iter()
+        .map(|entry| {
+            (
+                entry.item_id.clone(),
+                entry.x.to_bits(),
+                entry.y.to_bits(),
+                entry.rotation_deg.to_bits(),
+            )
+        })
+        .collect()
+}
+
+fn candidate_entries_from_placements(
+    prepared: &PreparedProblem,
+    placements: &[Placement],
+) -> Result<Vec<CandidatePlacement>, PackingError> {
+    placements
+        .iter()
+        .map(|placement| {
+            let variant = prepared
+                .variants
+                .iter()
+                .find(|variant| {
+                    variant.item_id == placement.item_id
+                        && same_rotation(variant.rotation_deg, placement.rotation_deg)
+                })
+                .ok_or_else(|| {
+                    PackingError::validation(format!(
+                        "search placement for '{}' uses an unprepared rotation",
+                        placement.item_id
+                    ))
+                })?;
+            Ok(candidate(
+                variant,
+                placement.x,
+                placement.y,
+                placement.fixed,
+            ))
+        })
+        .collect()
+}
+
+fn repair_warm_start(
+    prepared: &PreparedProblem,
+    fixed: &[CandidatePlacement],
+    placements: &[Placement],
+) -> Vec<CandidatePlacement> {
+    let movable = placements
+        .iter()
+        .filter(|placement| !placement.fixed)
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut orders = vec![movable.clone()];
+    let mut reversed = movable.clone();
+    reversed.reverse();
+    orders.push(reversed);
+    let mut by_y = movable.clone();
+    by_y.sort_by(|a, b| a.y.total_cmp(&b.y).then_with(|| a.x.total_cmp(&b.x)));
+    orders.push(by_y);
+    let mut by_x = movable.clone();
+    by_x.sort_by(|a, b| a.x.total_cmp(&b.x).then_with(|| a.y.total_cmp(&b.y)));
+    orders.push(by_x);
+    for restart in 0..4_u64 {
+        let mut shuffled = movable.clone();
+        let mut rng =
+            ChaCha8Rng::seed_from_u64(0x9e3779b97f4a7c15_u64 ^ restart ^ movable.len() as u64);
+        shuffled.shuffle(&mut rng);
+        orders.push(shuffled);
+    }
+    let mut best = fixed.to_vec();
+    for order in orders {
+        let repaired = repair_warm_order(prepared, fixed, &order);
+        if repaired.len() > best.len()
+            || (repaired.len() == best.len() && layout_key(&repaired) < layout_key(&best))
+        {
+            best = repaired;
+        }
+    }
+    best
+}
+
+fn repair_warm_order(
+    prepared: &PreparedProblem,
+    fixed: &[CandidatePlacement],
+    placements: &[Placement],
+) -> Vec<CandidatePlacement> {
+    let mut repaired = fixed.to_vec();
+    for placement in placements {
+        let Some(variant) = prepared.variants.iter().find(|variant| {
+            variant.item_id == placement.item_id
+                && same_rotation(variant.rotation_deg, placement.rotation_deg)
+        }) else {
+            continue;
+        };
+        if item_count(&repaired, &variant.item_id)
+            >= prepared.problem.items[variant.item_index].quantity as usize
+        {
+            continue;
+        }
+        let next = candidate(variant, placement.x, placement.y, false);
+        let mut counters = Counters::default();
+        if feasible(prepared, &next, repaired.iter(), &mut counters) {
+            repaired.push(next);
+        } else if let Some(adjusted) =
+            locally_repair_candidate(prepared, variant, placement, &repaired)
+        {
+            repaired.push(adjusted);
+        }
+    }
+    repaired
+}
+
+fn locally_repair_candidate(
+    prepared: &PreparedProblem,
+    variant: &crate::prepare::PreparedVariant,
+    placement: &Placement,
+    repaired: &[CandidatePlacement],
+) -> Option<CandidatePlacement> {
+    let step = variant.bounds.width().min(variant.bounds.height()) / 100.0;
+    if !step.is_finite() || step <= EPSILON {
+        return None;
+    }
+    let mut counters = Counters::default();
+    for ring in 1..=24 {
+        let distance = step * ring as f64;
+        let offsets = [
+            (-distance, 0.0),
+            (distance, 0.0),
+            (0.0, -distance),
+            (0.0, distance),
+            (-distance, -distance),
+            (-distance, distance),
+            (distance, -distance),
+            (distance, distance),
+        ];
+        for (dx, dy) in offsets {
+            let adjusted = candidate(variant, placement.x + dx, placement.y + dy, false);
+            if feasible(prepared, &adjusted, repaired.iter(), &mut counters) {
+                return Some(adjusted);
+            }
+        }
+    }
+    None
 }

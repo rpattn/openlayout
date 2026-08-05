@@ -49,7 +49,7 @@ test("keeps packing geometry read-only while solving with overlays", async ({ pa
   await page.getByRole("button", { name: "Run packing" }).click();
   await expect(page.locator("#layout-title")).toContainText("packed items", { timeout: 20_000 });
   await expect(page.locator("#metrics")).toContainText("Passed");
-  await expect(page.locator("#diagnostics")).toContainText("Independent final validation passed");
+  await expect(page.locator("#diagnostics")).toContainText("independently valid");
 
   const plain = await canvasData(page, "#layout-canvas");
   await page.locator("#packing-dimensions").check();
@@ -57,6 +57,16 @@ test("keeps packing geometry read-only while solving with overlays", async ({ pa
   const dimensions = await canvasData(page, "#layout-canvas");
   await page.locator("#packing-clearance").check();
   expect(await canvasData(page, "#layout-canvas")).not.toBe(dimensions);
+});
+
+test("runs the studio default through the deterministic worker portfolio", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Run packing" }).click();
+  await expect(page.locator("#layout-title")).toHaveText("20 packed items", { timeout: 100_000 });
+  await expect(page.locator("#diagnostics")).toContainText(/Workers[\s\S]*[2-4]/);
+  await expect(page.locator("#diagnostics")).toContainText("Clearance continuation");
+  await expect(page.locator("#metrics")).toContainText("Passed");
 });
 
 test("unifies item, container, cut-out, and exclusion editing in the modeller", async ({ page }) => {

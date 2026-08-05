@@ -7,11 +7,13 @@ use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
 pub struct PreparedVariant {
+    pub id: usize,
     pub item_index: usize,
     pub item_id: String,
     pub rotation_deg: f64,
     pub(crate) geometry: PolygonSet,
     pub(crate) bounds: Bounds,
+    pub(crate) occupied_area: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -20,12 +22,20 @@ pub struct PreparedProblem {
     pub variants: Vec<PreparedVariant>,
     pub variants_by_item: BTreeMap<String, Vec<usize>>,
     pub simple_upper_bound: Option<usize>,
+    pub region_upper_bound: Option<usize>,
+    pub projection_upper_bound: Option<usize>,
+    pub preparation_ms: u64,
+    pub minimum_item_area: f64,
+    pub usable_area: f64,
     pub(crate) container: PolygonSet,
     pub(crate) container_bounds: Bounds,
     pub(crate) exclusions: Vec<PolygonSet>,
+    pub(crate) container_contacts: Vec<crate::Point>,
+    pub(crate) exclusion_contacts: Vec<crate::Point>,
 }
 
 pub fn prepare_problem(problem: &PackingProblem) -> Result<PreparedProblem, PackingError> {
+    let started = preparation_clock_start();
     validate_problem(problem)?;
     let container = container_region(&problem.container.parts)?;
     let container_bounds = bounds(&container);
@@ -34,6 +44,8 @@ pub fn prepare_problem(problem: &PackingProblem) -> Result<PreparedProblem, Pack
         .iter()
         .map(|entry| shape_to_polygons(&entry.shape))
         .collect::<Result<Vec<_>, _>>()?;
+    let container_contacts = boundary_contacts(&container);
+    let exclusion_contacts = exclusions.iter().flat_map(boundary_contacts).collect();
     let mut variants = Vec::new();
     let mut variants_by_item = BTreeMap::new();
     for (item_index, item) in problem.items.iter().enumerate() {
@@ -64,15 +76,101 @@ pub fn prepare_problem(problem: &PackingProblem) -> Result<PreparedProblem, Pack
     } else {
         0
     };
-    let simple_upper_bound = Some(area_bound.min(quantity_total.min(usize::MAX as u64) as usize));
+    let area_upper_bound = area_bound.min(quantity_total.min(usize::MAX as u64) as usize);
+    // A connected item cannot occupy two disconnected container contours. Treating hole contours
+    // as usable only loosens this sum, so it remains safe even though PolygonSet stores both kinds
+    // of boundary in one list.
+    let region_upper_bound = variants
+        .iter()
+        .all(|variant| variant.geometry.polygons.len() == 1)
+        .then(|| {
+            container
+                .polygons
+                .iter()
+                .map(|polygon| {
+                    let region = PolygonSet {
+                        polygons: vec![polygon.clone()],
+                    };
+                    (area(&region) / minimum_item_area).floor().max(0.0) as usize
+                })
+                .sum::<usize>()
+                .min(quantity_total.min(usize::MAX as u64) as usize)
+        });
+    // Projection pruning is enabled only when every prepared solid is its full axis-aligned
+    // bounding rectangle. Every placement then occupies at least min_width by min_height in the
+    // container bounding box; non-rectangular and rotated variants deliberately disable it.
+    let projection_upper_bound = variants
+        .iter()
+        .all(|variant| is_axis_aligned_rectangle(&variant.geometry, variant.bounds))
+        .then(|| {
+            let min_width = variants
+                .iter()
+                .map(|variant| variant.bounds.width())
+                .fold(f64::INFINITY, f64::min);
+            let min_height = variants
+                .iter()
+                .map(|variant| variant.bounds.height())
+                .fold(f64::INFINITY, f64::min);
+            ((container_bounds.width() / min_width).floor().max(0.0) as usize)
+                .saturating_mul((container_bounds.height() / min_height).floor().max(0.0) as usize)
+                .min(quantity_total.min(usize::MAX as u64) as usize)
+        });
+    let simple_upper_bound = Some(
+        [
+            Some(area_upper_bound),
+            region_upper_bound,
+            projection_upper_bound,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(area_upper_bound),
+    );
     Ok(PreparedProblem {
         problem: problem.clone(),
         variants,
         variants_by_item,
         simple_upper_bound,
+        region_upper_bound,
+        projection_upper_bound,
+        preparation_ms: preparation_elapsed_ms(started),
+        minimum_item_area,
+        usable_area,
         container,
         container_bounds,
         exclusions,
+        container_contacts,
+        exclusion_contacts,
+    })
+}
+
+fn boundary_contacts(set: &PolygonSet) -> Vec<crate::Point> {
+    set.polygons
+        .iter()
+        .flat_map(|polygon| {
+            polygon.iter().enumerate().flat_map(|(index, point)| {
+                let next = polygon[(index + 1) % polygon.len()];
+                [
+                    *point,
+                    crate::Point {
+                        x: (point.x + next.x) / 2.0,
+                        y: (point.y + next.y) / 2.0,
+                    },
+                ]
+            })
+        })
+        .collect()
+}
+
+fn is_axis_aligned_rectangle(geometry: &PolygonSet, geometry_bounds: Bounds) -> bool {
+    if geometry.polygons.len() != 1 || geometry.polygons[0].len() != 4 {
+        return false;
+    }
+    geometry.polygons[0].iter().all(|point| {
+        ((point.x - geometry_bounds.min_x).abs() <= 1e-7
+            || (point.x - geometry_bounds.max_x).abs() <= 1e-7)
+            && ((point.y - geometry_bounds.min_y).abs() <= 1e-7
+                || (point.y - geometry_bounds.max_y).abs() <= 1e-7)
     })
 }
 
@@ -104,16 +202,37 @@ fn prepare_item(
             continue;
         }
         let index = variants.len();
+        let occupied_area = guaranteed_occupied_area(&geometry);
         variants.push(PreparedVariant {
+            id: index,
             item_index,
             item_id: item.id.clone(),
             rotation_deg,
             geometry,
             bounds: geometry_bounds,
+            occupied_area,
         });
         by_item.entry(item.id.clone()).or_default().push(index);
     }
     Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn preparation_clock_start() -> std::time::Instant {
+    std::time::Instant::now()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn preparation_clock_start() {}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn preparation_elapsed_ms(started: std::time::Instant) -> u64 {
+    started.elapsed().as_millis() as u64
+}
+
+#[cfg(target_arch = "wasm32")]
+fn preparation_elapsed_ms(_: ()) -> u64 {
+    0
 }
 
 fn rotation_candidates(

@@ -1,0 +1,55 @@
+# Performance notes
+
+These numbers are repeatable local observations, not a benchmark suite. `fast` is the retained pre-search greedy path and represents the before baseline; `balanced` and `thorough` show the bounded-search implementation after candidate, state, bound, and graph work was added. Runs used an optimized Rust build on the local Linux development container on 2026-08-04, seed 42, deterministic iteration limits, grid step 0.5, two restarts, and 30,000 base iterations. Each row reports the median of three consecutive CLI runs after compilation.
+
+| Problem | Mode | Count / upper | Time | Generated candidates | Exact checks | Beam states | Graph |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `irregular-rectangles.json` | fast | 18 / 26 | 40 ms | 29,411 | 46,908 | 0 | not run |
+| `irregular-rectangles.json` | balanced | 18 / 26 | 93 ms | 298,349 | 55,568 | 236 | not run |
+| `irregular-rectangles.json` | thorough | 18 / 26 | 931 ms | 3,554,679 | 304,880 | 4,491 | not run |
+| `compound-with-exclusion.json` | fast | 29 / 30 | 497 ms | 29,536 | 56,251 | 0 | not run |
+| `compound-with-exclusion.json` | balanced | 29 / 30 | 730 ms | 1,302,706 | 66,080 | 620 | not run |
+| `compound-with-exclusion.json` | thorough | 29 / 30 | 3.34 s | 7,965,439 | 282,476 | 3,917 | 96 candidates; limit reached |
+
+Run the same comparison with:
+
+```bash
+cargo build --release --workspace
+target/release/packing-cli solve examples/irregular-rectangles.json options.json
+```
+
+The representative `options.json` is:
+
+```json
+{"seed":42,"deterministic":true,"max_iterations":30000,"grid_step":0.5,"restarts":2,"quality":"balanced"}
+```
+
+Candidate generation dominates the additional thorough-mode work; exact checks grow much more slowly because bounding boxes and the spatial index reject most remote placements. On these two already lattice-friendly problems, stronger modes match rather than improve the count, so the extra confidence is bounded exploration, not a quality gain. The local remove/repack pass likewise produced only equal-count canonical improvements in these runs. This is useful negative evidence: balanced remains reasonable for ordinary solves, while thorough should be reserved for transitions and small bound gaps.
+
+The deliberately constrained 50-iteration integration case exposes the search-quality difference: on the irregular container, fast finds no complete baseline placement before its limit while balanced retains competing states and returns three independently validated placements. This is not a practical budget recommendation; it is a stable regression case proving that the beam is more than a renamed portfolio pass.
+
+For the balanced rows, broad phase rejected 45,806 and 149,059 remote container/exclusion/item comparisons respectively before exact collision distance work. The corresponding candidate evaluations were 40,232 and 41,670. Exact-check totals also include the mandatory containment test for every evaluated placement, so they should not be read as collision checks alone.
+
+`sensitivity-problem.json` reaches its safe upper bound of six in balanced mode. The root beam state is then pruned by the certified rectangular projection bound, demonstrating that pruning preserves the known feasible solution. Integration tests separately protect deterministic layouts, bounded-mode lower-bound preservation, target feasibility, warm-start validation, and independent final validation.
+
+Millisecond sub-phase timers can read zero for short problems. Candidate, broad-phase, exact-check, state, and prune counts are preferred when comparing algorithm changes. Preparation timing also reads zero for these small inputs; prepared geometry becomes material when a cached Wasm engine repeats solve-only option changes.
+
+## Browser studio default
+
+The literal studio start problem is also protected through the generated Wasm API and the rendered
+browser application. These are single observations on the same development container rather than
+a cross-device benchmark:
+
+| Implementation | Valid count | Browser wall time |
+| --- | ---: | ---: |
+| Repeated full continuation solves | 20 | 45.9 s |
+| Prepared-state reuse, repair-first stages, and reduced fallbacks | 20 | 29.2 s |
+| Tuned two-worker direct/continuation portfolio in Chromium | 20 | 23.1–28.4 s |
+
+Four of the eight continuation stages preserve the incumbent using deterministic local repair in
+this case. The other stages try a 512-state target beam and fall back to a three-quarter-budget
+warm solve only when necessary. `SolveStatistics` reports repair-only, targeted-search, and full
+fallback stage counts. In the browser, `runtime_timing.total_ms` and `phase_ms` use
+`performance.now()` in the worker; the Packing diagnostics show those measurements and the active
+worker count. Native core timers remain separate and operation counts remain the more reproducible
+way to compare machines.
