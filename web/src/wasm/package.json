@@ -1,0 +1,16 @@
+{
+  "name": "packing-wasm",
+  "type": "module",
+  "version": "0.1.0",
+  "license": "UNLICENSED",
+  "files": [
+    "packing_wasm_bg.wasm",
+    "packing_wasm.js",
+    "packing_wasm.d.ts"
+  ],
+  "main": "packing_wasm.js",
+  "types": "packing_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

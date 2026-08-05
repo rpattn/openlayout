@@ -56,7 +56,8 @@ cargo run -p packing-cli -- sensitivity examples/snapped-compound.json examples/
 Install `wasm-pack`, then build the browser package with:
 
 ```bash
-wasm-pack build crates/packing-wasm --target web --out-dir ../../pkg
+cd web
+npm run wasm
 ```
 
 To run the complete visual studio instead:
@@ -67,7 +68,7 @@ npm install
 npm run dev
 ```
 
-Open the local URL printed by Vite. `npm run build` generates the Wasm bindings, type-checks the application, and creates a production bundle. `npm test` generates the same Wasm module and exercises progress delivery, prepared-problem reuse, deterministic layouts, and compound-part sensitivity directly against the WebAssembly runtime. For the real-browser workflow checks, run `npx playwright install chromium` once and then `npm run test:e2e`.
+Open the local URL printed by Vite. `npm run build` type-checks the application and creates a production bundle from the checked-in Wasm artifact. Run `npm run build:wasm` when Rust sources change; CI regenerates the artifact and rejects drift. `npm test` regenerates the same Wasm module and exercises progress delivery, prepared-problem reuse, deterministic layouts, and compound-part sensitivity directly against the WebAssembly runtime. For the real-browser workflow checks, run `npx playwright install chromium` once and then `npm run test:e2e`.
 
 The studio stores multiple named projects entirely in browser `localStorage`; projects can be created, switched, renamed, duplicated, explicitly saved, or removed and survive browser and device restarts. Workspace edits also auto-save. Undo/redo uses bounded state snapshots and supports toolbar buttons plus standard keyboard shortcuts. The theme preference is stored beside the projects.
 
@@ -98,6 +99,6 @@ All coordinates are `f64` values in one caller-selected linear unit. No unit con
 
 `irregular-rectangles.json` should produce repeated rectangular placements while respecting the container notch. `compound-with-exclusion.json` exercises a multi-part item around a central unavailable region. The sensitivity pair changes a rectangle width and should expose several discrete capacity regions and narrow transition intervals. The studio opens with an editable neutral example combining all three parameterized primitives.
 
-This remains a heuristic prototype. It does not compute no-fit polygons or prove infeasibility in general. A result is globally proven only when its feasible count meets a safe unrestricted bound; conflict-graph optimality applies only to the generated finite candidate set. Candidate generation, beam breadth, local repair, graph search, and adaptive angles are bounded, while exact final validation remains mandatory. See [solver details](docs/solver.md), the [solver review and literature map](docs/solver-review.md), [published benchmark validation](docs/benchmarks.md), [performance notes](docs/performance.md), and the [roadmap](docs/roadmap.md).
+This remains a heuristic prototype. It does not compute no-fit polygons or prove infeasibility in general. A result is globally proven only when its feasible count meets a safe unrestricted bound; conflict-graph optimality applies only to the generated finite candidate set. Candidate generation, beam breadth, local repair, graph search, and adaptive angles are bounded, while exact final validation remains mandatory. See [solver details](docs/solver.md), the [solver review and literature map](docs/solver-review.md), [published benchmark validation](docs/benchmarks.md), [performance notes](docs/performance.md), [deployment notes](docs/deployment.md), and the [roadmap](docs/roadmap.md).
 
 Reference fixtures keep generic pattern learning honest: `2×2` rectangles tile a `10×6` field with exactly 15 items, complementary right triangles tile a `10×10` field with exactly 50 items and reach `ProvenOptimal`, offset disconnected fields align independently, and unit disks discover a five-row hexagonal lattice containing `5+4+5+4+5 = 23` disks without circle-specific solver code. The original snapped-capsule sensitivity case also holds at least 17 items at width `4.375` with half its former effective search budget. “Sphere packing” in this two-dimensional engine means disk packing; true 3D spheres are outside its model.

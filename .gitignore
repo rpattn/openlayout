@@ -2,6 +2,9 @@
 /pkg/
 /web/node_modules/
 /web/dist/
-/web/src/wasm/
+/web/src/wasm/.gitignore
 /web/test-results/
 /web/playwright-report/
+/web/Screenshot*.png
+/web/Screenshot*.jpg
+/web/Screenshot*.jpeg

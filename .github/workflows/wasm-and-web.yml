@@ -1,0 +1,62 @@
+name: Wasm and web
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/wasm-and-web.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**"
+      - "web/**"
+  pull_request:
+    paths:
+      - ".github/workflows/wasm-and-web.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**"
+      - "web/**"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.15.0 --locked
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Regenerate the checked-in Wasm artifact
+        working-directory: web
+        run: npm run wasm
+
+      - name: Reject stale generated Wasm
+        run: git diff --exit-code -- web/src/wasm
+
+      - name: Check native workspace
+        run: cargo test --workspace
+
+      - name: Build the web application
+        working-directory: web
+        run: npm run build
+
+      - name: Run Wasm runtime tests
+        working-directory: web
+        run: npm run test:runtime

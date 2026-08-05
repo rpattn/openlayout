@@ -4,9 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "wasm": "wasm-pack build ../crates/packing-wasm --target web --out-dir ../../web/src/wasm",
+    "wasm": "node scripts/generate-wasm.mjs",
     "dev": "npm run wasm && vite",
-    "build": "npm run wasm && tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build",
+    "build:wasm": "npm run wasm && npm run build",
     "test": "npm run wasm && node --test test/*.test.mjs",
     "test:runtime": "node --test test/*.test.mjs",
     "test:e2e": "playwright test",
