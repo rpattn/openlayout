@@ -6,8 +6,8 @@ than as proof that this heuristic has attained it.
 
 ## Sources and adaptation
 
-- The [ESICUP irregular strip-packing instances](https://sites.google.com/view/umepon/benchmark)
-  provide the original polygon coordinates and orientation restrictions used here. The associated
+- The [official ESICUP dataset repository](https://github.com/ESICUP/datasets/tree/main/2d_irregular/dighe)
+  provides the CC0 Dighe1/Dighe2 XML coordinates and fixed orientation restrictions used here. The associated
   [guided-local-search paper](https://onlinelibrary.wiley.com/doi/10.1111/j.1475-3995.2009.00707.x)
   is Umetani et al. (2009).
 - The [two-level collision-free-region study](https://www.scitepress.org/Papers/2011/35219/35219.pdf)
@@ -29,21 +29,22 @@ the source orientation policy. This does not change feasibility at that target l
 
 | Case | Published target | OpenLayout result | What the automated check establishes |
 | --- | ---: | ---: | --- |
-| ESICUP `Dighe2` | 10 pieces in 100 × 100 (100% density) | 8 / 10 with expanded thorough search | Input area gives a safe upper bound of 10; every returned transform passes independent containment and pair-overlap validation. The two-piece quality gap remains explicit. |
+| ESICUP `Dighe1` | 16 pieces in 100 × 100 (100% density) | 10 / 16 with the retained balanced regression budget | The reflected up-left source coordinates preserve feasibility in OpenLayout's coordinate convention. Input area gives a safe upper bound of 16; all transforms pass independent validation. |
+| ESICUP `Dighe2` | 10 pieces in 100 × 100 (100% density) | 7 / 10 with the retained balanced regression budget | Input area gives a safe upper bound of 10; every returned transform passes independent containment and pair-overlap validation. The three-piece quality gap remains explicit. |
 | Studio start problem | 20 capsules | 20 / 20 with balanced defaults | A deterministic clearance-continuation run returns a 20-item witness, and the ordinary final validator accepts it at the full item, boundary, and exclusion clearances. |
 
-`Dighe2` is intentionally not labelled solved by OpenLayout. Reaching ten would prove optimality
-because the pieces exactly consume the 100 × 100 container area; the current eight-piece result is
-a solver-quality benchmark, not a geometry-correctness failure. The integration test retains the
-published ten-piece bound and refuses invalid output, so future search improvements can close the
-gap without silently moving the target.
+Neither Dighe case is labelled solved by OpenLayout. Reaching every requested piece would prove
+optimality because each set exactly consumes its 100 × 100 target. The current partial results are
+solver-quality benchmarks, not geometry-correctness failures. The integration tests retain the
+published bounds, measured quality floors, and independent validation, so future search
+improvements can close the gaps without silently moving either target.
 
 ## Reproduction
 
-Run the native suite for the embedded `Dighe2` coordinates:
+Run the native suite for both embedded Dighe coordinate sets:
 
 ```sh
-cargo test -p packing-core published_dighe2_target_bounds_and_validates_the_current_result
+cargo test -p packing-core published_dighe
 ```
 
 The studio start case uses seed 7, balanced quality, 80,000 base iterations, grid step 0.5, and

@@ -6,6 +6,7 @@ use crate::{
     SolveProgress, SolveQuality,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
@@ -45,7 +46,7 @@ pub(crate) struct SearchOutcome {
 struct Placed {
     placement: Placement,
     variant_id: usize,
-    geometry: PolygonSet,
+    geometry: Arc<PolygonSet>,
     bounds: Bounds,
 }
 
@@ -74,6 +75,7 @@ struct Candidate {
     y: f64,
     bounds: Bounds,
     source: CandidateSource,
+    contact_support: u16,
     score: f64,
 }
 
@@ -146,7 +148,7 @@ pub(crate) fn bounded_search(
     let root_upper_bound = root.upper_bound;
     let mut metrics = SearchMetrics::default();
     let search_started = metric_clock_start();
-    let mut beam = vec![root];
+    let mut beam = vec![root.clone()];
     beam.extend(neighbourhood_starts(
         prepared,
         &baseline_search,
@@ -163,6 +165,8 @@ pub(crate) fn bounded_search(
         placements: best.placed.iter().map(|p| p.placement.clone()).collect(),
         solver_strategy: "contact_candidates".to_string(),
     });
+    let static_candidates =
+        generate_candidates(prepared, &root, &config, &mut metrics, observer, None)?;
 
     'search: while !beam.is_empty() && metrics.explored_states < config.max_states {
         if target_count.is_some_and(|target| best.placed.len() >= target) {
@@ -184,9 +188,14 @@ pub(crate) fn bounded_search(
                 record_bound_prune(prepared, state.upper_bound, &mut metrics);
                 continue;
             }
-            let Some(mut candidates) =
-                generate_candidates(prepared, state, &config, &mut metrics, observer)
-            else {
+            let Some(mut candidates) = generate_candidates(
+                prepared,
+                state,
+                &config,
+                &mut metrics,
+                observer,
+                Some(&static_candidates),
+            ) else {
                 break 'search;
             };
             score_candidates(prepared, state, &mut candidates, &mut metrics);
@@ -496,7 +505,7 @@ fn placements_to_search(
             Some(Placed {
                 placement: placement.clone(),
                 variant_id: variant.id,
-                geometry: transform(&variant.geometry, 0.0, placement.x, placement.y),
+                geometry: Arc::new(transform(&variant.geometry, 0.0, placement.x, placement.y)),
                 bounds: variant.bounds.translated(placement.x, placement.y),
             })
         })
@@ -509,9 +518,21 @@ fn generate_candidates(
     config: &SearchConfig,
     metrics: &mut SearchMetrics,
     observer: &mut dyn SolveObserver,
+    cached_static: Option<&[Candidate]>,
 ) -> Option<Vec<Candidate>> {
     let started = metric_clock_start();
-    let mut raw = Vec::new();
+    let mut raw = cached_static
+        .map(|candidates| {
+            candidates
+                .iter()
+                .filter(|candidate| {
+                    let item_index = prepared.variants[candidate.variant_id].item_index;
+                    state.counts[item_index] < prepared.problem.items[item_index].quantity
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let boundary_points = prepared
         .container_contacts
         .iter()
@@ -535,45 +556,66 @@ fn generate_candidates(
         }
         let boundary_gap = prepared.problem.clearance.item_to_boundary + EPSILON * 10.0;
         let mut positions = Vec::new();
-        positions.extend([
-            (
-                prepared.container_bounds.min_x + boundary_gap - variant.bounds.min_x,
-                prepared.container_bounds.min_y + boundary_gap - variant.bounds.min_y,
-                CandidateSource::RegionExtremum,
-            ),
-            (
-                prepared.container_bounds.max_x - boundary_gap - variant.bounds.max_x,
-                prepared.container_bounds.min_y + boundary_gap - variant.bounds.min_y,
-                CandidateSource::RegionExtremum,
-            ),
-            (
-                prepared.container_bounds.min_x + boundary_gap - variant.bounds.min_x,
-                prepared.container_bounds.max_y - boundary_gap - variant.bounds.max_y,
-                CandidateSource::RegionExtremum,
-            ),
-            (
-                prepared.container_bounds.max_x - boundary_gap - variant.bounds.max_x,
-                prepared.container_bounds.max_y - boundary_gap - variant.bounds.max_y,
-                CandidateSource::RegionExtremum,
-            ),
-        ]);
-        let item_points = contact_points(&variant.geometry, 16);
-        for boundary in &boundary_points {
-            for item in &item_points {
-                positions.push((
-                    boundary.x - item.x,
-                    boundary.y - item.y,
-                    CandidateSource::BoundaryContact,
-                ));
-            }
+        let quantum = (EPSILON * 100.0).max(1e-7);
+        let mut seen = raw
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| candidate.variant_id == variant.id)
+            .map(|(index, candidate)| {
+                (
+                    (
+                        (candidate.x / quantum).round() as i64,
+                        (candidate.y / quantum).round() as i64,
+                    ),
+                    index,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        if cached_static.is_none() {
+            positions.extend([
+                (
+                    prepared.container_bounds.min_x + boundary_gap - variant.bounds.min_x,
+                    prepared.container_bounds.min_y + boundary_gap - variant.bounds.min_y,
+                    CandidateSource::RegionExtremum,
+                ),
+                (
+                    prepared.container_bounds.max_x - boundary_gap - variant.bounds.max_x,
+                    prepared.container_bounds.min_y + boundary_gap - variant.bounds.min_y,
+                    CandidateSource::RegionExtremum,
+                ),
+                (
+                    prepared.container_bounds.min_x + boundary_gap - variant.bounds.min_x,
+                    prepared.container_bounds.max_y - boundary_gap - variant.bounds.max_y,
+                    CandidateSource::RegionExtremum,
+                ),
+                (
+                    prepared.container_bounds.max_x - boundary_gap - variant.bounds.max_x,
+                    prepared.container_bounds.max_y - boundary_gap - variant.bounds.max_y,
+                    CandidateSource::RegionExtremum,
+                ),
+            ]);
         }
-        for boundary in &exclusion_points {
-            for item in item_points.iter().take(8) {
-                positions.push((
-                    boundary.x - item.x,
-                    boundary.y - item.y,
-                    CandidateSource::ExclusionContact,
-                ));
+        let item_points = contact_points(&variant.geometry, 16);
+        let dynamic_item_point_count = detailed_contact_limit(&variant.geometry);
+        let prioritize_exact_fits = prefers_exact_fit_priority(&variant.geometry);
+        if cached_static.is_none() {
+            for boundary in &boundary_points {
+                for item in &item_points {
+                    positions.push((
+                        boundary.x - item.x,
+                        boundary.y - item.y,
+                        CandidateSource::BoundaryContact,
+                    ));
+                }
+            }
+            for boundary in &exclusion_points {
+                for item in item_points.iter().take(8) {
+                    positions.push((
+                        boundary.x - item.x,
+                        boundary.y - item.y,
+                        CandidateSource::ExclusionContact,
+                    ));
+                }
             }
         }
         let gap = prepared.problem.clearance.item_to_item + EPSILON * 10.0;
@@ -588,6 +630,9 @@ fn generate_candidates(
                 existing.bounds.max_y + gap - variant.bounds.min_y,
                 existing.bounds.min_y - gap - variant.bounds.max_y,
             ]);
+            if cached_static.is_some() && existing.placement.fixed {
+                continue;
+            }
             positions.extend([
                 (
                     existing.bounds.max_x + gap - variant.bounds.min_x,
@@ -610,9 +655,12 @@ fn generate_candidates(
                     CandidateSource::ItemContact,
                 ),
             ]);
-            let existing_points = contact_points(&existing.geometry, 8);
+            let existing_points = contact_points(
+                &existing.geometry,
+                detailed_contact_limit(&existing.geometry),
+            );
             for anchor in existing_points {
-                for item in item_points.iter().take(8) {
+                for item in item_points.iter().take(dynamic_item_point_count) {
                     positions.push((
                         anchor.x - item.x,
                         anchor.y - item.y,
@@ -628,38 +676,47 @@ fn generate_candidates(
                 positions.push((x, *y, CandidateSource::ItemContact));
             }
         }
-        let mut y = prepared.container_bounds.min_y + boundary_gap - variant.bounds.min_y;
-        let mut row_index = 0usize;
-        while y + variant.bounds.max_y <= prepared.container_bounds.max_y - boundary_gap + EPSILON {
-            if row_index.is_multiple_of(64) && observer.should_cancel() {
-                metrics.cancelled = true;
-                return None;
-            }
-            let mut x = prepared.container_bounds.min_x + boundary_gap - variant.bounds.min_x;
-            while x + variant.bounds.max_x
-                <= prepared.container_bounds.max_x - boundary_gap + EPSILON
+        if cached_static.is_none() {
+            let mut y = prepared.container_bounds.min_y + boundary_gap - variant.bounds.min_y;
+            let mut row_index = 0usize;
+            while y + variant.bounds.max_y
+                <= prepared.container_bounds.max_y - boundary_gap + EPSILON
             {
-                positions.push((x, y, CandidateSource::Structured));
-                x += config.grid_stride;
+                if row_index.is_multiple_of(64) && observer.should_cancel() {
+                    metrics.cancelled = true;
+                    return None;
+                }
+                let mut x = prepared.container_bounds.min_x + boundary_gap - variant.bounds.min_x;
+                while x + variant.bounds.max_x
+                    <= prepared.container_bounds.max_x - boundary_gap + EPSILON
+                {
+                    positions.push((x, y, CandidateSource::Structured));
+                    x += config.grid_stride;
+                }
+                y += config.grid_stride;
+                row_index += 1;
             }
-            y += config.grid_stride;
-            row_index += 1;
         }
         positions.sort_by(|a, b| {
             a.2.cmp(&b.2)
                 .then_with(|| a.1.total_cmp(&b.1))
                 .then_with(|| a.0.total_cmp(&b.0))
         });
-        let quantum = (EPSILON * 100.0).max(1e-7);
-        let mut seen = BTreeSet::new();
         for (x, y, source) in positions {
             if !x.is_finite() || !y.is_finite() {
                 continue;
             }
             let key = ((x / quantum).round() as i64, (y / quantum).round() as i64);
-            if !seen.insert(key) {
+            if let Some(index) = seen.get(&key).copied() {
+                if prioritize_exact_fits && is_contact_source(source) {
+                    raw[index].contact_support = raw[index].contact_support.saturating_add(1);
+                    if candidate_source_bonus(source) > candidate_source_bonus(raw[index].source) {
+                        raw[index].source = source;
+                    }
+                }
                 continue;
             }
+            let index = raw.len();
             raw.push(Candidate {
                 id: 0,
                 variant_id: variant.id,
@@ -667,8 +724,10 @@ fn generate_candidates(
                 y,
                 bounds: variant.bounds.translated(x, y),
                 source,
+                contact_support: u16::from(is_contact_source(source)),
                 score: 0.0,
             });
+            seen.insert(key, index);
         }
     }
     raw.sort_by(|a, b| {
@@ -694,13 +753,10 @@ fn score_candidates(
 ) {
     let started = metric_clock_start();
     for candidate in candidates.iter_mut() {
-        let contact_bonus = match candidate.source {
-            CandidateSource::ItemContact => 20.0,
-            CandidateSource::RegionExtremum => 15.0,
-            CandidateSource::Structured => 10.0,
-            CandidateSource::BoundaryContact => 3.0,
-            CandidateSource::ExclusionContact => 2.0,
-        };
+        let contact_bonus = candidate_source_bonus(candidate.source);
+        // Complex variants never accumulate support, so this stays a constant-time hot-path
+        // operation without recounting their vertices for every candidate.
+        let exact_fit_bonus = f64::from(candidate.contact_support.saturating_sub(1).min(8)) * 3.0;
         let x = candidate.bounds.min_x - prepared.container_bounds.min_x;
         let y = candidate.bounds.min_y - prepared.container_bounds.min_y;
         let alignment = state
@@ -711,7 +767,7 @@ fn score_candidates(
                     || (placed.bounds.min_y - candidate.bounds.min_y).abs() <= EPSILON * 10.0
             })
             .count() as f64;
-        candidate.score = contact_bonus + alignment * 0.25 - y * 1e-3 - x * 1e-6;
+        candidate.score = contact_bonus + exact_fit_bonus + alignment * 0.25 - y * 1e-3 - x * 1e-6;
     }
     candidates.sort_by(|a, b| {
         b.score
@@ -722,6 +778,25 @@ fn score_candidates(
             .then_with(|| a.id.cmp(&b.id))
     });
     metrics.candidate_scoring_ms += metric_elapsed_ms(started);
+}
+
+fn is_contact_source(source: CandidateSource) -> bool {
+    matches!(
+        source,
+        CandidateSource::BoundaryContact
+            | CandidateSource::ExclusionContact
+            | CandidateSource::ItemContact
+    )
+}
+
+fn candidate_source_bonus(source: CandidateSource) -> f64 {
+    match source {
+        CandidateSource::ItemContact => 20.0,
+        CandidateSource::RegionExtremum => 15.0,
+        CandidateSource::Structured => 10.0,
+        CandidateSource::BoundaryContact => 3.0,
+        CandidateSource::ExclusionContact => 2.0,
+    }
 }
 
 fn feasible_candidate(
@@ -742,7 +817,7 @@ fn feasible_candidate(
         return None;
     }
     let variant = &prepared.variants[candidate.variant_id];
-    let geometry = transform(&variant.geometry, 0.0, candidate.x, candidate.y);
+    let geometry = Arc::new(transform(&variant.geometry, 0.0, candidate.x, candidate.y));
     let containment_started = metric_clock_start();
     metrics.exact_geometry_checks += 1;
     let inside = set_inside(
@@ -996,6 +1071,15 @@ fn contact_points(set: &PolygonSet, limit: usize) -> Vec<crate::Point> {
         .collect()
 }
 
+fn detailed_contact_limit(set: &PolygonSet) -> usize {
+    let vertex_count = set.polygons.iter().map(Vec::len).sum::<usize>();
+    if vertex_count <= 16 { 32 } else { 8 }
+}
+
+fn prefers_exact_fit_priority(set: &PolygonSet) -> bool {
+    set.polygons.iter().map(Vec::len).sum::<usize>() <= 16
+}
+
 fn angular_distance(a: f64, b: f64) -> f64 {
     (a - b).rem_euclid(360.0).min((b - a).rem_euclid(360.0))
 }
@@ -1018,7 +1102,7 @@ fn conflict_graph_refine(
             .cloned()
             .collect(),
     );
-    let mut candidates = generate_candidates(prepared, &empty, config, metrics, observer)?;
+    let mut candidates = generate_candidates(prepared, &empty, config, metrics, observer, None)?;
     score_candidates(prepared, &empty, &mut candidates, metrics);
     candidates.truncate(96);
     let spatial = SpatialIndex::new(

@@ -22,13 +22,13 @@ Feasibility is staged:
 4. query nearby placements through a deterministic uniform spatial index;
 5. perform polygon overlap and distance checks only on broad-phase matches.
 
-The index is small and state-local. Copying it would cost more complexity than rebuilding it once per expanded state at current beam widths. Accepted placements cache transformed geometry; immutable source geometry remains shared.
+The index is small and state-local. Copying it would cost more complexity than rebuilding it once per expanded state at current beam widths. Accepted placements cache transformed geometry in shared immutable references, so cloning a beam state copies small placement records rather than every polygon coordinate array.
 
 ## Explicit contact candidates
 
 A candidate contains a stable identifier, prepared variant, reference position, translated bounds, source category, and transient score. Sources are container vertices and edge midpoints, exclusion contacts, placed-item contacts, simultaneous vertex alignments, container extrema, and a quality-dependent structured grid. Positions are quantized and deduplicated, then totally ordered. Boundary clearance is included in extrema and grid origins.
 
-Contact candidates receive a modest ordering bonus, followed by extrema and structured positions. Alignment, bottom-first compactness, and a stable identifier break ties. Feasibility always precedes state scoring, and packed count always dominates secondary compactness.
+The state-independent container, exclusion, grid, and fixed-placement frontier is generated once at the root and filtered by remaining quantities. Each state generates only contacts involving its movable placements. Contact candidates receive a modest ordering bonus, followed by extrema and structured positions. For polygon sets of at most 16 vertices, duplicate vertex/edge contact constructions are retained as a capped support count: multi-contact exact-fit candidates rank ahead of arbitrary single contacts. More complex sampled curves and compound shapes keep a small dynamic frontier to prevent quadratic candidate growth. Alignment, bottom-first compactness, and a stable identifier break ties. Feasibility always precedes state scoring, and packed count always dominates secondary compactness.
 
 Full no-fit polygons were investigated but not adopted. The current geometry stack supplies reliable Boolean overlay but no robust Minkowski/no-fit operation with holes, disconnected solids, and clearance conventions. Vertex/midpoint contacts plus learned separation give useful touching placements without a fragile partial NFP. If an NFP is later justified, its cache must remain isolated and define whether coordinates represent physical boundaries or half-clearance envelopes.
 
@@ -95,3 +95,5 @@ Ordered vectors and maps, total float comparisons, canonical signatures, stable 
 Long portfolio, beam, neighbourhood, and graph loops use bounded budgets; portfolio and beam loops check cancellation. Progress distinguishes baseline, beam, neighbourhood, and refinement phases. Browser cancellation remains immediate by terminating the owning Web Worker, without browser APIs or threading in the core.
 
 Expected failures are sparse finite candidates for tight interlocks, weak bounds on concave or disconnected geometry, high candidate-generation cost in thorough mode, polygon approximation error at low segment counts, and numeric ambiguity near the epsilon. All accepted results still pass the independent validator. `BestFound` and `LimitReached` are honest heuristic outcomes, not optimality claims.
+
+The broader audit and its primary-literature mapping are recorded in [solver review and literature map](solver-review.md).

@@ -371,11 +371,107 @@ fn published_dighe2_target_bounds_and_validates_the_current_result() {
     solve_options.max_candidates_per_state = Some(16);
     solve_options.max_search_states = Some(20_000);
     let result = solve(&problem, &solve_options).unwrap();
-
     assert_eq!(result.simple_upper_bound, Some(10));
-    assert!(result.packed_item_count <= 10);
+    assert!(
+        (7..=10).contains(&result.packed_item_count),
+        "expected the bounded exact-fit frontier to retain at least 7 Dighe2 pieces, got {}",
+        result.packed_item_count
+    );
     assert!(result.validation.valid);
     if result.packed_item_count == 10 {
+        assert_eq!(result.status, SolveStatus::ProvenOptimal);
+    }
+}
+
+#[test]
+fn published_dighe1_target_bounds_and_validates_the_current_result() {
+    // ESICUP Dighe1 polygons 1..16. The source XML uses an up-left origin; reflecting all
+    // polygons into OpenLayout's coordinate convention preserves fixed-orientation feasibility.
+    let polygons: &[&[(f64, f64)]] = &[
+        &[(0.0, 0.0), (35.0, 0.0), (0.0, -34.0)],
+        &[(0.0, 0.0), (33.0, 0.0), (18.0, -15.0)],
+        &[(0.0, 0.0), (32.0, 0.0), (32.0, -41.0), (14.0, -33.0)],
+        &[
+            (35.0, 0.0),
+            (53.0, -15.0),
+            (51.0, -38.0),
+            (48.0, -62.0),
+            (39.0, -57.0),
+            (0.0, -34.0),
+        ],
+        &[
+            (2.0, -15.0),
+            (17.0, 0.0),
+            (31.0, -33.0),
+            (25.0, -34.0),
+            (0.0, -38.0),
+        ],
+        &[(0.0, 0.0), (39.0, -23.0), (20.0, -26.0), (0.0, -66.0)],
+        &[
+            (3.0, -4.0),
+            (28.0, 0.0),
+            (30.0, -18.0),
+            (32.0, -39.0),
+            (25.0, -37.0),
+            (0.0, -28.0),
+        ],
+        &[(0.0, -1.0), (6.0, 0.0), (24.0, -8.0), (2.0, -19.0)],
+        &[(0.0, -11.0), (22.0, 0.0), (2.0, -32.0)],
+        &[(0.0, -32.0), (20.0, 0.0), (20.0, -37.0)],
+        &[(1.0, 0.0), (26.0, -9.0), (0.0, -15.0)],
+        &[
+            (0.0, -3.0),
+            (19.0, 0.0),
+            (28.0, -5.0),
+            (27.0, -20.0),
+            (24.0, -43.0),
+        ],
+        &[(20.0, 0.0), (44.0, -40.0), (0.0, -40.0)],
+        &[(3.0, -6.0), (29.0, 0.0), (36.0, -2.0), (0.0, -29.0)],
+        &[(0.0, -27.0), (36.0, 0.0), (56.0, -27.0)],
+        &[(0.0, 0.0), (20.0, -5.0), (20.0, -27.0)],
+    ];
+    let problem = PackingProblem {
+        schema_version: 2,
+        container: container(Shape::Rectangle {
+            width: 100.0,
+            height: 100.0,
+        }),
+        exclusions: Vec::new(),
+        items: polygons
+            .iter()
+            .enumerate()
+            .map(|(index, vertices)| Item {
+                id: format!("piece-{index}"),
+                shape: Shape::Polygon {
+                    vertices: vertices
+                        .iter()
+                        .map(|(x, y)| Point { x: *x, y: *y })
+                        .collect(),
+                },
+                quantity: 1,
+                rotation_policy: discrete(vec![0.0]),
+            })
+            .collect(),
+        fixed_placements: Vec::new(),
+        clearance: Clearance::default(),
+    };
+    let mut solve_options = options();
+    solve_options.quality = SolveQuality::Balanced;
+    solve_options.max_iterations = 20_000;
+    solve_options.restarts = 2;
+    solve_options.beam_width = Some(8);
+    solve_options.max_candidates_per_state = Some(16);
+    solve_options.max_search_states = Some(20_000);
+    let result = solve(&problem, &solve_options).unwrap();
+    assert_eq!(result.simple_upper_bound, Some(16));
+    assert!(
+        (10..=16).contains(&result.packed_item_count),
+        "expected at least 10 Dighe1 pieces at the retained budget, got {}",
+        result.packed_item_count
+    );
+    assert!(result.validation.valid);
+    if result.packed_item_count == 16 {
         assert_eq!(result.status, SolveStatus::ProvenOptimal);
     }
 }

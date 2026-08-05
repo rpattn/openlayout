@@ -53,3 +53,21 @@ fallback stage counts. In the browser, `runtime_timing.total_ms` and `phase_ms` 
 `performance.now()` in the worker; the Packing diagnostics show those measurements and the active
 worker count. Native core timers remain separate and operation counts remain the more reproducible
 way to compare machines.
+
+### Exact-fit frontier review (2026-08-05)
+
+The low-complexity exact-fit ranking was measured with the release integration fixtures after
+compilation. At the retained Dighe2 balanced budget it raises the independently validated count
+from 6 to 7. Applying a 32 × 32 contact frontier indiscriminately was rejected: the capsule fixture
+generated 17.1 million candidates and still returned the same count. The accepted complexity gate
+uses the detailed frontier only for polygon sets of at most 16 vertices; the same capsule run then
+generated 3.08 million candidates and retained its 17-item quality floor.
+
+Three native studio-default runs with the accepted frontier all returned the validated 20-item
+continuation witness. Wall times were 17.4 s, 32.3 s, and 17.9 s (17.9 s median), with 1,138,604
+bounded-search candidates and 158,891 exact checks in every run. The timing outlier despite
+identical operation counts is why operation counts, not a claimed percentage speedup, are the
+acceptance signal here. The prior static-frontier/shared-geometry median was about 20.6 s.
+
+See [the solver review](solver-review.md) for the literature mapping, rejected experiments, and
+the recommended overlap-repair/NFP/exact-mode sequence.
