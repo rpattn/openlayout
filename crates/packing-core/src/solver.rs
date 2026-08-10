@@ -41,6 +41,13 @@ struct Counters {
     greedy_lower_bound: usize,
     local_improvement_attempts: u64,
     local_improvements_accepted: u64,
+    overlap_repair_attempts: u64,
+    overlap_repair_evaluated_moves: u64,
+    overlap_repair_accepted_moves: u64,
+    overlap_repair_weight_updates: u64,
+    overlap_repair_successes: u64,
+    overlap_repair_best_penalty: Option<f64>,
+    failed_constructive_candidates: Vec<Placement>,
     continuation_stages: u64,
     continuation_repair_only_stages: u64,
     continuation_search_stages: u64,
@@ -579,6 +586,76 @@ fn solve_with_observer_internal(
             break;
         }
         clear_local_limit(&mut counters, &run_options);
+    }
+    if options.quality != crate::SolveQuality::Fast
+        && best.len() < requested_count
+        && prepared
+            .simple_upper_bound
+            .is_none_or(|upper| best.len() < upper)
+        && (options.deterministic
+            || options
+                .time_limit_ms
+                .is_none_or(|limit| elapsed_ms(started) < limit))
+    {
+        observer.on_progress(&SolveProgress {
+            phase: SolvePhase::OverlapRepair,
+            completed_fraction: 0.0,
+            max_iterations: run_options.max_iterations,
+            iterations: counters.iterations,
+            packed_item_count: best.len(),
+            placements: best.iter().map(|entry| entry.placement.clone()).collect(),
+            solver_strategy: "overlap_repair".to_string(),
+        });
+        let incumbent = best
+            .iter()
+            .map(|entry| entry.placement.clone())
+            .collect::<Vec<_>>();
+        let mut repair_options = *options;
+        if !options.deterministic {
+            repair_options.time_limit_ms = options
+                .time_limit_ms
+                .map(|limit| limit.saturating_sub(elapsed_ms(started)));
+        }
+        let repair = crate::overlap::repair_one_more(
+            prepared,
+            &repair_options,
+            &incumbent,
+            &counters.failed_constructive_candidates,
+            observer,
+        );
+        counters.overlap_repair_attempts += repair.metrics.attempts;
+        counters.overlap_repair_evaluated_moves += repair.metrics.evaluated_moves;
+        counters.overlap_repair_accepted_moves += repair.metrics.accepted_moves;
+        counters.overlap_repair_weight_updates += repair.metrics.weight_updates;
+        counters.overlap_repair_successes += repair.metrics.successful_repairs;
+        counters.overlap_repair_best_penalty = match (
+            counters.overlap_repair_best_penalty,
+            repair.metrics.best_penalty,
+        ) {
+            (Some(current), Some(next)) => Some(current.min(next)),
+            (current, next) => current.or(next),
+        };
+        counters.exact_geometry_checks += repair.metrics.exact_geometry_checks;
+        counters.cancelled |= repair.metrics.cancelled;
+        counters.limit |= repair.metrics.limit_reached;
+        if let Some(placements) = repair.placements {
+            let repaired = candidate_entries_from_placements(prepared, &placements)?;
+            if repaired.len() > best.len()
+                || (repaired.len() == best.len() && layout_key(&repaired) < layout_key(&best))
+            {
+                best = repaired;
+                best_strategy = "overlap_repair".to_string();
+            }
+        }
+        observer.on_progress(&SolveProgress {
+            phase: SolvePhase::OverlapRepair,
+            completed_fraction: 1.0,
+            max_iterations: run_options.max_iterations,
+            iterations: counters.iterations,
+            packed_item_count: best.len(),
+            placements: best.iter().map(|entry| entry.placement.clone()).collect(),
+            solver_strategy: best_strategy.clone(),
+        });
     }
     if allow_continuation
         && warm_start.is_none()
@@ -2195,6 +2272,8 @@ fn try_place(
     if feasible(prepared, &next, placed.iter(), counters) {
         counters.valid += 1;
         placed.push(next);
+    } else if counters.failed_constructive_candidates.len() < 64 {
+        counters.failed_constructive_candidates.push(next.placement);
     }
 }
 
@@ -2537,6 +2616,9 @@ fn build_result(
     if counters.local_improvement_attempts > 0 {
         strategies_used.push("remove_repack".to_string());
     }
+    if counters.overlap_repair_attempts > 0 {
+        strategies_used.push("overlap_minimization".to_string());
+    }
     if options.quality != crate::SolveQuality::Fast {
         strategies_used.push("bounded_beam".to_string());
     }
@@ -2599,6 +2681,12 @@ fn build_result(
             bound_gap,
             local_improvement_attempts: counters.local_improvement_attempts,
             local_improvements_accepted: counters.local_improvements_accepted,
+            overlap_repair_attempts: counters.overlap_repair_attempts,
+            overlap_repair_evaluated_moves: counters.overlap_repair_evaluated_moves,
+            overlap_repair_accepted_moves: counters.overlap_repair_accepted_moves,
+            overlap_repair_weight_updates: counters.overlap_repair_weight_updates,
+            overlap_repair_successes: counters.overlap_repair_successes,
+            overlap_repair_best_penalty: counters.overlap_repair_best_penalty,
             continuation_stages: counters.continuation_stages,
             continuation_repair_only_stages: counters.continuation_repair_only_stages,
             continuation_search_stages: counters.continuation_search_stages,

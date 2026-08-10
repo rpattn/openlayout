@@ -461,6 +461,8 @@ fn published_dighe2_target_bounds_and_validates_the_current_result() {
         "expected the bounded exact-fit frontier to retain at least 7 Dighe2 pieces, got {}",
         result.packed_item_count
     );
+    assert_eq!(result.statistics.overlap_repair_successes, 1);
+    assert!(result.statistics.overlap_repair_evaluated_moves <= 600);
     assert!(result.validation.valid);
     if result.packed_item_count == 10 {
         assert_eq!(result.status, SolveStatus::ProvenOptimal);
@@ -550,10 +552,12 @@ fn published_dighe1_target_bounds_and_validates_the_current_result() {
     let result = solve(&problem, &solve_options).unwrap();
     assert_eq!(result.simple_upper_bound, Some(16));
     assert!(
-        (10..=16).contains(&result.packed_item_count),
-        "expected at least 10 Dighe1 pieces at the retained budget, got {}",
+        (12..=16).contains(&result.packed_item_count),
+        "expected at least 12 Dighe1 pieces at the retained budget, got {}",
         result.packed_item_count
     );
+    assert_eq!(result.statistics.overlap_repair_successes, 1);
+    assert!(result.statistics.overlap_repair_evaluated_moves <= 1_500);
     assert!(result.validation.valid);
     if result.packed_item_count == 16 {
         assert_eq!(result.status, SolveStatus::ProvenOptimal);
@@ -996,6 +1000,60 @@ fn learned_clearance_motif_packs_basic_triangles_densely() {
         result.statistics.exact_geometry_checks
     );
     assert!(result.validation.valid);
+}
+
+#[test]
+fn overlap_repair_crosses_an_infeasible_state_to_add_a_rectangle() {
+    let mut problem = rectangle_problem(6.0, 2.0, 2.0, 2.0);
+    problem.items[0].quantity = 3;
+    problem.items[0].rotation_policy = discrete(vec![0.0]);
+    let prepared = prepare_problem(&problem).unwrap();
+    let warm_start = vec![
+        Placement {
+            item_id: "item-a".into(),
+            x: -1.0,
+            y: 0.0,
+            rotation_deg: 0.0,
+            fixed: false,
+        },
+        Placement {
+            item_id: "item-a".into(),
+            x: 1.0,
+            y: 0.0,
+            rotation_deg: 0.0,
+            fixed: false,
+        },
+    ];
+    assert!(validate_placements(&prepared, &warm_start).unwrap().valid);
+    let mut solve_options = options();
+    // The feasible-only portfolio cannot reconstruct the three-item row at this budget. The
+    // overlap lane starts with a third rectangle on top of the warm layout, shifts the incumbent
+    // pieces apart, and accepts the result only after exact validation.
+    solve_options.max_iterations = 1;
+    solve_options.restarts = 1;
+
+    let result = solve_prepared_with_warm_start(&prepared, &solve_options, &warm_start).unwrap();
+
+    assert_eq!(result.packed_item_count, 3);
+    assert_eq!(result.status, SolveStatus::ProvenOptimal);
+    assert_eq!(result.solver_strategy, "overlap_repair");
+    assert!(result.statistics.overlap_repair_attempts > 0);
+    assert!(result.statistics.overlap_repair_evaluated_moves > 0);
+    assert!(result.statistics.overlap_repair_accepted_moves > 0);
+    assert_eq!(result.statistics.overlap_repair_successes, 1);
+    assert_eq!(result.statistics.overlap_repair_best_penalty, Some(0.0));
+    assert!(result.validation.valid);
+
+    let repeated = solve_prepared_with_warm_start(&prepared, &solve_options, &warm_start).unwrap();
+    assert_eq!(repeated.placements, result.placements);
+    assert_eq!(
+        repeated.statistics.overlap_repair_evaluated_moves,
+        result.statistics.overlap_repair_evaluated_moves
+    );
+    assert_eq!(
+        repeated.statistics.overlap_repair_accepted_moves,
+        result.statistics.overlap_repair_accepted_moves
+    );
 }
 
 #[test]

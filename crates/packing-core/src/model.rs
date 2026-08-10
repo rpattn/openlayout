@@ -378,6 +378,18 @@ pub struct SolveStatistics {
     #[serde(default)]
     pub local_improvements_accepted: u64,
     #[serde(default)]
+    pub overlap_repair_attempts: u64,
+    #[serde(default)]
+    pub overlap_repair_evaluated_moves: u64,
+    #[serde(default)]
+    pub overlap_repair_accepted_moves: u64,
+    #[serde(default)]
+    pub overlap_repair_weight_updates: u64,
+    #[serde(default)]
+    pub overlap_repair_successes: u64,
+    #[serde(default)]
+    pub overlap_repair_best_penalty: Option<f64>,
+    #[serde(default)]
     pub continuation_stages: u64,
     #[serde(default)]
     pub continuation_repair_only_stages: u64,
@@ -453,6 +465,7 @@ pub enum SolvePhase {
     CoarseRotation,
     AngleRefinement,
     NeighbourhoodImprovement,
+    OverlapRepair,
     ClearanceContinuation,
     ConflictGraph,
     Validating,

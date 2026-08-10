@@ -84,6 +84,7 @@ test("Wasm baseline-only mode validates without refinement phases", () => {
   assert.equal(result.validation.valid, true);
   assert.equal(result.statistics.explored_search_states, 0);
   assert.equal(result.statistics.local_improvement_attempts, 0);
+  assert.equal(result.statistics.overlap_repair_attempts, 0);
   assert.deepEqual(new Set(progress.map((entry) => entry.phase)), new Set(["baseline", "validating"]));
   engine.free();
 });

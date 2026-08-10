@@ -106,5 +106,23 @@ regression covering the 17-piece width-4.375 case and the 20-piece direct studio
 in 5.44 seconds locally; the direct witness still stays below its 450,000 generated-candidate and
 80,000 exact-check ceilings.
 
+### Guided overlap repair (2026-08-10)
+
+The new repair lane starts from the feasible incumbent plus one failed constructive placement,
+then allows pair conflicts while alternating bounded horizontal/vertical event searches and
+permitted orientations. Directional penetration estimates use exact polygon collision checks and
+binary refinement. At local optima, remaining pair weights increase by their penalty divided by
+the maximum current conflict, following Umetani et al.'s weighting rule. Container, exclusion,
+fixed-placement, quantity, and shared-rotation constraints remain hard; zero penalty is accepted
+only after independent validation.
+
+At the retained 20,000-iteration balanced benchmark settings, Dighe2 retains 7 / 10 with one
+successful repair in 533 evaluated moves. Dighe1 improves from the previous 10 / 16 floor to
+12 / 16; its successful repair occurs within 1,367 evaluated moves. The optimized workspace suite
+including both instances and the studio capsule regression completes in 8.31 seconds after
+compilation on the development container. Complexity gates skip repair above 28 pieces in balanced
+mode (48 thorough) or 24 vertices per variant, preventing the exact directional probes from
+collapsing curved/compound latency.
+
 See [the solver review](solver-review.md) for the literature mapping, rejected experiments, and
 the recommended overlap-repair/NFP/exact-mode sequence.

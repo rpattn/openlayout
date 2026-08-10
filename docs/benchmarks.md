@@ -35,8 +35,8 @@ the source orientation policy. This does not change feasibility at that target l
 
 | Case | Published target | OpenLayout result | What the automated check establishes |
 | --- | ---: | ---: | --- |
-| ESICUP `Dighe1` | 16 pieces in 100 × 100 (100% density) | 10 / 16 with the retained balanced regression budget | The reflected up-left source coordinates preserve feasibility in OpenLayout's coordinate convention. Input area gives a safe upper bound of 16; all transforms pass independent validation. |
-| ESICUP `Dighe2` | 10 pieces in 100 × 100 (100% density) | 7 / 10 with the retained balanced regression budget | Input area gives a safe upper bound of 10; every returned transform passes independent containment and pair-overlap validation. The three-piece quality gap remains explicit. |
+| ESICUP `Dighe1` | 16 pieces in 100 × 100 (100% density) | 12 / 16 with the retained balanced regression budget | Guided overlap repair raises the previous 10-piece floor. The reflected up-left source coordinates preserve feasibility in OpenLayout's coordinate convention; all transforms pass independent validation. |
+| ESICUP `Dighe2` | 10 pieces in 100 × 100 (100% density) | 7 / 10 with the retained balanced regression budget | The seventh piece is recovered by overlap repair within 600 evaluated moves. Input area gives a safe upper bound of 10 and every returned transform passes independent validation. |
 | Studio start problem | 20-capsule regression target | 20 / 20 in the 40,000-iteration direct lane | Contact closure completes the learned lattice during baseline, before angle refinement; the ordinary final validator accepts it at the full item, boundary, and exclusion clearances. Clearance continuation independently retains the same floor. |
 
 Neither Dighe case is labelled solved by OpenLayout. Reaching every requested piece would prove

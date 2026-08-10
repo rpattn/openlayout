@@ -61,7 +61,7 @@ export interface Placement {
 }
 
 export interface SolveProgress {
-  phase: "preparing_geometry" | "generating_candidates" | "baseline" | "beam_search" | "coarse_rotation" | "angle_refinement" | "neighbourhood_improvement" | "clearance_continuation" | "conflict_graph" | "validating";
+  phase: "preparing_geometry" | "generating_candidates" | "baseline" | "beam_search" | "coarse_rotation" | "angle_refinement" | "neighbourhood_improvement" | "overlap_repair" | "clearance_continuation" | "conflict_graph" | "validating";
   completed_fraction: number;
   max_iterations: number;
   iterations: number;
@@ -107,6 +107,12 @@ export interface SolveResult {
     bound_gap: number | null;
     local_improvement_attempts: number;
     local_improvements_accepted: number;
+    overlap_repair_attempts: number;
+    overlap_repair_evaluated_moves: number;
+    overlap_repair_accepted_moves: number;
+    overlap_repair_weight_updates: number;
+    overlap_repair_successes: number;
+    overlap_repair_best_penalty: number | null;
     continuation_stages: number;
     continuation_repair_only_stages: number;
     continuation_search_stages: number;

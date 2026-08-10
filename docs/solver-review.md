@@ -16,10 +16,10 @@ proof is deliberately labelled more narrowly.
 | Exact fitting | All item-contact candidates had the same score, so a placement supported by several coincident vertex/edge constructions could be truncated behind an arbitrary single contact. | Low-complexity polygons count duplicate contact constructions and receive a capped multi-contact bonus. Dighe2 improves from 6 to 7 pieces at the retained balanced budget. | This is a sampled proxy for a no-fit/collision-free-region arrangement, not a complete arrangement. |
 | Curved and compound items | Increasing every contact set to 32 points caused 17.1 million candidates in the capsule regression and did not improve its count. Clearance-aware pair motifs likewise regress on complex continuous variants. | Detailed contacts and pairwise motif learning are enabled only for polygon sets with at most 16 vertices; sampled curves and compounds retain a small dynamic frontier and their existing lattice/closure paths. | Uniform sampling can miss a critical curved tangency. |
 | Bounds | Area, split-region, and rectangular projection bounds are safe and tested, but the studio area's bound is much larger than its 20-item witness. | Bound provenance and prune counts remain explicit. | General non-convex continuous packing needs stronger relaxation or exact decomposition to prove optimality. |
-| Search | Greedy portfolios, bounded beam search, local remove/repack, continuation, and a small finite conflict graph cover complementary cases. | The validated lower bound is never discarded; candidate/state budgets remain deterministic. | Feasible-only construction cannot cross an overlap barrier and can become trapped in a poor combinatorial basin. |
+| Search | Greedy portfolios, bounded beam search, local remove/repack, continuation, and a small finite conflict graph cover complementary cases. Feasible-only construction could not cross an overlap barrier. | A bounded guided overlap lane seeds one extra item from failed constructive candidates, minimizes exact directional pair penalties, adapts conflict weights at local optima, and accepts only independently validated repairs. Dighe1 improves from 10 to 12 at the retained budget. | The finite line-event neighborhood, one-extra-item target, and complexity gates can still miss deeper rearrangements. |
 | Phase ordering | Learned lattices could open obvious slots but proceed into coarse/angle refinement without closing the incumbent under insertion. | A bounded contact-only closure now completes repeated-item learned layouts and runs after general compaction and rotation; successful variants are immediately rescanned. The studio direct lane reaches 20 during baseline at half the former direct budget. | Closure remains a local feasible insertion operator, not a rearrangement or proof method. |
 | Browser execution | A two-to-four Web Worker portfolio already runs direct, continuation, and deterministic seed lanes concurrently. | Workers own isolated Wasm engines, keeping the UI responsive without shared-memory requirements. | More workers duplicate prepared data and cannot compensate for weak candidates or bounds. |
-| Benchmarking | The studio case protects the 20-item witness; official ESICUP Dighe1 and Dighe2 data provide published exact-density targets. | Dighe1 has a 10/16 floor and Dighe2 a 7/10 floor, both with safe area bounds and independent validation. | Two related puzzle instances are still not enough for broad solver-quality claims. |
+| Benchmarking | The studio case protects the 20-item witness; official ESICUP Dighe1 and Dighe2 data provide published exact-density targets. | Dighe1 has a 12/16 floor and Dighe2 a 7/10 floor, both with safe area bounds, overlap-repair operation ceilings, and independent validation. | Two related puzzle instances are still not enough for broad solver-quality claims. |
 
 The review also rejected a transformed-candidate geometry cache keyed by exact floating-point
 translations. It increased lookup/allocation overhead without materially reducing exact checks on
@@ -28,10 +28,11 @@ the studio problem. It was removed rather than retained as speculative complexit
 ## How the literature maps to the implementation
 
 - Umetani et al.'s [guided local search](https://onlinelibrary.wiley.com/doi/10.1111/j.1475-3995.2009.00707.x)
-  minimizes overlap using directional penetration information. OpenLayout currently constructs
-  feasible layouts only. An overlap-minimizing repair lane is therefore the highest-value new
-  search family: it could traverse temporarily infeasible states and then hand a repaired witness
-  to the existing validator.
+  minimizes overlap using directional penetration information, alternating horizontal/vertical
+  translation search, active sub-neighborhoods, and adaptive weights on conflicts at local optima.
+  OpenLayout now implements those mechanics as a bounded repair lane. It uses exact polygon
+  predicates plus binary directional refinement instead of the paper's cached no-fit-polygon
+  envelopes, and it hands only zero-conflict states to the independent validator.
 - Sato, Martins, and Tsuzuki describe [collision-free regions and exact fitting
   placements](https://www.sciencedirect.com/science/article/pii/S0010448512000565). The new
   multi-contact support score is a bounded discrete version of that priority: translations implied
@@ -60,8 +61,8 @@ the studio problem. It was removed rather than retained as speculative complexit
 
 1. Expand the benchmark harness to several ESICUP/PackLib instances and record best-known target,
    orientation policy, count, validity, operation counts, and wall-time distributions.
-2. Add a bounded overlap-minimization repair lane using per-pair penetration penalties, seeded from
-   failed high-count constructive states. Accept output only after exact repair and validation.
+2. Expand overlap-repair regressions to more benchmark families and profile whether safe cached
+   directional events can raise the current piece/vertex gates.
 3. Introduce convex decomposition plus cached NFP/inner-fit boundaries for fixed discrete variants.
    Use those boundaries for complete contact-event generation before considering an exact model.
 4. Add a separate small-instance exact feasibility backend with vertical slices and lazy
@@ -70,7 +71,7 @@ the studio problem. It was removed rather than retained as speculative complexit
    The existing worker portfolio already supplies coarse browser parallelism without deployment
    requirements such as cross-origin isolation.
 
-The immediate phase-ordering gap is now closed and protected by native and Wasm regressions. The
-next search-family gain remains algorithmic, not simply more browser threads. Parallel workers are
-useful for independent strategies, but overlap repair, fuller contact arrangements, and stronger
-bounds reduce the work each worker must do and improve solution quality as well as latency.
+The phase-ordering and feasible-only search gaps are now protected by native and Wasm regressions.
+The next search-family gain remains fuller contact arrangements or a fixed-orientation NFP path,
+not simply more browser threads. Parallel workers remain useful for independent strategies, while
+stronger bounds and reusable directional events reduce the work each worker must do.

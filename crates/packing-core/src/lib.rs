@@ -1,6 +1,7 @@
 mod error;
 mod geometry;
 mod model;
+mod overlap;
 mod prepare;
 mod search;
 mod sensitivity;

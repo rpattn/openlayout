@@ -8,7 +8,7 @@ The retained baseline learns repeated lattices and two-variant motifs, seeds non
 
 Before bounded search was added, the expensive repeated work was candidate transformation, containment, exclusion distance, and pair collision checks. A full grid/contact list and placed-geometry scan were rebuilt after placements; subdivision coordinates were rebuilt for each solve; transformed geometry lived in every accepted candidate. Preparation already avoided the worst repetition by polygonizing and rotating once, but its cost was not visible.
 
-`SolveStatistics` now records preparation, candidate generation, containment, collision, scoring and subdivision time; generated and accepted candidates; broad-phase rejections and exact geometry checks; explored, deduplicated and pruned states; lower and upper bounds; local repair; warm starts; and conflict-graph work. Timers are deliberately coarse and removable. Operation counts are the more stable comparison. See [performance](performance.md).
+`SolveStatistics` now records preparation, candidate generation, containment, collision, scoring and subdivision time; generated and accepted candidates; broad-phase rejections and exact geometry checks; explored, deduplicated and pruned states; lower and upper bounds; local and overlap repair; warm starts; and conflict-graph work. Timers are deliberately coarse and removable. Operation counts are the more stable comparison. See [performance](performance.md).
 
 ## Prepared geometry and geometric staging
 
@@ -76,6 +76,35 @@ Bounds are conservative. A state is pruned only when it cannot exceed the valida
 
 Non-fast modes retain the bounded remove-and-repack pass. It chooses deterministic boundary anchors, removes the anchor and up to two nearest movable placements, rebuilds candidates through greedy insertion, and accepts a higher count or a stable equal-count compactness improvement. Fixed placements are never removed. Attempts and accepted changes are reported. This is intentionally not a generic metaheuristic framework.
 
+## Guided overlap-minimizing repair
+
+Balanced and thorough solves now add one requested item to the strongest feasible incumbent and
+temporarily permit item-to-item conflicts. Seeds first reuse high-quality placements rejected by
+the constructive portfolio, then fall back to overlapping the new item with incumbent anchors.
+Container and exclusion constraints remain hard throughout, fixed placements never move, and
+shared-rotation coupling remains enforced.
+
+The repair objective follows Umetani et al.'s overlap-minimization formulation: every conflicting
+item pair contributes the minimum estimated horizontal or vertical translation required to
+separate the exact transformed polygons at the requested clearance. For each movable item and
+allowed orientation, the solver searches container extrema, pair-contact events, nearby steps,
+and a bounded line grid; horizontal and vertical searches alternate and ties prefer the nearest
+position. Fast active neighborhoods revisit only pieces affected by an accepted move.
+
+At a weighted local optimum, all remaining conflict weights increase by the pair's directional
+penalty divided by the maximum current penalty. This is the paper's weighting method and makes the
+same state cease to be locally optimal under the modified objective. The implementation is a
+bounded adaptation rather than the paper's complete no-fit-polygon lower-envelope search:
+directional distances use exact collision predicates with binary refinement, and line minima come
+from finite geometric events. Balanced repair is capped at 2,000 evaluated moves and 28 pieces;
+thorough repair at 8,000 moves and 48 pieces. Variants above 24 vertices stay on the existing
+constructive paths to protect curved/compound latency.
+
+Zero overlap is only a repair candidate. The ordinary independent validator reconstructs every
+placement and checks quantities, rotations, containment, exclusions, clearances, pair collisions,
+and fixed transforms before the incumbent can be replaced. Statistics report attempts, evaluated
+and accepted moves, adaptive weight updates, successes, and the best unweighted penalty.
+
 ## Feasibility solving
 
 `solve_prepared_feasibility` asks whether at least `k` items can be packed. It returns:
@@ -114,8 +143,8 @@ Thorough mode may refine a finite set of at most 96 feasible candidates when the
 
 Ordered vectors and maps, total float comparisons, canonical signatures, stable candidate identifiers, and `ChaCha8Rng` seeded only from `SolveOptions.seed` make deterministic runs repeat their selected layout and operation counts. Elapsed time may vary. Deterministic mode rejects wall-clock limits; use iteration/state limits, or opt out of determinism for a native time limit.
 
-Long portfolio, beam, neighbourhood, and graph loops use bounded budgets; portfolio and beam loops check cancellation. Progress distinguishes baseline, beam, neighbourhood, and refinement phases. Browser cancellation remains immediate by terminating the owning Web Worker, without browser APIs or threading in the core.
+Long portfolio, beam, neighbourhood, overlap-repair, and graph loops use bounded budgets and cooperative cancellation. Progress distinguishes baseline, beam, neighbourhood, overlap repair, and refinement phases. Browser cancellation remains immediate by terminating the owning Web Worker, without browser APIs or threading in the core.
 
-Expected failures are sparse finite candidates for tight interlocks, weak bounds on concave or disconnected geometry, high candidate-generation cost in thorough mode, polygon approximation error at low segment counts, and numeric ambiguity near the epsilon. Contact closure can exploit a gap reachable by one or two feasible insertions but cannot cross an overlap barrier. All accepted results still pass the independent validator. `BestFound` and `LimitReached` are honest heuristic outcomes, not optimality claims.
+Expected failures are finite line events that miss a tight interlock, repair states requiring more than one extra item or the piece/vertex gates, weak bounds on concave or disconnected geometry, high candidate-generation cost in thorough mode, polygon approximation error at low segment counts, and numeric ambiguity near the epsilon. Overlap repair can now cross some barriers that defeat feasible-only insertion, but it is bounded and does not prove a target impossible. All accepted results still pass the independent validator. `BestFound` and `LimitReached` are honest heuristic outcomes, not optimality claims.
 
 The broader audit and its primary-literature mapping are recorded in [solver review and literature map](solver-review.md).
