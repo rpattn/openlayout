@@ -1,8 +1,10 @@
 import "./style.css";
 import { CadWorkspace, type CadSelection } from "./cad-workspace";
+import { initGeometryResolver } from "./geometry-resolver";
 import { SolverClient } from "./solver-client";
-import { cloneItemAtParameter, fromProblem, makePrimitive, parsePointText, resolveEditorTranslations, toProblem } from "./problem";
-import { renderLayout, renderSensitivity, renderShapePreview, sensitivityValueAt } from "./renderer";
+import { cloneItemAtParameter, fromProblem, makePrimitive, parsePointText, primitiveShape, resolveEditorTranslations, shapePoints, toProblem, transformPoint } from "./problem";
+import { renderLayout, renderPolygonsPreview, renderSensitivity, sensitivityValueAt } from "./renderer";
+import { resolveGeometry } from "./geometry-resolver";
 import { WorkspaceHistory, WorkspaceStore } from "./workspace-store";
 import type {
   AnchorName, EditorState, PackingProblem, ParameterPath, Placement, PrimitiveEditor, SensitivityProgress,
@@ -12,6 +14,8 @@ import type {
 type PageName = "packing" | "sensitivity";
 type StatusTone = "neutral" | "working" | "success" | "error";
 const ANCHORS: AnchorName[] = ["center", "top", "bottom", "left", "right", "top_left", "top_right", "bottom_left", "bottom_right"];
+
+await initGeometryResolver();
 
 const root = document.querySelector<HTMLDivElement>("#app")!;
 const client = new SolverClient();
@@ -57,6 +61,7 @@ root.innerHTML = `
           <button class="tool-button geometry-action" data-toolbar-shape="rectangle" aria-label="Add rectangle" title="Add rectangle to the selected object">▭ <span>Rectangle</span></button>
           <button class="tool-button geometry-action" data-toolbar-shape="circle" aria-label="Add circle" title="Add circle to the selected object">○ <span>Circle</span></button>
           <select id="toolbar-add-shape" class="tool-select" aria-label="Add other geometry"><option value="">＋ More</option><option value="triangle">Triangle</option><option value="polygon">Polygon</option><option value="bezier">Bézier</option></select>
+          <label class="toolbar-color" title="Selected part colour"><span>Colour</span><input id="toolbar-part-color" type="color" aria-label="Selected part colour" value="#51c6a4"></label>
           <button id="join-material" class="tool-button" aria-label="Unify selected material" title="Snap this region into the additive material union">⌁ <span>Unify</span></button>
           <button id="delete-selection" class="tool-button danger-tool" aria-label="Delete selection" title="Delete selected part or object">⌫</button>
           <span class="tool-divider"></span>
@@ -69,8 +74,8 @@ root.innerHTML = `
           <button id="open-sensitivity" class="tool-button">Sensitivity</button>
           <button id="theme-toggle" class="tool-button" aria-label="Toggle theme">◐</button>
         </div>
-        <svg id="cad-canvas" class="cad-canvas" aria-label="Interactive packing workspace"></svg>
-        <div class="cad-help">Drag shape to move · cyan points edit a part · top handle rotates all · corner handle scales all</div>
+        <svg id="cad-canvas" class="cad-canvas" tabindex="0" aria-label="Interactive packing workspace"></svg>
+        <div class="cad-help">Drag shape to move · cyan grips edit · drag outer cyan snap points to amber anchors · top rotates all · corner scales all</div>
         <div class="workspace-state"><span id="status-dot"></span><span id="status" class="status neutral">Saved locally</span><strong id="workspace-summary">Problem definition</strong></div>
       </main>
     </div>
@@ -127,6 +132,9 @@ function bindShell(): void {
   element("zoom-out").addEventListener("click", () => cad.zoom(1.25));
   document.querySelectorAll<HTMLButtonElement>("[data-toolbar-shape]").forEach((button) => button.addEventListener("click", () => addGeometry(button.dataset.toolbarShape as PrimitiveEditor["kind"])));
   element<HTMLSelectElement>("toolbar-add-shape").addEventListener("change", (event) => { const input = event.target as HTMLSelectElement; if (input.value) addGeometry(input.value as PrimitiveEditor["kind"]); input.value = ""; });
+  element<HTMLInputElement>("toolbar-part-color").addEventListener("input", (event) => mutate(() => {
+    const part = selectedPrimitive(); if (part) part.color = (event.target as HTMLInputElement).value;
+  }));
   element("join-material").addEventListener("click", joinSelectedMaterial);
   element("delete-selection").addEventListener("click", deleteToolbarSelection);
   element("toggle-dimensions").addEventListener("click", () => toggleOverlay("dimensions"));
@@ -150,6 +158,9 @@ function bindShell(): void {
   }, { passive: false });
   window.addEventListener("resize", () => refreshCurrentPage());
   window.addEventListener("keydown", (event) => {
+    if ((event.key === "Delete" || event.key === "Backspace") && !isEditingText(event.target)) {
+      event.preventDefault(); deleteToolbarSelection(); return;
+    }
     if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
     if (event.key.toLowerCase() === "z") { event.preventDefault(); event.shiftKey ? redo() : undo(); }
     if (event.key.toLowerCase() === "y") { event.preventDefault(); redo(); }
@@ -185,7 +196,7 @@ function showPage(next: PageName): void {
 
 function selectCad(next: CadSelection | null, partIndex?: number): void {
   if (next?.kind !== selection?.kind || next?.index !== selection?.index) selectedPartIndex = 0;
-  if (next?.kind === "item" && partIndex !== undefined) selectedPartIndex = partIndex;
+  if ((next?.kind === "item" || next?.kind === "exclusion") && partIndex !== undefined) selectedPartIndex = partIndex;
   selection = next;
   cad.setSelection(next, selectedPartIndex);
   renderPackingSidebar();
@@ -253,6 +264,7 @@ function selectionInspector(): string {
   }
   if (selection.kind === "container") {
     const entry = state.containerParts[selection.index];
+    if (!entry) return emptyConstructionHtml("Container is empty", "Add material or a cut-out from the object bar.");
     return `<div class="inspector-heading"><div><small>CONTAINER REGION</small><h2>${escapeHtml(entry.id)}</h2></div><span class="selection-badge">${entry.operation}</span></div>
       <div class="field-grid two"><label>ID<input data-object-field="id" value="${escapeHtml(entry.id)}"></label><label>Boolean operation<select data-object-field="operation"><option value="add" ${entry.operation === "add" ? "selected" : ""}>Add material</option><option value="subtract" ${entry.operation === "subtract" ? "selected" : ""}>Subtract cut-out</option></select></label></div>
       ${primitiveEditorHtml(entry.primitive)}
@@ -262,23 +274,34 @@ function selectionInspector(): string {
   }
   if (selection.kind === "exclusion") {
     const entry = state.exclusions[selection.index];
+    if (!entry) return emptyConstructionHtml("Exclusion unavailable", "Select or add an exclusion.");
+    selectedPartIndex = Math.min(selectedPartIndex, Math.max(0, entry.parts.length - 1));
+    const part = entry.parts[selectedPartIndex];
     return `<div class="inspector-heading"><div><small>EXCLUSION</small><h2>${escapeHtml(entry.id)}</h2></div><span class="selection-badge">${format(entry.clearance)} clear</span></div>
       <div class="field-grid two"><label>ID<input data-object-field="id" value="${escapeHtml(entry.id)}"></label><label>Clearance<input type="number" step=".05" data-object-field="clearance" value="${format(entry.clearance)}"></label></div>
-      ${primitiveEditorHtml(entry.primitive)}
-      <p class="hint">Drag and rotate this exclusion directly in the drawing.</p>
-      <button data-delete-object class="button danger full">Delete exclusion</button>`;
+      ${constructionEditorHtml(entry.parts, part, "EXCLUSION PART")}
+      <div class="inline-actions"><button data-delete-part class="button danger" ${part ? "" : "disabled"}>Delete part</button><button data-delete-object class="button danger">Delete exclusion</button></div>
+      <p class="hint">All parts form one unified exclusion. Drag, rotate, or resize the complete construction in the drawing.</p>`;
   }
   const item = state.items[selection.index];
+  if (!item) return emptyConstructionHtml("Shape unavailable", "Select or add a packable shape.");
   selectedPartIndex = Math.min(selectedPartIndex, Math.max(0, item.parts.length - 1));
   const part = item.parts[selectedPartIndex];
   return `<div class="inspector-heading"><div><small>PACKABLE SHAPE</small><h2>${escapeHtml(item.id)}</h2></div><span class="selection-badge">${item.quantity} requested</span></div>
     <div class="field-grid two"><label>ID<input data-object-field="id" value="${escapeHtml(item.id)}"></label><label>Quantity<input type="number" step="1" data-object-field="quantity" value="${item.quantity}"></label><label>Rotation search<select data-object-field="rotationMode"><option value="continuous" ${item.rotationMode === "continuous" ? "selected" : ""}>Adaptive</option><option value="discrete" ${item.rotationMode === "discrete" ? "selected" : ""}>Fixed angles</option></select></label><label>Coupling<select data-object-field="rotationCoupling"><option value="independent" ${item.rotationCoupling === "independent" ? "selected" : ""}>Independent</option><option value="shared_per_item" ${item.rotationCoupling === "shared_per_item" ? "selected" : ""}>Shared</option></select></label>${item.rotationMode === "continuous" ? objectNumber("Minimum°", "minRotation", item.minRotation, 1) + objectNumber("Maximum°", "maxRotation", item.maxRotation, 1) : `<label class="wide">Angles<input data-object-field="rotations" value="${escapeHtml(item.rotations)}"></label>`}</div>
-    <div class="inline-part-heading"><label>Editing part<select id="item-part-select">${item.parts.map((entry, index) => `<option value="${index}" ${index === selectedPartIndex ? "selected" : ""}>${escapeHtml(entry.id)} · ${entry.kind}</option>`).join("")}</select></label><span>${selectedPartIndex + 1}/${item.parts.length}</span></div>
-    ${primitiveEditorHtml(part)}
-    ${snapEditorHtml(item.parts, part, "PART CONSTRAINT")}
-    <div class="part-add-row">${(["rectangle", "triangle", "circle", "polygon", "bezier"] as const).map((kind) => `<button data-add-part="${kind}">+ ${kind}</button>`).join("")}</div>
-    <div class="inline-actions"><button data-delete-part class="button danger" ${item.parts.length === 1 ? "disabled" : ""}>Delete part</button><button data-delete-object class="button danger">Delete item</button></div>
+    ${constructionEditorHtml(item.parts, part, "PART CONSTRAINT")}
+    <div class="inline-actions"><button data-delete-part class="button danger" ${part ? "" : "disabled"}>Delete part</button><button data-delete-object class="button danger">Delete item</button></div>
     <p class="hint">Drag the complete shape to move it. The top handle rotates the whole item; the corner handle scales every part and constraint together.</p>`;
+}
+
+function constructionEditorHtml(parts: PrimitiveEditor[], part: PrimitiveEditor | undefined, snapTitle: string): string {
+  return `<div class="inline-part-heading"><label>Editing part<select id="item-part-select" ${part ? "" : "disabled"}>${parts.map((entry, index) => `<option value="${index}" ${index === selectedPartIndex ? "selected" : ""}>${escapeHtml(entry.id)} · ${entry.kind}</option>`).join("")}</select></label><span>${part ? `${selectedPartIndex + 1}/${parts.length}` : "0/0"}</span></div>
+    ${part ? primitiveEditorHtml(part) + snapEditorHtml(parts, part, snapTitle) : '<div class="inspector-empty compact"><strong>Empty construction</strong><p>Add a primitive below to continue editing.</p></div>'}
+    <div class="part-add-row">${(["rectangle", "triangle", "circle", "polygon", "bezier"] as const).map((kind) => `<button data-add-part="${kind}">+ ${kind}</button>`).join("")}</div>`;
+}
+
+function emptyConstructionHtml(title: string, message: string): string {
+  return `<div class="inspector-empty"><small>INSPECTOR</small><strong>${escapeHtml(title)}</strong><p>${escapeHtml(message)}</p></div>`;
 }
 
 function primitiveEditorHtml(part: PrimitiveEditor): string {
@@ -287,7 +310,7 @@ function primitiveEditorHtml(part: PrimitiveEditor): string {
       : part.kind === "circle" ? primitiveNumber("Radius", "radius", part.radius) + primitiveNumber("Segments", "segments", part.segments, 1)
         : part.kind === "polygon" ? `<label class="wide">Vertices<textarea rows="4" data-primitive-points>${part.vertices.map((point) => `${format(point.x)}, ${format(point.y)}`).join("\n")}</textarea></label>`
           : `${primitiveNumber("Curve segments", "segments", part.segments, 1)}<label class="wide">Bézier knots<textarea rows="5" data-bezier-knots>${escapeHtml(JSON.stringify(part.knots, null, 2))}</textarea></label>`;
-  return `<div class="primitive-editor"><div class="primitive-editor-title"><small>${humanStatus(part.kind)} GEOMETRY</small><span>${escapeHtml(part.id)}${part.snap ? " · snapped" : ""}</span></div><div class="field-grid two">${dimensions}${primitiveNumber("X", "x", part.x)}${primitiveNumber("Y", "y", part.y)}${primitiveNumber("Rotation°", "rotation", part.rotation, 1)}</div></div>`;
+  return `<div class="primitive-editor"><div class="primitive-editor-title"><small>${humanStatus(part.kind)} GEOMETRY</small><span>${escapeHtml(part.id)}${part.snap ? " · snapped" : ""}</span></div><div class="field-grid two">${dimensions}${primitiveNumber("X", "x", part.x)}${primitiveNumber("Y", "y", part.y)}${primitiveNumber("Rotation°", "rotation", part.rotation, 1)}<label>Colour<input type="color" data-primitive-color value="${partColor(part)}"></label><label class="wide">Construction<select data-part-owner>${partOwnerOptions()}</select></label></div></div>`;
 }
 
 function snapEditorHtml(parts: PrimitiveEditor[], part: PrimitiveEditor, title: string): string {
@@ -309,6 +332,10 @@ function bindInlineInspector(sidebar: HTMLElement): void {
   sidebar.querySelectorAll<HTMLInputElement>("[data-primitive-field]").forEach((input) => input.addEventListener("change", () => mutate(() => {
     const part = selectedPrimitive(); if (part) setField(part, input.dataset.primitiveField!, Number(input.value));
   })));
+  sidebar.querySelector<HTMLInputElement>("[data-primitive-color]")?.addEventListener("input", (event) => mutate(() => {
+    const part = selectedPrimitive(); if (part) part.color = (event.target as HTMLInputElement).value;
+  }));
+  sidebar.querySelector<HTMLSelectElement>("[data-part-owner]")?.addEventListener("change", (event) => moveSelectedPart((event.target as HTMLSelectElement).value));
   sidebar.querySelector<HTMLTextAreaElement>("[data-primitive-points]")?.addEventListener("change", (event) => mutate(() => {
     const part = selectedPrimitive(); if (part?.kind === "polygon") part.vertices = parsePointText((event.target as HTMLTextAreaElement).value);
   }));
@@ -336,22 +363,29 @@ function bindInlineInspector(sidebar: HTMLElement): void {
     part.x = position.x; part.y = position.y; delete part.snap;
   }));
   sidebar.querySelectorAll<HTMLButtonElement>("[data-add-part]").forEach((button) => button.addEventListener("click", () => mutate(() => {
-    if (selection?.kind !== "item") return; const item = state.items[selection.index]; const part = makePrimitive(button.dataset.addPart as PrimitiveEditor["kind"]); item.parts.push(part); selectedPartIndex = item.parts.length - 1;
+    const parts = selectedConstraintParts(); if (!parts) return;
+    const part = makePrimitive(button.dataset.addPart as PrimitiveEditor["kind"]), target = parts[selectedPartIndex] ?? parts[0];
+    if (target) part.snap = { targetId: target.id, ownAnchor: "center", targetAnchor: "right", offset: { x: 0, y: 0 } };
+    parts.push(part); selectedPartIndex = parts.length - 1;
   })));
   sidebar.querySelector("[data-delete-part]")?.addEventListener("click", () => mutate(() => {
-    if (selection?.kind !== "item") return; const item = state.items[selection.index]; if (item.parts.length === 1) return;
-    const removed = item.parts[selectedPartIndex].id; item.parts.splice(selectedPartIndex, 1); item.parts.forEach((part) => { if (part.snap?.targetId === removed) delete part.snap; }); selectedPartIndex = Math.max(0, selectedPartIndex - 1);
+    deleteSelectedPart();
   }));
   sidebar.querySelector("[data-delete-object]")?.addEventListener("click", deleteSelectedObject);
 }
 
 function renderEntityPreviews(): void {
   const problem = toProblem(state);
+  const geometry = resolveGeometry(problem);
   document.querySelectorAll<HTMLCanvasElement>("[data-entity-preview]").forEach((canvas) => {
     const target = parseSelection(canvas.dataset.entityPreview!);
-    if (target.kind === "container") renderShapePreview(canvas, problem.container.parts[target.index].shape, { transparent: true, origin: false });
-    else if (target.kind === "exclusion") renderShapePreview(canvas, problem.exclusions[target.index].shape, { transparent: true, origin: false });
-    else if (target.kind === "item") renderShapePreview(canvas, problem.items[target.index].shape, { transparent: true, origin: false });
+    if (target.kind === "container") {
+      const primitive = state.containerParts[target.index]?.primitive;
+      const polygon = primitive ? shapePoints(primitiveShape(primitive)).map((point) => transformPoint(point, primitive.rotation, 0, 0)) : [];
+      renderPolygonsPreview(canvas, polygon.length ? [polygon] : [], { transparent: true });
+    }
+    else if (target.kind === "exclusion") renderPolygonsPreview(canvas, geometry.exclusions[target.index]?.polygons ?? [], { transparent: true });
+    else if (target.kind === "item") renderPolygonsPreview(canvas, geometry.items[target.index]?.polygons ?? [], { transparent: true });
   });
 }
 
@@ -365,14 +399,61 @@ function selectedObject(): object | null {
 function selectedPrimitive(): PrimitiveEditor | null {
   if (!selection || selection.kind === "placement") return null;
   if (selection.kind === "container") return state.containerParts[selection.index]?.primitive ?? null;
-  if (selection.kind === "exclusion") return state.exclusions[selection.index]?.primitive ?? null;
+  if (selection.kind === "exclusion") return state.exclusions[selection.index]?.parts[selectedPartIndex] ?? null;
   return state.items[selection.index]?.parts[selectedPartIndex] ?? null;
 }
 
 function selectedConstraintParts(): PrimitiveEditor[] | null {
   if (selection?.kind === "item") return state.items[selection.index]?.parts ?? null;
   if (selection?.kind === "container") return state.containerParts.map((entry) => entry.primitive);
+  if (selection?.kind === "exclusion") return state.exclusions[selection.index]?.parts ?? null;
   return null;
+}
+
+function selectedOwnerKey(): string {
+  if (selection?.kind === "container") return "container";
+  if (selection?.kind === "item") return `item:${selection.index}`;
+  if (selection?.kind === "exclusion") return `exclusion:${selection.index}`;
+  return "";
+}
+
+function partOwnerOptions(): string {
+  const current = selectedOwnerKey();
+  const options: Array<[string, string]> = [["container", "Container material"]];
+  state.items.forEach((item, index) => options.push([`item:${index}`, `Packable shape · ${item.id}`]));
+  state.exclusions.forEach((entry, index) => options.push([`exclusion:${index}`, `Exclusion · ${entry.id}`]));
+  return options.map(([value, label]) => `<option value="${value}" ${value === current ? "selected" : ""}>${escapeHtml(label)}</option>`).join("");
+}
+
+function moveSelectedPart(targetOwner: string): void {
+  if (!selection || selection.kind === "placement" || targetOwner === selectedOwnerKey()) return;
+  mutate(() => {
+    if (!selection || selection.kind === "placement") return;
+    const sourceSelection = selection, sourceParts = selectedConstraintParts();
+    const sourceIndex = sourceSelection.kind === "container" ? sourceSelection.index : selectedPartIndex;
+    const part = sourceParts?.[sourceIndex]; if (!sourceParts || !part) return;
+    const positions = resolveEditorTranslations(sourceParts), position = positions.get(part.id) ?? { x: part.x, y: part.y };
+    sourceParts.forEach((dependent) => {
+      if (dependent.snap?.targetId !== part.id) return;
+      const dependentPosition = positions.get(dependent.id) ?? { x: dependent.x, y: dependent.y };
+      dependent.x = dependentPosition.x; dependent.y = dependentPosition.y; delete dependent.snap;
+    });
+    if (sourceSelection.kind === "container") state.containerParts.splice(sourceSelection.index, 1);
+    else if (sourceSelection.kind === "item") state.items[sourceSelection.index].parts.splice(sourceIndex, 1);
+    else state.exclusions[sourceSelection.index].parts.splice(sourceIndex, 1);
+    part.x = position.x; part.y = position.y; delete part.snap;
+
+    const [kind, rawIndex] = targetOwner.split(":"), targetIndex = Number(rawIndex);
+    if (kind === "container") {
+      state.containerParts.push({ id: uniqueId(part.id, state.containerParts.map((entry) => entry.id)), operation: "add", primitive: part });
+      selection = { kind: "container", index: state.containerParts.length - 1 }; selectedPartIndex = 0;
+    } else if (kind === "item" && state.items[targetIndex]) {
+      state.items[targetIndex].parts.push(part); selection = { kind: "item", index: targetIndex }; selectedPartIndex = state.items[targetIndex].parts.length - 1;
+    } else if (kind === "exclusion" && state.exclusions[targetIndex]) {
+      state.exclusions[targetIndex].parts.push(part); selection = { kind: "exclusion", index: targetIndex }; selectedPartIndex = state.exclusions[targetIndex].parts.length - 1;
+    }
+  });
+  refreshPacking(true);
 }
 
 function addObject(kind: string): void {
@@ -383,7 +464,7 @@ function addObject(kind: string): void {
       selection = { kind: "item", index: state.items.length - 1 };
     } else if (kind === "exclusion") {
       const primitive = makePrimitive("rectangle"); placeAtContainerCenter(primitive);
-      state.exclusions.push({ id: uniqueId("exclusion", state.exclusions.map((entry) => entry.id)), clearance: 0, primitive });
+      state.exclusions.push({ id: uniqueId("exclusion", state.exclusions.map((entry) => entry.id)), clearance: 0, parts: [primitive] });
       selection = { kind: "exclusion", index: state.exclusions.length - 1 };
     } else {
       const operation = kind === "material" ? "add" : "subtract";
@@ -413,9 +494,9 @@ function addGeometry(kind: PrimitiveEditor["kind"]): void {
       return;
     }
     if (selection?.kind === "exclusion") {
-      const selected = state.exclusions[selection.index]; primitive.x = selected.primitive.x + 1; primitive.y = selected.primitive.y + 1;
-      state.exclusions.push({ id: uniqueId("exclusion", state.exclusions.map((entry) => entry.id)), clearance: selected.clearance, primitive });
-      selection = { kind: "exclusion", index: state.exclusions.length - 1 }; selectedPartIndex = 0;
+      const parts = state.exclusions[selection.index].parts, target = parts[selectedPartIndex] ?? parts[0];
+      if (target) primitive.snap = { targetId: target.id, ownAnchor: "center", targetAnchor: "right", offset: { x: 0, y: 0 } };
+      parts.push(primitive); selectedPartIndex = parts.length - 1;
       return;
     }
     placeAtContainerCenter(primitive);
@@ -439,13 +520,16 @@ function joinSelectedMaterial(): void {
 }
 
 function deleteToolbarSelection(): void {
-  if (selection?.kind === "item" && state.items[selection.index].parts.length > 1) {
-    mutate(() => {
-      const item = state.items[(selection as Extract<CadSelection, { kind: "item" }>).index];
-      const removed = item.parts[selectedPartIndex].id; item.parts.splice(selectedPartIndex, 1);
-      item.parts.forEach((part) => { if (part.snap?.targetId === removed) delete part.snap; }); selectedPartIndex = Math.max(0, selectedPartIndex - 1);
-    });
-  } else deleteSelectedObject();
+  if (!selection || selection.kind === "placement") return;
+  if (selection.kind === "container") { deleteSelectedObject(); return; }
+  mutate(deleteSelectedPart);
+}
+
+function deleteSelectedPart(): void {
+  const parts = selectedConstraintParts(); if (!parts?.[selectedPartIndex]) return;
+  const removed = parts[selectedPartIndex].id; parts.splice(selectedPartIndex, 1);
+  parts.forEach((part) => { if (part.snap?.targetId === removed) delete part.snap; });
+  selectedPartIndex = Math.min(selectedPartIndex, Math.max(0, parts.length - 1));
 }
 
 function updateToolbarState(): void {
@@ -454,16 +538,17 @@ function updateToolbarState(): void {
   const canJoin = selectedRegion?.operation === "add" && state.containerParts.some((entry) => entry !== selectedRegion && entry.operation === "add" && !dependsOn(primitives, entry.primitive.id, selectedRegion.primitive.id));
   element<HTMLButtonElement>("join-material").disabled = !canJoin;
   element<HTMLButtonElement>("delete-selection").disabled = !selection || selection.kind === "placement";
+  const color = element<HTMLInputElement>("toolbar-part-color"), part = selectedPrimitive();
+  color.disabled = !part; color.value = partColor(part);
 }
 
 function deleteSelectedObject(): void {
   if (!selection || selection.kind === "placement") return;
   mutate(() => {
-    if (selection?.kind === "item") { if (state.items.length === 1) return; state.items.splice(selection.index, 1); selection = { kind: "item", index: 0 }; }
-    else if (selection?.kind === "exclusion") { state.exclusions.splice(selection.index, 1); selection = state.exclusions.length ? { kind: "exclusion", index: 0 } : { kind: "container", index: 0 }; }
+    if (selection?.kind === "item") { state.items.splice(selection.index, 1); selection = null; }
+    else if (selection?.kind === "exclusion") { state.exclusions.splice(selection.index, 1); selection = null; }
     else if (selection?.kind === "container") {
-      const entry = state.containerParts[selection.index]; if (entry.operation === "add" && state.containerParts.filter((part) => part.operation === "add").length === 1) return;
-      state.containerParts.splice(selection.index, 1); selection = { kind: "container", index: 0 };
+      state.containerParts.splice(selection.index, 1); selection = null;
     }
     selectedPartIndex = 0;
   });
@@ -533,8 +618,9 @@ function renderStudyGeometryPreview(): void {
   host.innerHTML = values.map((value, index) => `<article class="shape-step ${index === 0 || index === values.length - 1 ? "extreme" : ""}"><header><strong>${format(value)}</strong><span>${index === 0 ? "START" : index === values.length - 1 ? "END" : `STEP ${index}`}</span></header><canvas data-study-preview="${index}"></canvas></article>`).join("");
   host.querySelectorAll<HTMLCanvasElement>("[data-study-preview]").forEach((canvas, index) => {
     const previewState = stateAtParameter(values[index]);
-    if (itemIndex >= 0) renderShapePreview(canvas, toProblem(previewState).items[itemIndex].shape);
-    else renderLayout(canvas, toProblem(previewState), [], studyDisplay);
+    const previewProblem = toProblem(previewState);
+    if (itemIndex >= 0) renderPolygonsPreview(canvas, resolveGeometry(previewProblem).items[itemIndex]?.polygons ?? []);
+    else renderLayout(canvas, previewProblem, [], studyDisplay);
   });
 }
 
@@ -550,7 +636,7 @@ function stateAtParameter(value: number): EditorState {
     const part = clone.containerParts.find((entry) => entry.operation === "add")?.primitive;
     if (part) applyPrimitiveParameter(part, kind === "container_width" ? "width" : "height", value);
   } else if (kind === "exclusion_scale") {
-    const part = clone.exclusions.find((entry) => entry.id === id)?.primitive; if (part) scalePrimitivePreview(part, value);
+    clone.exclusions.find((entry) => entry.id === id)?.parts.forEach((part) => scalePrimitivePreview(part, value));
   } else if (kind === "clearance_item_to_item") clone.clearance.item_to_item = value;
   else if (kind === "clearance_item_to_boundary") clone.clearance.item_to_boundary = value;
   return clone;
@@ -758,6 +844,10 @@ function normalizeSelection(value: CadSelection | null): CadSelection | null {
   const length = value.kind === "container" ? state.containerParts.length : value.kind === "exclusion" ? state.exclusions.length : state.items.length;
   return value.index < length ? value : length ? { kind: value.kind, index: 0 } : null;
 }
+function isEditingText(target: EventTarget | null): boolean {
+  const element = target as HTMLElement | null;
+  return !!element?.closest("input, textarea, select, [contenteditable='true']");
+}
 function parseSelection(value: string): CadSelection { const [kind, index] = value.split(":"); return { kind: kind as CadSelection["kind"], index: Number(index) } as CadSelection; }
 function itemIndexForParameter(key: string): number { const [kind, id] = key.split(":"); return kind.startsWith("part_") || kind.startsWith("item_") ? state.items.findIndex((item) => item.id === id) : -1; }
 function studyValues(start: number, end: number, step: number): number[] { const values = [start]; if (step > 0) for (let value = start + step; value < end && values.length < 6; value += step) values.push(value); if (end !== start) values.push(end); return values; }
@@ -799,6 +889,9 @@ function uniqueId(prefix: string, ids: string[]): string {
   return `${prefix}-${suffix}`;
 }
 function anchorOptions(selected: AnchorName): string { return ANCHORS.map((anchor) => `<option value="${anchor}" ${anchor === selected ? "selected" : ""}>${humanStatus(anchor)}</option>`).join(""); }
+function partColor(part: PrimitiveEditor | null | undefined): string {
+  return part?.color && /^#[0-9a-f]{6}$/i.test(part.color) ? part.color : "#51c6a4";
+}
 function dependsOn(parts: PrimitiveEditor[], startId: string, targetId: string): boolean {
   const byId = new Map(parts.map((part) => [part.id, part]));
   const seen = new Set<string>(); let current = byId.get(startId);

@@ -15,6 +15,8 @@ export class PackingEngine {
     validate(input_json: string): string;
 }
 
+export function resolved_geometry(input_json: string): string;
+
 export function run_sensitivity(input_json: string, study_json: string): string;
 
 export function solve_problem(input_json: string, options_json: string): string;
@@ -35,6 +37,7 @@ export interface InitOutput {
     readonly packingengine_solve_direct_with_progress: (a: number, b: number, c: number, d: number, e: number, f: any) => [number, number, number, number];
     readonly packingengine_solve_with_progress: (a: number, b: number, c: number, d: number, e: number, f: any) => [number, number, number, number];
     readonly packingengine_validate: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly resolved_geometry: (a: number, b: number) => [number, number, number, number];
     readonly run_sensitivity: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly solve_problem: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly validate_problem: (a: number, b: number) => [number, number, number, number];

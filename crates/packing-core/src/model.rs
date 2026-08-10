@@ -113,6 +113,21 @@ pub struct RegionPart {
     pub translation: Point,
     #[serde(default)]
     pub rotation_deg: f64,
+    #[serde(default)]
+    pub snap: Option<PartSnap>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NamedResolvedGeometry {
+    pub id: String,
+    pub polygons: Vec<Vec<Point>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResolvedProblemGeometry {
+    pub container: Vec<Vec<Point>>,
+    pub items: Vec<NamedResolvedGeometry>,
+    pub exclusions: Vec<NamedResolvedGeometry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

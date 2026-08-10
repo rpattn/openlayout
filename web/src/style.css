@@ -147,9 +147,14 @@ summary::-webkit-details-marker { display: none; }
 .cad-grid { pointer-events: none; }
 .cad-grid line { stroke: color-mix(in srgb, var(--text) 5%, transparent); stroke-width: 1px; vector-effect: non-scaling-stroke; }
 .cad-region, .cad-exclusion, .cad-placement, .cad-item-sample { vector-effect: non-scaling-stroke; transition: fill .12s, stroke .12s; }
+.cad-part-color { stroke: none; pointer-events: none; opacity: .78; }
+.cad-part-color.item { opacity: .72; }
+.cad-part-color.exclusion { opacity: .4; }
 .cad-region { fill: var(--surface-soft); stroke: var(--muted); stroke-width: 1.4px; cursor: pointer; }
 .cad-region.subtract { fill: var(--canvas); stroke: var(--danger); stroke-dasharray: 6 4; }
 .cad-region:hover, .cad-region.selected { stroke: var(--accent); stroke-width: 2.2px; }
+.cad-source-hit { fill: transparent; stroke: transparent; stroke-width: 8px; vector-effect: non-scaling-stroke; cursor: pointer; }
+.cad-source-hit.selected { stroke: color-mix(in srgb, var(--accent) 72%, transparent); stroke-width: 1.4px; stroke-dasharray: 4 3; }
 .cad-exclusion { fill: var(--danger-soft); stroke: var(--danger); stroke-width: 1.5px; stroke-dasharray: 5 3; cursor: pointer; }
 .cad-exclusion:hover, .cad-exclusion.selected { stroke-width: 2.5px; }
 .cad-placement { fill: color-mix(in srgb, var(--item-color) 70%, transparent); stroke: var(--item-color); stroke-width: 1.1px; cursor: move; }
@@ -183,9 +188,18 @@ summary::-webkit-details-marker { display: none; }
 .cad-snap-constraint .cad-snap-offset { stroke: var(--amber); }
 .cad-selection-handles .cad-snap-constraint circle { fill: var(--surface); stroke: var(--accent); stroke-width: 1.5px; pointer-events: none; }
 .cad-selection-handles .cad-snap-constraint circle.own { fill: var(--accent); pointer-events: auto; cursor: move; }
+.cad-anchor-points .cad-snap-anchor { vector-effect: non-scaling-stroke; stroke-width: 1.4px; }
+.cad-anchor-points .cad-snap-anchor.target { fill: var(--surface); stroke: var(--amber); pointer-events: none; opacity: .75; }
+.cad-anchor-points .cad-snap-anchor.own { fill: var(--surface); stroke: var(--accent); pointer-events: auto; cursor: crosshair; }
+.cad-anchor-points .cad-snap-anchor.active { fill: var(--accent); stroke: var(--surface); opacity: 1; }
+.cad-anchor-points .cad-snap-anchor.own:hover { fill: var(--accent); }
+.cad-anchor-guide { stroke: color-mix(in srgb, var(--accent) 55%, transparent) !important; stroke-width: 1px !important; pointer-events: none; }
+.cad-anchor-drag-line { stroke: var(--accent) !important; stroke-width: 1.8px !important; stroke-dasharray: 4 3; pointer-events: none; }
 .cad-toolbar { position: absolute; z-index: 3; left: 12px; right: 12px; top: 12px; min-height: 40px; display: flex; align-items: center; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 8px; background: color-mix(in srgb, var(--surface) 90%, transparent); box-shadow: 0 8px 28px rgba(0,0,0,.2); backdrop-filter: blur(12px); }
 .tool-button { min-width: 32px; height: 30px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--text-soft); padding: 0 8px; cursor: pointer; font-size: 10px; white-space: nowrap; }
 .tool-button:hover:not(:disabled), .tool-button.active { border-color: var(--line-strong); background: var(--surface-raised); color: var(--accent); }
+.toolbar-color { height: 30px; display: flex; align-items: center; gap: 5px; padding: 0 6px; color: var(--muted); font-size: 9px; }
+.toolbar-color input, .primitive-editor input[type="color"] { width: 28px; min-height: 22px; height: 22px; padding: 1px; border-radius: 4px; cursor: pointer; }
 .tool-button:disabled { opacity: .3; cursor: default; }
 .tool-button span { margin-left: 3px; }
 .tool-select { width: 72px; height: 30px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--text-soft); padding: 0 5px; font-size: 9px; cursor: pointer; }

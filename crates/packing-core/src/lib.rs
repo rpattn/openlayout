@@ -8,6 +8,7 @@ mod solver;
 mod validate;
 
 pub use error::{PackingError, PackingErrorKind};
+pub use geometry::resolve_problem_geometry;
 pub use model::*;
 pub use prepare::{PreparedProblem, prepare_problem};
 pub use sensitivity::{SensitivityObserver, run_sensitivity, run_sensitivity_with_observer};

@@ -1,5 +1,6 @@
 import { primitiveAnchor, primitiveShape, resolveEditorTranslations, shapePoints, toProblem, transformPoint } from "./problem";
-import type { AnchorName, EditorState, PackingProblem, Placement, Point, PrimitiveEditor, Shape, ShapePart } from "./types";
+import { resolveGeometry } from "./geometry-resolver";
+import type { AnchorName, EditorState, PackingProblem, Placement, Point, PrimitiveEditor, ResolvedProblemGeometry, Shape, ShapePart } from "./types";
 
 const ITEM_COLORS = ["#51c6a4", "#f2b65d", "#7ba4f8", "#d98adf", "#ee716f", "#94c973"];
 const ANCHORS: AnchorName[] = ["center", "top", "bottom", "left", "right", "top_left", "top_right", "bottom_left", "bottom_right"];
@@ -13,7 +14,7 @@ export type CadSelection =
 interface Bounds { minX: number; minY: number; maxX: number; maxY: number; width: number; height: number }
 interface View { minX: number; minY: number; width: number; height: number }
 interface Drag {
-  mode: "pan" | "placement" | "rotate" | "definition" | "definition-rotate" | "definition-scale" | "geometry" | "snap-offset" | "part-move";
+  mode: "pan" | "placement" | "rotate" | "definition" | "definition-rotate" | "definition-scale" | "geometry" | "snap-offset" | "part-move" | "anchor-snap";
   startClient: Point;
   startWorld: Point;
   originalView?: View;
@@ -25,6 +26,8 @@ interface Drag {
   rotation?: number;
   partIndex?: number;
   geometryHandle?: string;
+  ownAnchor?: AnchorName;
+  currentWorld?: Point;
   moved: boolean;
 }
 
@@ -37,6 +40,7 @@ export interface CadWorkspaceCallbacks {
 export class CadWorkspace {
   private state: EditorState;
   private problem: PackingProblem;
+  private resolved: ResolvedProblemGeometry;
   private placements: Placement[] = [];
   private selection: CadSelection | null = null;
   private selectedPartIndex = 0;
@@ -55,6 +59,7 @@ export class CadWorkspace {
   ) {
     this.state = state;
     this.problem = problem;
+    this.resolved = resolveGeometry(problem);
     this.bind();
     this.fit();
   }
@@ -66,6 +71,7 @@ export class CadWorkspace {
   setModel(state: EditorState, problem: PackingProblem, placements: Placement[], refit = false): void {
     this.state = state;
     this.problem = problem;
+    this.resolved = resolveGeometry(problem);
     this.placements = placements;
     if (refit) this.sampleOffsets.clear();
     if (refit || !this.fitted) this.fit(); else this.render();
@@ -124,7 +130,7 @@ export class CadWorkspace {
     this.svg.addEventListener("dblclick", (event) => {
       const target = (event.target as Element).closest<SVGElement>("[data-cad-kind]"); if (!target) return;
       const selection = selectionFrom(target); this.selection = selection;
-      const partIndex = selection.kind === "item" ? Number(target.dataset.cadPart ?? 0) : undefined;
+      const partIndex = selection.kind === "item" || selection.kind === "exclusion" ? Number(target.dataset.cadPart ?? 0) : undefined;
       if (partIndex !== undefined) this.selectedPartIndex = partIndex;
       this.callbacks.onSelect(selection, partIndex); this.focusSelection();
     });
@@ -141,14 +147,16 @@ export class CadWorkspace {
     const samples = this.itemSamples();
     this.svg.innerHTML = `<rect class="cad-background" data-cad-background x="${this.view.minX}" y="${y}" width="${this.view.width}" height="${this.view.height}"/>
       <g class="cad-grid">${gridMarkup(this.view)}</g>
-      <g class="cad-container">${this.problem.container.parts.map((part, index) => {
-        const selected = this.selection?.kind === "container" && this.selection.index === index;
-        return polygons(part.shape, part.rotation_deg, part.translation.x, part.translation.y).map((polygon) => `<path data-cad-kind="container" data-cad-index="${index}" class="cad-region ${part.operation} ${selected ? "selected" : ""}" d="${path(polygon)}"/>`).join("");
-      }).join("")}</g>
+      <g class="cad-container"><defs><clipPath id="container-union-clip"><path fill-rule="evenodd" d="${compoundPath(this.resolved.container)}"/></clipPath></defs>
+        ${this.problem.container.parts.map((part, index) => polygons(part.shape, part.rotation_deg, part.translation.x, part.translation.y).map((polygon) => `<path class="cad-part-color" clip-path="url(#container-union-clip)" style="fill:${partColor(this.state.containerParts[index]?.primitive, "#526b82")}" d="${path(polygon)}"/>`).join("")).join("")}
+        <path data-unified-geometry="container" class="cad-region unified ${this.selection?.kind === "container" ? "selected" : ""}" style="fill:transparent" fill-rule="evenodd" d="${compoundPath(this.resolved.container)}"/>
+        ${this.problem.container.parts.map((part, index) => polygons(part.shape, part.rotation_deg, part.translation.x, part.translation.y).map((polygon) => `<path data-cad-kind="container" data-cad-index="${index}" class="cad-source-hit ${this.selection?.kind === "container" && this.selection.index === index ? "selected" : ""}" d="${path(polygon)}"/>`).join("")).join("")}</g>
       ${this.clearance ? this.containerClearanceMarkup() : ""}
       <g class="cad-exclusions">${this.problem.exclusions.map((entry, index) => {
         const selected = this.selection?.kind === "exclusion" && this.selection.index === index;
-        return polygons(entry.shape).map((polygon) => `<path data-cad-kind="exclusion" data-cad-index="${index}" class="cad-exclusion ${selected ? "selected" : ""}" d="${path(polygon)}"/>`).join("");
+        const visible = this.resolved.exclusions.find((geometry) => geometry.id === entry.id)?.polygons ?? [];
+        const sources = sourcePartPolygons(entry.shape);
+        return `<defs><clipPath id="exclusion-union-clip-${index}"><path fill-rule="evenodd" d="${compoundPath(visible)}"/></clipPath></defs>${sources.map((partPolygons, partIndex) => partPolygons.map((polygon) => `<path class="cad-part-color exclusion" clip-path="url(#exclusion-union-clip-${index})" style="fill:${partColor(this.state.exclusions[index]?.parts[partIndex], "#ee716f")}" d="${path(polygon)}"/>`).join("")).join("")}<path data-unified-geometry="exclusion:${index}" class="cad-exclusion unified ${selected ? "selected" : ""}" style="fill:transparent" fill-rule="evenodd" d="${compoundPath(visible)}"/>${sources.map((partPolygons, partIndex) => partPolygons.map((polygon) => `<path data-cad-kind="exclusion" data-cad-index="${index}" data-cad-part="${partIndex}" class="cad-source-hit ${selected && this.selectedPartIndex === partIndex ? "selected" : ""}" d="${path(polygon)}"/>`).join("")).join("")}`;
       }).join("")}</g>
       ${this.clearance ? this.exclusionClearanceMarkup() : ""}
       <g class="cad-placements">${this.placements.map((placement, index) => this.placementMarkup(placement, index)).join("")}</g>
@@ -158,6 +166,18 @@ export class CadWorkspace {
   }
 
   private pointerDown(event: PointerEvent): void {
+    this.svg.focus();
+    const anchorHandle = (event.target as Element).closest<SVGElement>("[data-snap-anchor-source]");
+    if (anchorHandle) {
+      const definition = parseDefinitionKey(anchorHandle.dataset.snapAnchorSource!);
+      const partIndex = Number(anchorHandle.dataset.snapPart ?? 0);
+      this.selection = definition; this.selectedPartIndex = partIndex; this.callbacks.onSelect(definition, partIndex);
+      this.drag = {
+        mode: "anchor-snap", startClient: { x: event.clientX, y: event.clientY }, startWorld: this.eventPoint(event), currentWorld: this.eventPoint(event),
+        selection: definition, partIndex, ownAnchor: anchorHandle.dataset.snapOwnAnchor as AnchorName, originalState: structuredClone(this.state), moved: false,
+      };
+      this.svg.setPointerCapture(event.pointerId); return;
+    }
     const snapHandle = (event.target as Element).closest<SVGElement>("[data-snap-offset-handle]");
     if (snapHandle) {
       const definition = parseDefinitionKey(snapHandle.dataset.snapOffsetHandle!);
@@ -206,7 +226,7 @@ export class CadWorkspace {
       const definition = parseDefinitionKey(scaleHandle.dataset.definitionScale!);
       const center = this.definitionCenter(definition);
       this.selection = definition;
-      this.callbacks.onSelect(definition, definition.kind === "item" ? this.selectedPartIndex : undefined);
+      this.callbacks.onSelect(definition, definition.kind === "item" || definition.kind === "exclusion" ? this.selectedPartIndex : undefined);
       this.drag = {
         mode: "definition-scale", startClient: { x: event.clientX, y: event.clientY }, startWorld: this.eventPoint(event),
         selection: definition, originalState: structuredClone(this.state), center, moved: false,
@@ -242,7 +262,7 @@ export class CadWorkspace {
     const selection = target ? selectionFrom(target) : null;
     if (selection) {
       this.selection = selection;
-      const partIndex = selection.kind === "item" ? Number(target?.dataset.cadPart ?? 0) : undefined;
+      const partIndex = selection.kind === "item" || selection.kind === "exclusion" ? Number(target?.dataset.cadPart ?? 0) : undefined;
       if (partIndex !== undefined) this.selectedPartIndex = partIndex;
       this.callbacks.onSelect(selection, partIndex);
       if (selection.kind === "placement") {
@@ -268,6 +288,9 @@ export class CadWorkspace {
 
   private pointerMove(event: PointerEvent): void {
     if (!this.drag) return;
+    if (this.drag.mode === "anchor-snap") {
+      this.drag.currentWorld = this.eventPoint(event); this.drag.moved = true; this.render(); return;
+    }
     if (this.drag.mode === "pan") {
       const pixelsToWorld = this.drag.originalView!.width / Math.max(this.svg.clientWidth, 1);
       this.view.minX = this.drag.originalView!.minX - (event.clientX - this.drag.startClient.x) * pixelsToWorld;
@@ -304,6 +327,7 @@ export class CadWorkspace {
         this.editDefinitionGeometry(selection, this.drag.originalState!, this.drag.partIndex!, this.drag.geometryHandle!, current, this.drag.center!, this.drag.rotation!);
       }
       this.problem = toProblem(this.state);
+      this.resolved = resolveGeometry(this.problem);
       this.drag.moved = true;
       this.render();
       return;
@@ -329,6 +353,9 @@ export class CadWorkspace {
     const drag = this.drag;
     this.drag = null;
     if (this.svg.hasPointerCapture(event.pointerId)) this.svg.releasePointerCapture(event.pointerId);
+    if (drag.moved && drag.mode === "anchor-snap" && drag.selection && drag.partIndex !== undefined && drag.ownAnchor && drag.currentWorld) {
+      this.completeAnchorSnap(drag.selection, drag.partIndex, drag.ownAnchor, drag.currentWorld);
+    }
     if (drag.moved && drag.mode === "part-move" && drag.selection && drag.partIndex !== undefined) this.snapMovedPart(drag.selection, drag.partIndex);
     if (drag.moved && drag.placementIndex !== undefined) this.callbacks.onPlacementChange(drag.placementIndex);
     if (drag.moved && drag.selection && drag.originalState) this.callbacks.onDefinitionChange(drag.selection, drag.originalState);
@@ -347,7 +374,11 @@ export class CadWorkspace {
     if (!item) return "";
     const color = ITEM_COLORS[Math.max(itemIndex, 0) % ITEM_COLORS.length];
     const selected = this.selection?.kind === "placement" && this.selection.index === index;
-    const paths = polygons(item.shape, placement.rotation_deg, placement.x, placement.y).map((polygon) => `<path data-cad-kind="placement" data-cad-index="${index}" class="cad-placement ${selected ? "selected" : ""} ${placement.fixed ? "fixed" : ""}" style="--item-color:${color}" d="${path(polygon)}"/>`).join("");
+    const local = this.resolved.items.find((geometry) => geometry.id === item.id)?.polygons ?? [];
+    const placed = transformPolygons(local, placement.rotation_deg, placement.x, placement.y);
+    const sourceParts = sourcePartPolygons(item.shape).map((partPolygons) => transformPolygons(partPolygons, placement.rotation_deg, placement.x, placement.y));
+    const colored = sourceParts.map((partPolygons, partIndex) => partPolygons.map((polygon) => `<path class="cad-part-color item" style="fill:${partColor(this.state.items[itemIndex]?.parts[partIndex], color)}" d="${path(polygon)}"/>`).join("")).join("");
+    const paths = `${colored}<path data-cad-kind="placement" data-cad-index="${index}" class="cad-placement unified ${selected ? "selected" : ""} ${placement.fixed ? "fixed" : ""}" fill-rule="evenodd" style="--item-color:${color};fill:transparent" d="${compoundPath(placed)}"/>${this.clearance && this.problem.clearance.item_to_item > 0 ? placed.map((polygon) => `<path class="cad-clearance item" d="${path(offsetPolygon(polygon, (contourArea(polygon) >= 0 ? 1 : -1) * this.problem.clearance.item_to_item / 2))}"/>`).join("") : ""}`;
     return `<g aria-label="${escapeHtml(placement.item_id)} placement ${index + 1}">${paths}</g>`;
   }
 
@@ -355,7 +386,7 @@ export class CadWorkspace {
     const color = ITEM_COLORS[index % ITEM_COLORS.length];
     const selected = this.selection?.kind === "item" && this.selection.index === index;
     const padding = Math.max(sample.bounds.width, sample.bounds.height) * .2 + .35;
-    return `${sample.polygons.map((polygon, partIndex) => `<path data-cad-kind="item" data-cad-index="${index}" data-cad-part="${partIndex}" class="cad-item-sample ${selected ? "selected" : ""}" style="--item-color:${color}" d="${path(polygon)}"/>`).join("")}
+    return `${sample.sourcePolygons.map((partPolygons, partIndex) => partPolygons.map((polygon) => `<path class="cad-part-color item" style="fill:${partColor(this.state.items[index]?.parts[partIndex], color)}" d="${path(polygon)}"/>`).join("")).join("")}<path data-unified-geometry="item:${index}" class="cad-item-sample unified ${selected ? "selected" : ""}" fill-rule="evenodd" style="--item-color:${color};fill:transparent" d="${compoundPath(sample.polygons)}"/>${sample.sourcePolygons.map((partPolygons, partIndex) => partPolygons.map((polygon) => `<path data-cad-kind="item" data-cad-index="${index}" data-cad-part="${partIndex}" class="cad-source-hit ${selected && this.selectedPartIndex === partIndex ? "selected" : ""}" d="${path(polygon)}"/>`).join("")).join("")}${this.clearance && this.problem.clearance.item_to_item > 0 ? sample.polygons.map((polygon) => `<path class="cad-clearance item" d="${path(offsetPolygon(polygon, (contourArea(polygon) >= 0 ? 1 : -1) * this.problem.clearance.item_to_item / 2))}"/>`).join("") : ""}
       <text class="cad-label" x="${sample.bounds.minX}" y="${-sample.bounds.maxY - padding}">${escapeHtml(this.problem.items[index].id)} · ${this.problem.items[index].quantity} requested</text>`;
   }
 
@@ -369,14 +400,15 @@ export class CadWorkspace {
       ? `data-placement-rotate="${selection.index}"`
       : `data-definition-rotate="${selection.kind}:${selection.index}"`;
     const geometry = selection.kind === "placement" ? "" : this.geometryHandles(selection, scale);
-    const snap = selection.kind === "item" || selection.kind === "container" ? this.snapMarkup(selection, scale) : "";
+    const snap = selection.kind !== "placement" ? this.snapMarkup(selection, scale) : "";
     const resize = selection.kind === "placement" ? "" : `<circle class="cad-global-scale-handle" data-definition-scale="${selection.kind}:${selection.index}" cx="${bounds.maxX}" cy="${-bounds.minY}" r="${Math.max(4.5 * scale, .09)}"/>`;
-    return `<g class="cad-selection-handles">${snap}${geometry}${resize}<line x1="${top.x}" y1="${-top.y}" x2="${handle.x}" y2="${-handle.y}"/><circle class="cad-rotate-handle" ${attribute} cx="${handle.x}" cy="${-handle.y}" r="${Math.max(5 * scale, .1)}"/></g>`;
+    const anchors = selection.kind === "placement" ? "" : this.anchorHandlesMarkup(selection, scale);
+    return `<g class="cad-selection-handles">${snap}${geometry}${anchors}${resize}<line x1="${top.x}" y1="${-top.y}" x2="${handle.x}" y2="${-handle.y}"/><circle class="cad-rotate-handle" ${attribute} cx="${handle.x}" cy="${-handle.y}" r="${Math.max(5 * scale, .1)}"/></g>`;
   }
 
-  private snapMarkup(selection: Extract<CadSelection, { kind: "item" | "container" }>, scale: number): string {
-    const parts = selection.kind === "item" ? this.state.items[selection.index]?.parts : this.state.containerParts.map((entry) => entry.primitive);
-    const partIndex = selection.kind === "item" ? this.selectedPartIndex : selection.index;
+  private snapMarkup(selection: Exclude<CadSelection, { kind: "placement" }>, scale: number): string {
+    const parts = definitionParts(this.state, selection);
+    const partIndex = selection.kind === "container" ? selection.index : this.selectedPartIndex;
     const part = parts?.[partIndex];
     if (!parts || !part?.snap) return "";
     const target = parts.find((entry) => entry.id === part.snap!.targetId);
@@ -396,8 +428,67 @@ export class CadWorkspace {
     return `<g class="cad-snap-constraint"><line x1="${targetCenter.x}" y1="${-targetCenter.y}" x2="${ownCenter.x}" y2="${-ownCenter.y}"/><line class="cad-snap-offset" x1="${destination.x}" y1="${-destination.y}" x2="${own.x}" y2="${-own.y}"/><circle cx="${destination.x}" cy="${-destination.y}" r="${radius}"/><circle class="own" data-snap-offset-handle="${selection.kind}:${selection.index}" data-snap-part="${partIndex}" cx="${own.x}" cy="${-own.y}" r="${radius}"/></g>`;
   }
 
+  private anchorHandlesMarkup(selection: Exclude<CadSelection, { kind: "placement" }>, scale: number): string {
+    const parts = definitionParts(this.state, selection), partIndex = selection.kind === "container" ? selection.index : this.selectedPartIndex;
+    const part = parts?.[partIndex]; if (!parts || !part) return "";
+    const positions = resolveEditorTranslations(parts), displayOffset = this.definitionDisplayOffset(selection);
+    const pointFor = (value: PrimitiveEditor, anchor: AnchorName) => {
+      const position = positions.get(value.id) ?? { x: value.x, y: value.y }, point = primitiveAnchor(value, anchor, position);
+      return { x: point.x + displayOffset.x, y: point.y + displayOffset.y };
+    };
+    const partCenter = pointFor(part, "center"), handleGap = Math.max(8 * scale, .16);
+    const ownHandlePoint = (anchor: AnchorName) => {
+      const point = pointFor(part, anchor), dx = point.x - partCenter.x, dy = point.y - partCenter.y, length = Math.hypot(dx, dy);
+      const direction = length > 1e-8 ? { x: dx / length, y: dy / length } : { x: Math.SQRT1_2, y: Math.SQRT1_2 };
+      return { x: point.x + direction.x * handleGap, y: point.y + direction.y * handleGap };
+    };
+    const targetRadius = Math.max(2.6 * scale, .05), ownRadius = Math.max(3.5 * scale, .07);
+    const targets = parts.flatMap((target) => {
+      if (target.id === part.id || primitiveDependsOn(parts, target.id, part.id)) return [];
+      return ANCHORS.map((anchor) => {
+        const point = pointFor(target, anchor), active = part.snap?.targetId === target.id && part.snap.targetAnchor === anchor;
+        return `<circle class="cad-snap-anchor target ${active ? "active" : ""}" data-snap-target-id="${escapeHtml(target.id)}" data-snap-target-anchor="${anchor}" cx="${point.x}" cy="${-point.y}" r="${targetRadius}"/>`;
+      });
+    }).join("");
+    const own = ANCHORS.map((anchor) => {
+      const point = pointFor(part, anchor), handle = ownHandlePoint(anchor), active = part.snap?.ownAnchor === anchor;
+      return `<line class="cad-anchor-guide" x1="${point.x}" y1="${-point.y}" x2="${handle.x}" y2="${-handle.y}"/><circle class="cad-snap-anchor own ${active ? "active" : ""}" data-snap-anchor-source="${selection.kind}:${selection.index}" data-snap-part="${partIndex}" data-snap-own-anchor="${anchor}" cx="${handle.x}" cy="${-handle.y}" r="${ownRadius}"/>`;
+    }).join("");
+    const drag = this.drag?.mode === "anchor-snap" && this.drag.selection?.kind === selection.kind && this.drag.selection.index === selection.index && this.drag.currentWorld
+      ? `<line class="cad-anchor-drag-line" x1="${ownHandlePoint(this.drag.ownAnchor!).x}" y1="${-ownHandlePoint(this.drag.ownAnchor!).y}" x2="${this.drag.currentWorld.x}" y2="${-this.drag.currentWorld.y}"/>` : "";
+    return `<g class="cad-anchor-points">${drag}${targets}${own}</g>`;
+  }
+
+  private definitionDisplayOffset(selection: Exclude<CadSelection, { kind: "placement" }>): Point {
+    if (selection.kind !== "item") return { x: 0, y: 0 };
+    this.itemSamples();
+    return this.sampleOffsets.get(this.state.items[selection.index]?.id ?? "") ?? { x: 0, y: 0 };
+  }
+
+  private completeAnchorSnap(
+    selection: Exclude<CadSelection, { kind: "placement" }>, partIndex: number, ownAnchor: AnchorName, dropPoint: Point,
+  ): void {
+    const parts = definitionParts(this.state, selection), part = parts?.[partIndex]; if (!parts || !part) return;
+    const positions = resolveEditorTranslations(parts), displayOffset = this.definitionDisplayOffset(selection);
+    let best: { target: PrimitiveEditor; anchor: AnchorName; distance: number } | null = null;
+    parts.forEach((target) => {
+      if (target.id === part.id || primitiveDependsOn(parts, target.id, part.id)) return;
+      const position = positions.get(target.id) ?? { x: target.x, y: target.y };
+      ANCHORS.forEach((anchor) => {
+        const raw = primitiveAnchor(target, anchor, position), point = { x: raw.x + displayOffset.x, y: raw.y + displayOffset.y };
+        const distance = Math.hypot(point.x - dropPoint.x, point.y - dropPoint.y);
+        if (!best || distance < best.distance) best = { target, anchor, distance };
+      });
+    });
+    const candidate = best as { target: PrimitiveEditor; anchor: AnchorName; distance: number } | null;
+    const threshold = this.view.width / Math.max(this.svg.clientWidth, 1) * 32;
+    if (!candidate || candidate.distance > threshold) return;
+    part.snap = { targetId: candidate.target.id, ownAnchor, targetAnchor: candidate.anchor, offset: { x: 0, y: 0 } };
+    this.problem = toProblem(this.state); this.resolved = resolveGeometry(this.problem); this.render();
+  }
+
   private geometryHandles(selection: Exclude<CadSelection, { kind: "placement" }>, scale: number): string {
-    const partIndex = selection.kind === "item" ? this.selectedPartIndex : selection.kind === "container" ? selection.index : 0;
+    const partIndex = selection.kind === "container" ? selection.index : this.selectedPartIndex;
     const context = this.primitiveContext(selection, partIndex);
     if (!context) return "";
     const primitive = context.primitive;
@@ -464,8 +555,11 @@ export class CadWorkspace {
       return primitive && rendered ? { primitive, center: rendered.translation, rotation: primitive.rotation } : null;
     }
     if (selection.kind === "exclusion") {
-      const primitive = this.state.exclusions[selection.index]?.primitive;
-      return primitive ? { primitive, center: { x: primitive.x, y: primitive.y }, rotation: primitive.rotation } : null;
+      const primitive = this.state.exclusions[selection.index]?.parts[partIndex];
+      const shape = this.problem.exclusions[selection.index]?.shape;
+      if (!primitive || shape?.kind !== "compound" || !shape.parts[partIndex]) return null;
+      const translation = resolveShapePartTranslations(shape.parts)[partIndex];
+      return { primitive, center: translation, rotation: shape.parts[partIndex].rotation_deg };
     }
     const primitive = this.state.items[selection.index]?.parts[partIndex];
     const shape = this.problem.items[selection.index]?.shape;
@@ -523,11 +617,10 @@ export class CadWorkspace {
   }
 
   private snapMovedPart(selection: Exclude<CadSelection, { kind: "placement" }>, partIndex: number): void {
-    if (selection.kind === "exclusion") return;
-    const parts = selection.kind === "item" ? this.state.items[selection.index]?.parts : this.state.containerParts.map((entry) => entry.primitive);
-    const part = parts?.[partIndex]; if (!parts || !part || part.snap) return;
+    const parts = definitionParts(this.state, selection);
+    const part = parts?.[partIndex]; if (!parts || !part) return;
     const positions = resolveEditorTranslations(parts), ownPosition = positions.get(part.id) ?? { x: part.x, y: part.y };
-    const threshold = this.view.width / Math.max(this.svg.clientWidth, 1) * 14;
+    const threshold = this.view.width / Math.max(this.svg.clientWidth, 1) * 30;
     let best: { targetId: string; ownAnchor: AnchorName; targetAnchor: AnchorName; distance: number } | null = null;
     parts.forEach((target) => {
       if (target.id === part.id || primitiveDependsOn(parts, target.id, part.id)) return;
@@ -541,7 +634,7 @@ export class CadWorkspace {
     const candidate = best as { targetId: string; ownAnchor: AnchorName; targetAnchor: AnchorName; distance: number } | null;
     if (candidate) {
       part.snap = { targetId: candidate.targetId, ownAnchor: candidate.ownAnchor, targetAnchor: candidate.targetAnchor, offset: { x: 0, y: 0 } };
-      this.problem = toProblem(this.state); this.render();
+      this.problem = toProblem(this.state); this.resolved = resolveGeometry(this.problem); this.render();
     }
   }
 
@@ -555,7 +648,8 @@ export class CadWorkspace {
     }
     if (selection.kind === "exclusion") {
       const entry = this.problem.exclusions[selection.index];
-      return entry ? pointBounds(polygons(entry.shape).flat()) : null;
+      const points = entry ? polygons(entry.shape).flat() : [];
+      return points.length ? pointBounds(points) : null;
     }
     if (selection.kind === "item") return this.itemSamples()[selection.index]?.bounds ?? null;
     const index = selection.index;
@@ -563,7 +657,7 @@ export class CadWorkspace {
     const item = placement && this.problem.items.find((entry) => entry.id === placement.item_id);
     if (!placement || !item) return null;
     const points = polygons(item.shape, placement.rotation_deg, placement.x, placement.y).flat();
-    return pointBounds(points);
+    return points.length ? pointBounds(points) : null;
   }
 
   private dimensionMarkup(): string {
@@ -574,13 +668,13 @@ export class CadWorkspace {
   private containerClearanceMarkup(): string {
     const distance = this.problem.clearance.item_to_boundary;
     if (!distance) return "";
-    return this.problem.container.parts.flatMap((part) => polygons(part.shape, part.rotation_deg, part.translation.x, part.translation.y).map((polygon) => `<path class="cad-clearance" d="${path(offsetPolygon(polygon, part.operation === "add" ? -distance : distance))}"/>`)).join("");
+    return this.resolved.container.map((polygon) => `<path class="cad-clearance" d="${path(offsetPolygon(polygon, contourArea(polygon) >= 0 ? -distance : distance))}"/>`).join("");
   }
 
   private exclusionClearanceMarkup(): string {
-    return this.problem.exclusions.flatMap((entry) => polygons(entry.shape).map((polygon) => {
+    return this.problem.exclusions.flatMap((entry) => (this.resolved.exclusions.find((geometry) => geometry.id === entry.id)?.polygons ?? []).map((polygon) => {
       const distance = Math.max(this.problem.clearance.item_to_exclusion, entry.clearance);
-      return distance ? `<path class="cad-clearance danger" d="${path(offsetPolygon(polygon, distance))}"/>` : "";
+      return distance ? `<path class="cad-clearance danger" d="${path(offsetPolygon(polygon, contourArea(polygon) >= 0 ? distance : -distance))}"/>` : "";
     })).join("");
   }
 
@@ -589,8 +683,14 @@ export class CadWorkspace {
     const gap = Math.max(container.width * .08, 2);
     let top = container.maxY;
     return this.problem.items.map((item) => {
-      const local = polygons(item.shape);
-      const bounds = pointBounds(local.flat());
+      const local = this.resolved.items.find((geometry) => geometry.id === item.id)?.polygons ?? [];
+      const sourceLocal = sourcePartPolygons(item.shape);
+      const localPoints = local.flat();
+      if (!localPoints.length) {
+        const emptyBounds = { minX: container.maxX + gap, minY: top, maxX: container.maxX + gap, maxY: top, width: 0, height: 0 };
+        return { polygons: [], sourcePolygons: [], bounds: emptyBounds };
+      }
+      const bounds = pointBounds(localPoints);
       let offset = this.sampleOffsets.get(item.id);
       if (!offset) {
         offset = { x: container.maxX + gap - bounds.minX, y: top - bounds.maxY };
@@ -599,9 +699,10 @@ export class CadWorkspace {
       const tx = offset.x;
       const ty = offset.y;
       const transformed = local.map((polygon) => polygon.map((point) => ({ x: point.x + tx, y: point.y + ty })));
+      const sourcePolygons = sourceLocal.map((partPolygons) => partPolygons.map((polygon) => polygon.map((point) => ({ x: point.x + tx, y: point.y + ty }))));
       const resultBounds = pointBounds(transformed.flat());
       top = resultBounds.minY - Math.max(resultBounds.height * .55, 1.5);
-      return { polygons: transformed, bounds: resultBounds };
+      return { polygons: transformed, sourcePolygons, bounds: resultBounds };
     });
   }
 
@@ -619,9 +720,7 @@ export class CadWorkspace {
       return;
     }
     if (selection.kind === "exclusion") {
-      const source = original.exclusions[selection.index]?.primitive;
-      const target = this.state.exclusions[selection.index]?.primitive;
-      if (source && target) { target.x = round(source.x + dx); target.y = round(source.y + dy); }
+      moveParts(original.exclusions[selection.index]?.parts, this.state.exclusions[selection.index]?.parts, dx, dy);
       return;
     }
     const source = original.items[selection.index];
@@ -649,9 +748,7 @@ export class CadWorkspace {
       return;
     }
     if (selection.kind === "exclusion") {
-      const source = original.exclusions[selection.index]?.primitive;
-      const target = this.state.exclusions[selection.index]?.primitive;
-      if (source && target) target.rotation = round(source.rotation + delta, 1);
+      rotateParts(original.exclusions[selection.index]?.parts, this.state.exclusions[selection.index]?.parts, definitionGeometryCenter(original, selection), delta);
       return;
     }
     const source = original.items[selection.index];
@@ -685,8 +782,7 @@ export class CadWorkspace {
       return;
     }
     if (selection.kind === "exclusion") {
-      const source = original.exclusions[selection.index]?.primitive, target = this.state.exclusions[selection.index]?.primitive;
-      if (source && target) { copyPrimitiveGeometry(target, source); scalePrimitiveGeometry(target, factor); }
+      scaleParts(original.exclusions[selection.index]?.parts, this.state.exclusions[selection.index]?.parts, definitionGeometryCenter(original, selection), factor);
       return;
     }
     const source = original.items[selection.index], target = this.state.items[selection.index];
@@ -721,12 +817,59 @@ export class CadWorkspace {
   }
 }
 
-interface ItemSample { polygons: Point[][]; bounds: Bounds }
+interface ItemSample { polygons: Point[][]; sourcePolygons: Point[][][]; bounds: Bounds }
 
 function primitiveFor(state: EditorState, selection: Exclude<CadSelection, { kind: "placement" }>, partIndex: number): PrimitiveEditor | null {
   if (selection.kind === "container") return state.containerParts[selection.index]?.primitive ?? null;
-  if (selection.kind === "exclusion") return state.exclusions[selection.index]?.primitive ?? null;
+  if (selection.kind === "exclusion") return state.exclusions[selection.index]?.parts[partIndex] ?? null;
   return state.items[selection.index]?.parts[partIndex] ?? null;
+}
+
+function definitionParts(state: EditorState, selection: Exclude<CadSelection, { kind: "placement" }>): PrimitiveEditor[] | undefined {
+  if (selection.kind === "container") return state.containerParts.map((entry) => entry.primitive);
+  if (selection.kind === "exclusion") return state.exclusions[selection.index]?.parts;
+  return state.items[selection.index]?.parts;
+}
+
+function definitionGeometryCenter(state: EditorState, selection: Exclude<CadSelection, { kind: "placement" }>): Point {
+  const parts = definitionParts(state, selection) ?? [], positions = resolveEditorTranslations(parts);
+  const points = parts.flatMap((part) => shapePoints(primitiveShape(part)).map((point) => {
+    const position = positions.get(part.id) ?? { x: part.x, y: part.y };
+    return transformPoint(point, part.rotation, position.x, position.y);
+  }));
+  if (!points.length) return { x: 0, y: 0 };
+  const bounds = pointBounds(points);
+  return { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2 };
+}
+
+function moveParts(source: PrimitiveEditor[] | undefined, target: PrimitiveEditor[] | undefined, dx: number, dy: number): void {
+  if (!source || !target) return;
+  target.forEach((part, index) => { const before = source[index]; if (before && !before.snap) { part.x = round(before.x + dx); part.y = round(before.y + dy); } });
+}
+
+function rotateParts(source: PrimitiveEditor[] | undefined, target: PrimitiveEditor[] | undefined, center: Point, delta: number): void {
+  if (!source || !target) return;
+  const radians = delta * Math.PI / 180;
+  target.forEach((part, index) => {
+    const before = source[index]; if (!before) return;
+    part.rotation = round(before.rotation + delta, 1);
+    if (before.snap) part.snap!.offset = rotateVector(before.snap.offset, delta);
+    else {
+      const x = before.x - center.x, y = before.y - center.y;
+      part.x = round(center.x + x * Math.cos(radians) - y * Math.sin(radians));
+      part.y = round(center.y + x * Math.sin(radians) + y * Math.cos(radians));
+    }
+  });
+}
+
+function scaleParts(source: PrimitiveEditor[] | undefined, target: PrimitiveEditor[] | undefined, center: Point, factor: number): void {
+  if (!source || !target) return;
+  target.forEach((part, index) => {
+    const before = source[index]; if (!before) return;
+    copyPrimitiveGeometry(part, before); scalePrimitiveGeometry(part, factor);
+    if (before.snap) part.snap!.offset = { x: round(before.snap.offset.x * factor), y: round(before.snap.offset.y * factor) };
+    else { part.x = round(center.x + (before.x - center.x) * factor); part.y = round(center.y + (before.y - center.y) * factor); }
+  });
 }
 
 function itemGeometryCenter(state: EditorState, itemIndex: number): Point {
@@ -805,6 +948,16 @@ function polygons(shape: Shape, rotation = 0, x = 0, y = 0): Point[][] {
   return [shapePoints(shape).map((point) => transformPoint(point, rotation, x, y))];
 }
 
+function sourcePartPolygons(shape: Shape): Point[][][] {
+  if (shape.kind !== "compound") return [polygons(shape)];
+  const translations = resolveShapePartTranslations(shape.parts);
+  return shape.parts.map((part, index) => polygons(part.shape, part.rotation_deg, translations[index].x, translations[index].y));
+}
+
+function transformPolygons(input: Point[][], rotation: number, x: number, y: number): Point[][] {
+  return input.map((polygon) => polygon.map((point) => transformPoint(point, rotation, x, y)));
+}
+
 function inverseTransformPoint(point: Point, rotation: number, x: number, y: number): Point {
   const radians = -rotation * Math.PI / 180;
   const dx = point.x - x, dy = point.y - y;
@@ -843,6 +996,16 @@ function pointBounds(points: Point[]): Bounds {
 
 function path(points: Point[]): string {
   return points.map((point, index) => `${index ? "L" : "M"}${round(point.x, 4)},${round(-point.y, 4)}`).join(" ") + " Z";
+}
+
+function compoundPath(polygons: Point[][]): string { return polygons.map(path).join(" "); }
+
+function partColor(part: PrimitiveEditor | undefined, fallback: string): string {
+  return part?.color && /^#[0-9a-f]{6}$/i.test(part.color) ? part.color : fallback;
+}
+
+function contourArea(points: Point[]): number {
+  return points.reduce((sum, point, index) => { const next = points[(index + 1) % points.length]; return sum + point.x * next.y - next.x * point.y; }, 0);
 }
 
 function gridMarkup(view: View): string {

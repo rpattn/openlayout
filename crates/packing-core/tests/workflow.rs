@@ -8,6 +8,7 @@ fn container(shape: Shape) -> Container {
             shape,
             translation: Point::default(),
             rotation_deg: 0.0,
+            snap: None,
         }],
     }
 }
@@ -60,6 +61,42 @@ fn options() -> SolveOptions {
         max_search_states: None,
         candidate_generation_density: None,
     }
+}
+
+#[test]
+fn container_snaps_and_resolved_boolean_geometry_follow_rotation() {
+    let mut problem = rectangle_problem(4.0, 2.0, 1.0, 1.0);
+    problem.container.parts.push(RegionPart {
+        id: "joined".into(),
+        operation: RegionOperation::Add,
+        shape: Shape::Rectangle {
+            width: 2.0,
+            height: 2.0,
+        },
+        translation: Point { x: 99.0, y: 99.0 },
+        rotation_deg: 0.0,
+        snap: Some(PartSnap {
+            target_part: 0,
+            own_anchor: ShapeAnchor::Left,
+            target_anchor: ShapeAnchor::Right,
+            offset: Point { x: -1.0, y: 0.0 },
+        }),
+    });
+
+    let geometry = resolve_problem_geometry(&problem);
+    assert_eq!(geometry.container.len(), 1);
+    let xs: Vec<_> = geometry.container[0].iter().map(|point| point.x).collect();
+    assert!((xs.iter().copied().fold(f64::INFINITY, f64::min) + 2.0).abs() < 1e-7);
+    assert!((xs.iter().copied().fold(f64::NEG_INFINITY, f64::max) - 3.0).abs() < 1e-7);
+
+    problem.container.parts[0].rotation_deg = 90.0;
+    problem.container.parts[1].rotation_deg = 90.0;
+    problem.container.parts[1].snap.as_mut().unwrap().offset = Point { x: 0.0, y: -1.0 };
+    let rotated = resolve_problem_geometry(&problem);
+    assert_eq!(rotated.container.len(), 1);
+    let ys: Vec<_> = rotated.container[0].iter().map(|point| point.y).collect();
+    assert!((ys.iter().copied().fold(f64::INFINITY, f64::min) + 2.0).abs() < 1e-7);
+    assert!((ys.iter().copied().fold(f64::NEG_INFINITY, f64::max) - 3.0).abs() < 1e-7);
 }
 
 #[test]
@@ -652,6 +689,7 @@ fn boolean_container_holes_and_disconnected_islands_are_enforced() {
             },
             translation: Point { x: -4.0, y: 0.0 },
             rotation_deg: 0.0,
+            snap: None,
         },
         RegionPart {
             id: "right".into(),
@@ -662,6 +700,7 @@ fn boolean_container_holes_and_disconnected_islands_are_enforced() {
             },
             translation: Point { x: 4.0, y: 0.0 },
             rotation_deg: 0.0,
+            snap: None,
         },
         RegionPart {
             id: "hole".into(),
@@ -672,6 +711,7 @@ fn boolean_container_holes_and_disconnected_islands_are_enforced() {
             },
             translation: Point { x: -4.0, y: 0.0 },
             rotation_deg: 0.0,
+            snap: None,
         },
     ];
     let prepared = prepare_problem(&problem).unwrap();
@@ -720,6 +760,7 @@ fn adaptive_rotation_finds_better_orthogonal_and_edge_aligned_layouts() {
         },
         translation: Point::default(),
         rotation_deg: 23.0,
+        snap: None,
     };
     sloped.items[0].rotation_policy = RotationPolicy::Continuous {
         min_deg: 0.0,
@@ -865,6 +906,7 @@ fn learned_decomposition_fills_offset_disconnected_regions() {
             },
             translation: Point { x: -3.0, y: 0.0 },
             rotation_deg: 0.0,
+            snap: None,
         },
         RegionPart {
             id: "right".into(),
@@ -875,6 +917,7 @@ fn learned_decomposition_fills_offset_disconnected_regions() {
             },
             translation: Point { x: 3.25, y: 0.0 },
             rotation_deg: 0.0,
+            snap: None,
         },
     ];
 
@@ -918,6 +961,7 @@ fn capsule_quality_and_studio_twenty_item_witness_are_validated() {
                 },
                 translation: Point { x: 15.0, y: 9.0 },
                 rotation_deg: 0.0,
+                snap: None,
             }],
         },
         exclusions: vec![Exclusion {

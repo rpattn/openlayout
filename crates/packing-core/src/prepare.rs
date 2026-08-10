@@ -42,7 +42,7 @@ pub fn prepare_problem(problem: &PackingProblem) -> Result<PreparedProblem, Pack
     let exclusions = problem
         .exclusions
         .iter()
-        .map(|entry| shape_to_polygons(&entry.shape))
+        .map(|entry| shape_to_polygons(&entry.shape).map(|geometry| union_set(&geometry)))
         .collect::<Result<Vec<_>, _>>()?;
     let container_contacts = boundary_contacts(&container);
     let exclusion_contacts = exclusions.iter().flat_map(boundary_contacts).collect();

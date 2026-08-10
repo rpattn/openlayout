@@ -11,7 +11,7 @@ import type {
 } from "./types";
 
 export const defaultState = (): EditorState => ({
-  containerParts: [{ id: "stock", operation: "add", primitive: { id: "container-boundary", kind: "polygon", vertices: [
+  containerParts: [{ id: "stock", operation: "add", primitive: { id: "container-boundary", kind: "polygon", color: "#526b82", vertices: [
     { x: -15, y: -9 }, { x: 15, y: -9 }, { x: 15, y: 9 },
     { x: 6, y: 9 }, { x: 6, y: 6 }, { x: -15, y: 6 },
   ], x: 15, y: 9, rotation: 0 } }],
@@ -24,15 +24,15 @@ export const defaultState = (): EditorState => ({
     minRotation: 0,
     maxRotation: 360,
     parts: [
-      { id: "body", kind: "rectangle", width: 4, height: 2.4, x: 0, y: 0, rotation: 0 },
-      { id: "end-left", kind: "circle", radius: 1.1, segments: 28, x: -2, y: 0, rotation: 0, snap: { targetId: "body", ownAnchor: "center", targetAnchor: "left", offset: { x: 0, y: 0 } } },
-      { id: "end-right", kind: "circle", radius: 1.1, segments: 28, x: 2, y: 0, rotation: 0, snap: { targetId: "body", ownAnchor: "center", targetAnchor: "right", offset: { x: 0, y: 0 } } },
+      { id: "body", kind: "rectangle", color: "#51c6a4", width: 4, height: 2.4, x: 0, y: 0, rotation: 0 },
+      { id: "end-left", kind: "circle", color: "#7ba4f8", radius: 1.1, segments: 28, x: -2, y: 0, rotation: 0, snap: { targetId: "body", ownAnchor: "center", targetAnchor: "left", offset: { x: 0, y: 0 } } },
+      { id: "end-right", kind: "circle", color: "#7ba4f8", radius: 1.1, segments: 28, x: 2, y: 0, rotation: 0, snap: { targetId: "body", ownAnchor: "center", targetAnchor: "right", offset: { x: 0, y: 0 } } },
     ],
   }],
   exclusions: [{
     id: "exclusion-a",
     clearance: 0.25,
-    primitive: { id: "exclusion-shape-a", kind: "circle", radius: 2.1, segments: 32, x: 15, y: 8, rotation: 0 },
+    parts: [{ id: "exclusion-shape-a", kind: "circle", color: "#ee716f", radius: 2.1, segments: 32, x: 15, y: 8, rotation: 0 }],
   }],
   fixedPlacements: [],
   clearance: { item_to_item: 0.35, item_to_boundary: 0.3, item_to_exclusion: 0.25 },
@@ -61,14 +61,20 @@ export function toProblem(state: EditorState): PackingProblem {
   const containerTranslations = resolveEditorTranslations(state.containerParts.map((entry) => entry.primitive));
   return {
     schema_version: 2,
-    container: { parts: state.containerParts.map((entry) => ({
+    container: { parts: state.containerParts.map((entry, _index, entries) => ({
       id: entry.id, operation: entry.operation, shape: primitiveShape(entry.primitive),
       translation: containerTranslations.get(entry.primitive.id) ?? { x: entry.primitive.x, y: entry.primitive.y }, rotation_deg: entry.primitive.rotation,
+      snap: entry.primitive.snap && entries.some((target) => target.primitive.id === entry.primitive.snap!.targetId) ? {
+        target_part: entries.findIndex((target) => target.primitive.id === entry.primitive.snap!.targetId),
+        own_anchor: entry.primitive.snap.ownAnchor,
+        target_anchor: entry.primitive.snap.targetAnchor,
+        offset: entry.primitive.snap.offset,
+      } : null,
     })) },
     exclusions: state.exclusions.map((entry) => ({
       id: entry.id,
       clearance: entry.clearance,
-      shape: transformedShape(entry.primitive),
+      shape: compoundShape(entry.parts),
     })),
     items: state.items.map((item) => ({
       id: item.id,
@@ -186,12 +192,13 @@ export function parseNumbers(value: string): number[] {
 
 export function makePrimitive(kind: PrimitiveEditor["kind"]): PrimitiveEditor {
   const id = nextPartId();
+  const base = { id, x: 0, y: 0, rotation: 0, color: "#51c6a4" };
   switch (kind) {
-    case "rectangle": return { id, kind, width: 4, height: 2, x: 0, y: 0, rotation: 0 };
-    case "triangle": return { id, kind, base: 3, height: 3, x: 0, y: 0, rotation: 0 };
-    case "circle": return { id, kind, radius: 1.5, segments: 28, x: 0, y: 0, rotation: 0 };
-    case "polygon": return { id, kind, vertices: [{ x: -2, y: -1 }, { x: 2, y: -1 }, { x: 0, y: 2 }], x: 0, y: 0, rotation: 0 };
-    case "bezier": return { id, kind, knots: defaultBezierKnots(), segments: 12, x: 0, y: 0, rotation: 0 };
+    case "rectangle": return { ...base, kind, width: 4, height: 2 };
+    case "triangle": return { ...base, kind, base: 3, height: 3 };
+    case "circle": return { ...base, kind, radius: 1.5, segments: 28 };
+    case "polygon": return { ...base, kind, vertices: [{ x: -2, y: -1 }, { x: 2, y: -1 }, { x: 0, y: 2 }] };
+    case "bezier": return { ...base, kind, knots: defaultBezierKnots(), segments: 12 };
   }
 }
 
@@ -201,6 +208,13 @@ export function fromProblem(problem: PackingProblem): EditorState {
     id: part.id, operation: part.operation,
     primitive: shapeToPrimitive(part.shape, part.translation.x, part.translation.y, part.rotation_deg, `container-${part.id}`),
   }));
+  const containerPrimitiveIds = state.containerParts.map((entry) => entry.primitive.id);
+  problem.container.parts.forEach((part, index) => {
+    if (part.snap && containerPrimitiveIds[part.snap.target_part]) state.containerParts[index].primitive.snap = {
+      targetId: containerPrimitiveIds[part.snap.target_part], ownAnchor: part.snap.own_anchor,
+      targetAnchor: part.snap.target_anchor, offset: part.snap.offset,
+    };
+  });
   state.items = problem.items.map((item) => ({
     id: item.id,
     quantity: item.quantity,
@@ -216,11 +230,15 @@ export function fromProblem(problem: PackingProblem): EditorState {
   state.exclusions = problem.exclusions.map((entry) => ({
     id: entry.id,
     clearance: entry.clearance,
-    primitive: shapeToPrimitive(entry.shape, 0, 0, 0),
+    parts: entry.shape.kind === "compound" ? fromShapeParts(entry.shape.parts) : [shapeToPrimitive(entry.shape, 0, 0, 0)],
   }));
   state.fixedPlacements = problem.fixed_placements;
   state.clearance = problem.clearance;
   return state;
+}
+
+function compoundShape(parts: PrimitiveEditor[]): Shape {
+  return { kind: "compound", parts: parts.map((part) => toShapePart(part, parts)) };
 }
 
 function shapeToPrimitive(shape: Shape, x: number, y: number, rotation: number, id = nextPartId()): PrimitiveEditor {

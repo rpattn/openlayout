@@ -29,7 +29,9 @@ export interface PackingProblem {
 }
 
 export type RegionOperation = "add" | "subtract";
-export interface RegionPart { id: string; operation: RegionOperation; shape: Shape; translation: Point; rotation_deg: number }
+export interface RegionPart { id: string; operation: RegionOperation; shape: Shape; translation: Point; rotation_deg: number; snap?: PartSnap | null }
+export interface NamedResolvedGeometry { id: string; polygons: Point[][] }
+export interface ResolvedProblemGeometry { container: Point[][]; items: NamedResolvedGeometry[]; exclusions: NamedResolvedGeometry[] }
 export type RotationCoupling = "independent" | "shared_per_item";
 export type RotationPolicy =
   | { kind: "discrete"; angles_deg: number[]; coupling: RotationCoupling }
@@ -173,7 +175,7 @@ export interface SensitivityResult {
 }
 
 export interface EditorSnap { targetId: string; ownAnchor: AnchorName; targetAnchor: AnchorName; offset: Point }
-interface PrimitiveBase { id: string; x: number; y: number; rotation: number; snap?: EditorSnap }
+interface PrimitiveBase { id: string; x: number; y: number; rotation: number; color?: string; snap?: EditorSnap }
 export type PrimitiveEditor = PrimitiveBase & (
   | { kind: "rectangle"; width: number; height: number }
   | { kind: "triangle"; base: number; height: number }
@@ -196,7 +198,7 @@ export interface EditorItem {
 export interface EditorExclusion {
   id: string;
   clearance: number;
-  primitive: PrimitiveEditor;
+  parts: PrimitiveEditor[];
 }
 
 export interface EditorRegion {

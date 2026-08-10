@@ -11,6 +11,7 @@ export const packingengine_solve_clearance_continuation_with_progress: (a: numbe
 export const packingengine_solve_direct_with_progress: (a: number, b: number, c: number, d: number, e: number, f: any) => [number, number, number, number];
 export const packingengine_solve_with_progress: (a: number, b: number, c: number, d: number, e: number, f: any) => [number, number, number, number];
 export const packingengine_validate: (a: number, b: number, c: number) => [number, number, number, number];
+export const resolved_geometry: (a: number, b: number) => [number, number, number, number];
 export const run_sensitivity: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const solve_problem: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const validate_problem: (a: number, b: number) => [number, number, number, number];

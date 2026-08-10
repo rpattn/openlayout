@@ -75,7 +75,7 @@ pub fn validate_problem(problem: &PackingProblem) -> Result<(), PackingError> {
                 "exclusion clearance must be finite and non-negative",
             ));
         }
-        let geometry = shape_to_polygons(&exclusion.shape)?;
+        let geometry = union_set(&shape_to_polygons(&exclusion.shape)?);
         if !set_inside(&geometry, &container, 0.0) {
             return Err(PackingError::geometry(format!(
                 "exclusion '{}' is not inside the container",

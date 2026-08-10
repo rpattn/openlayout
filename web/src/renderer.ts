@@ -1,5 +1,6 @@
-import { shapePoints, transformPoint } from "./problem";
-import type { AnchorName, PackingProblem, Placement, Point, SensitivityResult, Shape, ShapePart } from "./types";
+import { transformPoint } from "./problem";
+import { resolveGeometry } from "./geometry-resolver";
+import type { PackingProblem, Placement, Point, SensitivityResult } from "./types";
 
 const ITEM_COLORS = ["#4fc3a1", "#f4b860", "#7aa2f7", "#d98adf", "#ef6f6c", "#94c973"];
 export interface LayoutDisplayOptions { dimensions?: boolean; clearance?: boolean }
@@ -7,36 +8,31 @@ export interface LayoutDisplayOptions { dimensions?: boolean; clearance?: boolea
 export function renderLayout(canvas: HTMLCanvasElement, problem: PackingProblem, placements: Placement[] = [], display: LayoutDisplayOptions = {}): void {
   const context = setup(canvas);
   const theme = canvasTheme();
-  const regionPolygons = problem.container.parts.map((part) => ({
-    operation: part.operation,
-    points: polygons(part.shape, part.rotation_deg, part.translation.x, part.translation.y)[0] ?? [],
-  })).filter((entry) => entry.points.length);
+  const geometry = resolveGeometry(problem), regionPolygons = geometry.container;
+  context.fillStyle = theme.canvas;
+  context.fillRect(0, 0, canvas.width, canvas.height);
   if (!regionPolygons.length) return;
-  const bounds = pointBounds(regionPolygons.flatMap((entry) => entry.points));
+  const bounds = pointBounds(regionPolygons.flat());
   const padding = Math.max(bounds.width, bounds.height) * 0.08 + 1;
   const viewport = makeViewport(canvas, bounds, padding);
 
-  context.fillStyle = theme.canvas;
-  context.fillRect(0, 0, canvas.width, canvas.height);
   drawGrid(context, viewport);
-  for (const region of regionPolygons.filter((entry) => entry.operation === "add")) {
-    drawPolygon(context, region.points, viewport, theme.region, theme.muted, 2);
-  }
-  for (const region of regionPolygons.filter((entry) => entry.operation === "subtract")) {
-    drawPolygon(context, region.points, viewport, theme.canvas, theme.danger, 1.5);
-    hatchPolygon(context, region.points, viewport);
-  }
-  if (display.dimensions) regionPolygons.forEach((region) => drawDimensions(context, region.points, viewport));
+  drawPolygonSet(context, regionPolygons, viewport, theme.region, theme.muted, 2);
+  if (display.dimensions) drawDimensions(context, regionPolygons.flat(), viewport);
   if (display.clearance && problem.clearance.item_to_boundary > 0) regionPolygons.forEach((region) =>
-    drawDashedPolygon(context, offsetPolygon(region.points, region.operation === "add" ? -problem.clearance.item_to_boundary : problem.clearance.item_to_boundary), viewport, theme.muted));
+    drawDashedPolygon(context, offsetPolygon(region, contourArea(region) >= 0 ? -problem.clearance.item_to_boundary : problem.clearance.item_to_boundary), viewport, theme.muted));
 
   for (const exclusion of problem.exclusions) {
-    for (const polygon of polygons(exclusion.shape)) {
-      if (display.clearance) drawDashedPolygon(context, offsetPolygon(polygon, Math.max(problem.clearance.item_to_exclusion, exclusion.clearance)), viewport, theme.danger);
-      drawPolygon(context, polygon, viewport, theme.dangerFill, theme.danger, 1.5);
-      hatchPolygon(context, polygon, viewport);
+    const exclusionPolygons = geometry.exclusions.find((entry) => entry.id === exclusion.id)?.polygons ?? [];
+    for (const polygon of exclusionPolygons) {
+      if (display.clearance) {
+        const distance = Math.max(problem.clearance.item_to_exclusion, exclusion.clearance);
+        drawDashedPolygon(context, offsetPolygon(polygon, contourArea(polygon) >= 0 ? distance : -distance), viewport, theme.danger);
+      }
     }
-    if (display.dimensions) drawDimensions(context, polygons(exclusion.shape).flat(), viewport);
+    drawPolygonSet(context, exclusionPolygons, viewport, theme.dangerFill, theme.danger, 1.5);
+    hatchPolygonSet(context, exclusionPolygons, viewport);
+    if (display.dimensions) drawDimensions(context, exclusionPolygons.flat(), viewport);
   }
 
   const itemIndex = new Map(problem.items.map((item, index) => [item.id, index]));
@@ -45,11 +41,12 @@ export function renderLayout(canvas: HTMLCanvasElement, problem: PackingProblem,
     const item = problem.items.find((entry) => entry.id === placement.item_id);
     if (!item) continue;
     const color = ITEM_COLORS[(itemIndex.get(item.id) ?? 0) % ITEM_COLORS.length];
-    const placedPolygons = polygons(item.shape, placement.rotation_deg, placement.x, placement.y);
+    const local = geometry.items.find((entry) => entry.id === item.id)?.polygons ?? [];
+    const placedPolygons = local.map((polygon) => polygon.map((point) => transformPoint(point, placement.rotation_deg, placement.x, placement.y)));
     for (const polygon of placedPolygons) {
-      if (display.clearance && problem.clearance.item_to_item > 0) drawDashedPolygon(context, offsetPolygon(polygon, problem.clearance.item_to_item / 2), viewport, color);
-      drawPolygon(context, polygon, viewport, `${color}b8`, placement.fixed ? "#fff4d6" : color, placement.fixed ? 2.5 : 1.1);
+      if (display.clearance && problem.clearance.item_to_item > 0) drawDashedPolygon(context, offsetPolygon(polygon, (contourArea(polygon) >= 0 ? 1 : -1) * problem.clearance.item_to_item / 2), viewport, color);
     }
+    drawPolygonSet(context, placedPolygons, viewport, `${color}b8`, placement.fixed ? "#fff4d6" : color, placement.fixed ? 2.5 : 1.1);
     if (display.dimensions && !dimensionedItems.has(item.id)) { drawDimensions(context, placedPolygons.flat(), viewport); dimensionedItems.add(item.id); }
   }
 }
@@ -119,75 +116,13 @@ export function sensitivityValueAt(canvas: HTMLCanvasElement, result: Sensitivit
   return result.evaluations.reduce((best, entry) => Math.abs(entry.value - target) < Math.abs(best.value - target) ? entry : best).value;
 }
 
-export function renderShapePreview(canvas: HTMLCanvasElement, shape: Shape, options: { transparent?: boolean; origin?: boolean } = {}): void {
-  const context = setup(canvas);
-  const theme = canvasTheme();
+export function renderPolygonsPreview(canvas: HTMLCanvasElement, shapePolygons: Point[][], options: { transparent?: boolean } = {}): void {
+  const context = setup(canvas), theme = canvasTheme();
   if (options.transparent) context.clearRect(0, 0, canvas.width, canvas.height);
   else { context.fillStyle = theme.canvas; context.fillRect(0, 0, canvas.width, canvas.height); }
-  const shapePolygons = polygons(shape);
-  const points = shapePolygons.flat();
-  if (!points.length) return;
-  const bounds = pointBounds(points);
-  const padding = Math.max(bounds.width, bounds.height) * 0.18 + 0.25;
-  const viewport = makeViewport(canvas, bounds, padding);
-  shapePolygons.forEach((polygon, index) => {
-    const color = ITEM_COLORS[index % ITEM_COLORS.length];
-    drawPolygon(context, polygon, viewport, `${color}73`, color, 1.2);
-  });
-  if (options.origin !== false) {
-    const origin = screen({ x: 0, y: 0 }, viewport);
-    context.strokeStyle = theme.line;
-    context.lineWidth = devicePixelRatio;
-    context.beginPath(); context.moveTo(origin.x - 4 * devicePixelRatio, origin.y); context.lineTo(origin.x + 4 * devicePixelRatio, origin.y); context.moveTo(origin.x, origin.y - 4 * devicePixelRatio); context.lineTo(origin.x, origin.y + 4 * devicePixelRatio); context.stroke();
-  }
-}
-
-function polygons(shape: Shape, rotation = 0, x = 0, y = 0): Point[][] {
-  if (shape.kind === "compound") {
-    const translations = resolveShapePartTranslations(shape.parts);
-    return shape.parts.flatMap((part, index) => polygons(part.shape, part.rotation_deg, translations[index].x, translations[index].y)
-      .map((polygon) => polygon.map((point) => transformPoint(point, rotation, x, y))));
-  }
-  return [shapePoints(shape).map((point) => transformPoint(point, rotation, x, y))];
-}
-
-function resolveShapePartTranslations(parts: ShapePart[]): Point[] {
-  const resolved: Array<Point | undefined> = Array(parts.length);
-  const active = new Set<number>();
-  const resolve = (index: number): Point => {
-    if (resolved[index]) return resolved[index]!;
-    const part = parts[index];
-    if (!part.snap || !parts[part.snap.target_part] || active.has(index)) return part.translation;
-    active.add(index);
-    const targetPosition = resolve(part.snap.target_part);
-    const own = shapeAnchor(part.shape, part.rotation_deg, part.snap.own_anchor);
-    const target = shapeAnchor(parts[part.snap.target_part].shape, parts[part.snap.target_part].rotation_deg, part.snap.target_anchor);
-    target.x += targetPosition.x; target.y += targetPosition.y;
-    const position = { x: target.x - own.x + part.snap.offset.x, y: target.y - own.y + part.snap.offset.y };
-    active.delete(index); resolved[index] = position; return position;
-  };
-  return parts.map((_, index) => resolve(index));
-}
-
-function shapeAnchor(shape: Shape, rotation: number, anchor: AnchorName): Point {
-  const local = boundsAnchor(polygonBounds(polygons(shape).flat()), anchor);
-  return transformPoint(local, rotation, 0, 0);
-}
-
-function polygonBounds(points: Point[]) {
-  const xs = points.map((point) => point.x), ys = points.map((point) => point.y);
-  return { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
-}
-
-function boundsAnchor(bounds: ReturnType<typeof polygonBounds>, anchor: AnchorName): Point {
-  const centerX = (bounds.minX + bounds.maxX) / 2, centerY = (bounds.minY + bounds.maxY) / 2;
-  const anchors: Record<AnchorName, Point> = {
-    center: { x: centerX, y: centerY }, top: { x: centerX, y: bounds.maxY }, bottom: { x: centerX, y: bounds.minY },
-    left: { x: bounds.minX, y: centerY }, right: { x: bounds.maxX, y: centerY },
-    top_left: { x: bounds.minX, y: bounds.maxY }, top_right: { x: bounds.maxX, y: bounds.maxY },
-    bottom_left: { x: bounds.minX, y: bounds.minY }, bottom_right: { x: bounds.maxX, y: bounds.minY },
-  };
-  return anchors[anchor];
+  const points = shapePolygons.flat(); if (!points.length) return;
+  const bounds = pointBounds(points), padding = Math.max(bounds.width, bounds.height) * .18 + .25;
+  drawPolygonSet(context, shapePolygons, makeViewport(canvas, bounds, padding), `${ITEM_COLORS[0]}73`, ITEM_COLORS[0], 1.2);
 }
 
 function setup(canvas: HTMLCanvasElement): CanvasRenderingContext2D {
@@ -215,11 +150,14 @@ function screen(point: Point, viewport: ReturnType<typeof makeViewport>): Point 
   return { x: viewport.offsetX + point.x * viewport.scale, y: viewport.offsetY - point.y * viewport.scale };
 }
 
-function drawPolygon(context: CanvasRenderingContext2D, points: Point[], viewport: ReturnType<typeof makeViewport>, fill: string, stroke: string, width: number): void {
-  if (!points.length) return;
+function drawPolygonSet(context: CanvasRenderingContext2D, polygons: Point[][], viewport: ReturnType<typeof makeViewport>, fill: string, stroke: string, width: number): void {
+  if (!polygons.length) return;
   context.beginPath();
-  points.forEach((point, index) => { const p = screen(point, viewport); if (index === 0) context.moveTo(p.x, p.y); else context.lineTo(p.x, p.y); });
-  context.closePath(); context.fillStyle = fill; context.fill(); context.strokeStyle = stroke; context.lineWidth = width * devicePixelRatio; context.stroke();
+  polygons.forEach((points) => {
+    points.forEach((point, index) => { const p = screen(point, viewport); if (!index) context.moveTo(p.x, p.y); else context.lineTo(p.x, p.y); });
+    context.closePath();
+  });
+  context.fillStyle = fill; context.fill("evenodd"); context.strokeStyle = stroke; context.lineWidth = width * devicePixelRatio; context.stroke();
 }
 
 function drawDashedPolygon(context: CanvasRenderingContext2D, points: Point[], viewport: ReturnType<typeof makeViewport>, color: string): void {
@@ -253,6 +191,10 @@ function offsetPolygon(points: Point[], distance: number): Point[] {
   return points.map((_, index) => lineIntersection(shifted[(index + shifted.length - 1) % shifted.length], shifted[index]) ?? shifted[index].point);
 }
 
+function contourArea(points: Point[]): number {
+  return points.reduce((sum, point, index) => { const next = points[(index + 1) % points.length]; return sum + point.x * next.y - next.x * point.y; }, 0);
+}
+
 function lineIntersection(a: { point: Point; direction: Point }, b: { point: Point; direction: Point }): Point | null {
   const cross = a.direction.x * b.direction.y - a.direction.y * b.direction.x;
   if (Math.abs(cross) < 1e-9) return null;
@@ -261,14 +203,12 @@ function lineIntersection(a: { point: Point; direction: Point }, b: { point: Poi
   return { x: a.point.x + amount * a.direction.x, y: a.point.y + amount * a.direction.y };
 }
 
-function hatchPolygon(context: CanvasRenderingContext2D, points: Point[], viewport: ReturnType<typeof makeViewport>): void {
-  context.save();
-  context.beginPath();
-  points.forEach((point, index) => { const p = screen(point, viewport); if (index === 0) context.moveTo(p.x, p.y); else context.lineTo(p.x, p.y); });
-  context.closePath(); context.clip(); context.strokeStyle = "rgba(239,111,108,.45)"; context.lineWidth = devicePixelRatio;
-  for (let x = -canvasDiagonal(context.canvas); x < canvasDiagonal(context.canvas); x += 12 * devicePixelRatio) {
-    context.beginPath(); context.moveTo(x, context.canvas.height); context.lineTo(x + context.canvas.height, 0); context.stroke();
-  }
+function hatchPolygonSet(context: CanvasRenderingContext2D, polygons: Point[][], viewport: ReturnType<typeof makeViewport>): void {
+  if (!polygons.length) return;
+  context.save(); context.beginPath();
+  polygons.forEach((points) => { points.forEach((point, index) => { const p = screen(point, viewport); if (!index) context.moveTo(p.x, p.y); else context.lineTo(p.x, p.y); }); context.closePath(); });
+  context.clip("evenodd"); context.strokeStyle = "rgba(239,111,108,.45)"; context.lineWidth = devicePixelRatio;
+  for (let x = -canvasDiagonal(context.canvas); x < canvasDiagonal(context.canvas); x += 12 * devicePixelRatio) { context.beginPath(); context.moveTo(x, context.canvas.height); context.lineTo(x + context.canvas.height, 0); context.stroke(); }
   context.restore();
 }
 

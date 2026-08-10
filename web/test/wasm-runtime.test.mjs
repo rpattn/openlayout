@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { PackingEngine, initSync } from "../src/wasm/packing_wasm.js";
+import { PackingEngine, initSync, resolved_geometry } from "../src/wasm/packing_wasm.js";
 
 const wasm = readFileSync(new URL("../src/wasm/packing_wasm_bg.wasm", import.meta.url));
 initSync({ module: wasm });
@@ -36,6 +36,19 @@ const options = {
   restarts: 2,
   quality: "balanced",
 };
+
+test("Wasm exposes the authoritative unified display contours", () => {
+  const joined = structuredClone(problem);
+  joined.container.parts.push({
+    id: "joined", operation: "add", shape: { kind: "rectangle", width: 2, height: 4 },
+    translation: { x: 99, y: 99 }, rotation_deg: 0,
+    snap: { target_part: 0, own_anchor: "left", target_anchor: "right", offset: { x: -1, y: 0 } },
+  });
+  const geometry = JSON.parse(resolved_geometry(JSON.stringify(joined)));
+  assert.equal(geometry.container.length, 1);
+  assert.equal(geometry.items[0].polygons.length, 1);
+  assert.deepEqual(geometry.exclusions, []);
+});
 
 test("Wasm engine validates, streams layouts, and reuses deterministic preparation", () => {
   const engine = new PackingEngine();

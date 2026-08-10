@@ -1,7 +1,7 @@
 use js_sys::Function;
 use packing_core::{
     PackingProblem, PreparedProblem, SensitivityObserver, SensitivityProgress, SensitivityStudy,
-    SolveObserver, SolveOptions, SolveProgress, prepare_problem,
+    SolveObserver, SolveOptions, SolveProgress, prepare_problem, resolve_problem_geometry,
     run_sensitivity as core_run_sensitivity, run_sensitivity_with_observer, solve_prepared,
     solve_prepared_feasibility, solve_with_observer, solve_with_observer_clearance_continuation,
     solve_with_observer_direct, validate_problem as core_validate_problem,
@@ -240,6 +240,12 @@ pub fn solve_problem(input_json: &str, options_json: &str) -> Result<String, JsE
 #[wasm_bindgen]
 pub fn run_sensitivity(input_json: &str, study_json: &str) -> Result<String, JsError> {
     PackingEngine::new().sensitivity(input_json, study_json)
+}
+
+#[wasm_bindgen]
+pub fn resolved_geometry(input_json: &str) -> Result<String, JsError> {
+    let problem: PackingProblem = parse(input_json, "problem")?;
+    encode(&resolve_problem_geometry(&problem))
 }
 
 fn parse_options(input: &str) -> Result<SolveOptions, JsError> {

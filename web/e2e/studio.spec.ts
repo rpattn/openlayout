@@ -299,6 +299,96 @@ test("stops an active worker and starts a clean replacement", async ({ page }) =
   await expect(page.locator("#status")).toContainText("valid", { timeout: 10_000 });
 });
 
+test("uses unified silhouettes and permits empty invalid constructions", async ({ page }) => {
+  await page.goto("/");
+  const itemSilhouette = page.locator('[data-unified-geometry="item:0"]');
+  await expect(itemSilhouette).toHaveCount(1);
+  expect(((await itemSilhouette.getAttribute("d"))?.match(/M/g) ?? []).length).toBe(1);
+  await expect(page.locator('[data-cad-kind="item"]')).toHaveCount(3);
+
+  await page.getByRole("button", { name: "Constraints" }).click();
+  await expect(page.locator(".cad-library .cad-clearance.item")).not.toHaveCount(0);
+
+  await page.locator('[data-cad-select="exclusion:0"]').click();
+  await page.getByRole("button", { name: "Add circle" }).click();
+  await expect(page.locator("#item-part-select option")).toHaveCount(2);
+  await expect(page.locator("[data-snap-target]")).not.toHaveValue("");
+  await expect(page.locator('[data-unified-geometry="exclusion:0"]')).toHaveCount(1);
+
+  await page.locator('[data-object-field="clearance"]').focus();
+  await page.keyboard.press("Backspace");
+  await expect(page.locator("#item-part-select option")).toHaveCount(2);
+  await page.locator("#cad-canvas").focus();
+  await page.keyboard.press("Delete");
+  await expect(page.locator("#item-part-select option")).toHaveCount(1);
+  await page.keyboard.press("Delete");
+  await expect(page.locator("#selection-inspector")).toContainText("Empty construction");
+  await expect(page.locator('[data-cad-kind="exclusion"]')).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Delete exclusion" }).click();
+  await expect(page.locator('[data-cad-select^="exclusion:"]')).toHaveCount(0);
+  await page.locator('[data-cad-select="item:0"]').click();
+  await page.getByRole("button", { name: "Delete item" }).click();
+  await expect(page.locator('[data-cad-select^="item:"]')).toHaveCount(0);
+  await page.locator('[data-cad-select="container:0"]').click();
+  await page.getByRole("button", { name: "Delete region" }).click();
+  await expect(page.locator('[data-cad-select^="container:"]')).toHaveCount(0);
+  await expect(page.locator("#cad-canvas")).toBeVisible();
+});
+
+test("snaps by visible anchors, reassigns construction ownership, and colours parts", async ({ page }) => {
+  await page.goto("/");
+  await page.locator('[data-cad-select="item:0"]').click();
+  await page.locator("#item-part-select").selectOption("1");
+  const own = page.locator('[data-snap-own-anchor="center"]');
+  const target = page.locator('[data-snap-target-id="body"][data-snap-target-anchor="top_right"]');
+  const ownBox = await own.boundingBox(), targetBox = await target.boundingBox();
+  if (!ownBox || !targetBox) throw new Error("Visual snap anchors have no bounding boxes");
+  await page.mouse.move(ownBox.x + ownBox.width / 2, ownBox.y + ownBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(targetBox.x + targetBox.width / 2, targetBox.y + targetBox.height / 2);
+  await page.mouse.up();
+  await expect(page.locator('[data-snap-anchor="ownAnchor"]')).toHaveValue("center");
+  await expect(page.locator('[data-snap-anchor="targetAnchor"]')).toHaveValue("top_right");
+  await expect(page.locator('[data-snap-offset="x"]')).toHaveValue("0");
+
+  const moveHandle = page.locator(".cad-part-move-handle");
+  const newTarget = page.locator('[data-snap-target-id="body"][data-snap-target-anchor="bottom_left"]');
+  const moveBox = await moveHandle.boundingBox(), newTargetBox = await newTarget.boundingBox();
+  if (!moveBox || !newTargetBox) throw new Error("Part move or replacement snap target is unavailable");
+  await page.mouse.move(moveBox.x + moveBox.width / 2, moveBox.y + moveBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(newTargetBox.x + newTargetBox.width / 2, newTargetBox.y + newTargetBox.height / 2);
+  await page.mouse.up();
+  await expect(page.locator('[data-snap-anchor="ownAnchor"]')).toHaveValue("center");
+  await expect(page.locator('[data-snap-anchor="targetAnchor"]')).toHaveValue("bottom_left");
+  await expect(page.locator('[data-snap-offset="x"]')).toHaveValue("0");
+
+  await page.locator('[data-cad-select="container:0"]').click();
+  await page.getByRole("button", { name: "Add rectangle" }).click();
+  const regionOwn = page.locator('[data-snap-own-anchor="bottom_left"]');
+  const regionTarget = page.locator('[data-snap-target-id="container-boundary"][data-snap-target-anchor="top_left"]');
+  const regionOwnBox = await regionOwn.boundingBox(), regionTargetBox = await regionTarget.boundingBox();
+  if (!regionOwnBox || !regionTargetBox) throw new Error("Container snap anchors have no bounding boxes");
+  await page.mouse.move(regionOwnBox.x + regionOwnBox.width / 2, regionOwnBox.y + regionOwnBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(regionTargetBox.x + regionTargetBox.width / 2, regionTargetBox.y + regionTargetBox.height / 2);
+  await page.mouse.up();
+  await expect(page.locator('[data-snap-anchor="ownAnchor"]')).toHaveValue("bottom_left");
+  await expect(page.locator('[data-snap-anchor="targetAnchor"]')).toHaveValue("top_left");
+
+  await page.locator("[data-part-owner]").selectOption("item:0");
+  await expect(page.locator("#selection-inspector")).toContainText("PACKABLE SHAPE");
+  await expect(page.locator("#item-part-select option")).toHaveCount(4);
+  const colour = page.locator("[data-primitive-color]");
+  await colour.fill("#ff00aa");
+  await expect(page.locator("#toolbar-part-color")).toHaveValue("#ff00aa");
+  await expect(page.locator('.cad-library .cad-part-color[style*="#ff00aa"]')).toHaveCount(1);
+  await page.locator("#toolbar-part-color").fill("#00cc44");
+  await expect(page.locator("[data-primitive-color]")).toHaveValue("#00cc44");
+  await expect(page.locator('.cad-library .cad-part-color[style*="#00cc44"]')).toHaveCount(1);
+});
+
 async function configureFastSolve(page: import("@playwright/test").Page): Promise<void> {
   await openSolverSettings(page);
   await setPackingNumber(page, "max_iterations", "2000");

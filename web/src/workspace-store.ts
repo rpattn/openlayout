@@ -106,7 +106,7 @@ export class WorkspaceStore {
           version: 1,
           activeProjectId,
           theme: parsed.theme === "light" ? "light" : "dark",
-          projects: parsed.projects as LocalProject[],
+          projects: (parsed.projects as LocalProject[]).map(migrateProject),
         };
       }
     } catch {
@@ -129,6 +129,18 @@ export class WorkspaceStore {
     while (names.has(`Packing study ${index}`)) index++;
     return `Packing study ${index}`;
   }
+}
+
+function migrateProject(project: LocalProject): LocalProject {
+  const state = project.state as unknown as { containerParts?: unknown[]; items?: unknown[]; exclusions?: Array<{ primitive?: unknown; parts?: unknown[] }> };
+  state.containerParts ??= [];
+  state.items ??= [];
+  state.exclusions ??= [];
+  state.exclusions.forEach((entry) => {
+    if (!Array.isArray(entry.parts)) entry.parts = entry.primitive ? [entry.primitive] : [];
+    delete entry.primitive;
+  });
+  return project as LocalProject;
 }
 
 export class WorkspaceHistory {
