@@ -58,11 +58,12 @@ export const defaultState = (): EditorState => ({
 });
 
 export function toProblem(state: EditorState): PackingProblem {
+  const containerTranslations = resolveEditorTranslations(state.containerParts.map((entry) => entry.primitive));
   return {
     schema_version: 2,
     container: { parts: state.containerParts.map((entry) => ({
       id: entry.id, operation: entry.operation, shape: primitiveShape(entry.primitive),
-      translation: { x: entry.primitive.x, y: entry.primitive.y }, rotation_deg: entry.primitive.rotation,
+      translation: containerTranslations.get(entry.primitive.id) ?? { x: entry.primitive.x, y: entry.primitive.y }, rotation_deg: entry.primitive.rotation,
     })) },
     exclusions: state.exclusions.map((entry) => ({
       id: entry.id,

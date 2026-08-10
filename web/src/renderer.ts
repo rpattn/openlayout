@@ -119,11 +119,11 @@ export function sensitivityValueAt(canvas: HTMLCanvasElement, result: Sensitivit
   return result.evaluations.reduce((best, entry) => Math.abs(entry.value - target) < Math.abs(best.value - target) ? entry : best).value;
 }
 
-export function renderShapePreview(canvas: HTMLCanvasElement, shape: Shape): void {
+export function renderShapePreview(canvas: HTMLCanvasElement, shape: Shape, options: { transparent?: boolean; origin?: boolean } = {}): void {
   const context = setup(canvas);
   const theme = canvasTheme();
-  context.fillStyle = theme.canvas;
-  context.fillRect(0, 0, canvas.width, canvas.height);
+  if (options.transparent) context.clearRect(0, 0, canvas.width, canvas.height);
+  else { context.fillStyle = theme.canvas; context.fillRect(0, 0, canvas.width, canvas.height); }
   const shapePolygons = polygons(shape);
   const points = shapePolygons.flat();
   if (!points.length) return;
@@ -134,10 +134,12 @@ export function renderShapePreview(canvas: HTMLCanvasElement, shape: Shape): voi
     const color = ITEM_COLORS[index % ITEM_COLORS.length];
     drawPolygon(context, polygon, viewport, `${color}73`, color, 1.2);
   });
-  const origin = screen({ x: 0, y: 0 }, viewport);
-  context.strokeStyle = theme.line;
-  context.lineWidth = devicePixelRatio;
-  context.beginPath(); context.moveTo(origin.x - 4 * devicePixelRatio, origin.y); context.lineTo(origin.x + 4 * devicePixelRatio, origin.y); context.moveTo(origin.x, origin.y - 4 * devicePixelRatio); context.lineTo(origin.x, origin.y + 4 * devicePixelRatio); context.stroke();
+  if (options.origin !== false) {
+    const origin = screen({ x: 0, y: 0 }, viewport);
+    context.strokeStyle = theme.line;
+    context.lineWidth = devicePixelRatio;
+    context.beginPath(); context.moveTo(origin.x - 4 * devicePixelRatio, origin.y); context.lineTo(origin.x + 4 * devicePixelRatio, origin.y); context.moveTo(origin.x, origin.y - 4 * devicePixelRatio); context.lineTo(origin.x, origin.y + 4 * devicePixelRatio); context.stroke();
+  }
 }
 
 function polygons(shape: Shape, rotation = 0, x = 0, y = 0): Point[][] {
