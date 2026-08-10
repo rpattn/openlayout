@@ -45,6 +45,7 @@ export interface SolveOptions {
   grid_step: number;
   restarts: number;
   quality: "fast" | "balanced" | "thorough";
+  baseline_only: boolean;
   beam_width?: number | null;
   max_candidates_per_state?: number | null;
   max_search_states?: number | null;

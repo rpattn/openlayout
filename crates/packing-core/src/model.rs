@@ -245,6 +245,10 @@ pub struct SolveOptions {
     pub restarts: u32,
     #[serde(default)]
     pub quality: SolveQuality,
+    /// Stop after learned lattice/motif construction and contact completion, before the
+    /// rotation portfolio, continuation, neighbourhood, and beam phases.
+    #[serde(default)]
+    pub baseline_only: bool,
     #[serde(default)]
     pub beam_width: Option<usize>,
     #[serde(default)]
@@ -290,6 +294,7 @@ impl Default for SolveOptions {
             grid_step: default_grid_step(),
             restarts: default_restarts(),
             quality: SolveQuality::default(),
+            baseline_only: false,
             beam_width: None,
             max_candidates_per_state: None,
             max_search_states: None,

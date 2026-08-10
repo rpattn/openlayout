@@ -35,6 +35,7 @@ const options = {
   grid_step: 0.25,
   restarts: 2,
   quality: "balanced",
+  baseline_only: false,
 };
 
 test("Wasm exposes the authoritative unified display contours", () => {
@@ -71,6 +72,22 @@ test("Wasm engine validates, streams layouts, and reuses deterministic preparati
   engine.free();
 });
 
+test("Wasm baseline-only mode validates without refinement phases", () => {
+  const engine = new PackingEngine();
+  const progress = [];
+  const result = JSON.parse(engine.solve_with_progress(
+    JSON.stringify(problem),
+    JSON.stringify({ ...options, baseline_only: true }),
+    (json) => progress.push(JSON.parse(json)),
+  ));
+  assert.equal(result.packed_item_count, 6);
+  assert.equal(result.validation.valid, true);
+  assert.equal(result.statistics.explored_search_states, 0);
+  assert.equal(result.statistics.local_improvement_attempts, 0);
+  assert.deepEqual(new Set(progress.map((entry) => entry.phase)), new Set(["baseline", "validating"]));
+  engine.free();
+});
+
 test("Wasm studio defaults recover the validated 20-item layout", () => {
   const exclusion = Array.from({ length: 32 }, (_, index) => {
     const angle = Math.PI * 2 * index / 32;
@@ -104,7 +121,7 @@ test("Wasm studio defaults recover the validated 20-item layout", () => {
   };
   const studioOptions = {
     seed: 7, deterministic: true, max_iterations: 80_000, time_limit_ms: null,
-    grid_step: 0.5, restarts: 3, quality: "balanced",
+    grid_step: 0.5, restarts: 3, quality: "balanced", baseline_only: false,
   };
   const engine = new PackingEngine();
   const directProgress = [];

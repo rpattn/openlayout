@@ -56,6 +56,7 @@ fn options() -> SolveOptions {
         grid_step: 0.5,
         restarts: 2,
         quality: SolveQuality::Balanced,
+        baseline_only: false,
         beam_width: None,
         max_candidates_per_state: None,
         max_search_states: None,
@@ -335,6 +336,41 @@ fn bounded_mode_never_loses_the_greedy_lower_bound() {
     let tiny_beam = solve_prepared(&prepared, &tiny_beam_options).unwrap();
     assert!(tiny_beam.packed_item_count > tiny_fast.packed_item_count);
     assert!(tiny_beam.validation.valid);
+}
+
+#[test]
+fn baseline_only_stops_before_portfolio_and_bounded_refinement() {
+    let problem = rectangle_problem(8.0, 4.0, 2.0, 2.0);
+    let prepared = prepare_problem(&problem).unwrap();
+    let mut solve_options = options();
+    solve_options.baseline_only = true;
+    solve_options.quality = SolveQuality::Thorough;
+    let mut observer = RecordingObserver::default();
+    let result = solve_with_observer(&prepared, &solve_options, &mut observer).unwrap();
+
+    assert_eq!(result.packed_item_count, 8);
+    assert!(result.validation.valid);
+    assert_eq!(result.statistics.explored_search_states, 0);
+    assert_eq!(result.statistics.local_improvement_attempts, 0);
+    assert_eq!(result.statistics.continuation_stages, 0);
+    assert!(
+        observer
+            .progress
+            .iter()
+            .any(|entry| entry.phase == SolvePhase::Baseline)
+    );
+    assert!(
+        observer
+            .progress
+            .iter()
+            .any(|entry| entry.phase == SolvePhase::Validating)
+    );
+    assert!(
+        observer
+            .progress
+            .iter()
+            .all(|entry| matches!(entry.phase, SolvePhase::Baseline | SolvePhase::Validating))
+    );
 }
 
 #[test]

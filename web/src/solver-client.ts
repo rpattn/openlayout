@@ -129,6 +129,7 @@ export class SolverClient {
 
   private canRunClearancePortfolio(problem: PackingProblem, options: SolveOptions): boolean {
     return options.quality !== "fast"
+      && !options.baseline_only
       && options.max_iterations >= 40_000
       && problem.items.length === 1
       && problem.clearance.item_to_item > 0;

@@ -14,7 +14,7 @@ export type CadSelection =
 interface Bounds { minX: number; minY: number; maxX: number; maxY: number; width: number; height: number }
 interface View { minX: number; minY: number; width: number; height: number }
 interface Drag {
-  mode: "pan" | "placement" | "rotate" | "definition" | "definition-rotate" | "definition-scale" | "geometry" | "snap-offset" | "part-move" | "anchor-snap";
+  mode: "pan" | "marquee" | "placement" | "rotate" | "definition" | "definition-rotate" | "definition-scale" | "geometry" | "snap-offset" | "part-move" | "anchor-snap";
   startClient: Point;
   startWorld: Point;
   originalView?: View;
@@ -28,11 +28,15 @@ interface Drag {
   geometryHandle?: string;
   ownAnchor?: AnchorName;
   currentWorld?: Point;
+  additive?: boolean;
+  clickSelection?: CadSelection;
+  clickPartIndex?: number;
   moved: boolean;
 }
 
 export interface CadWorkspaceCallbacks {
-  onSelect(selection: CadSelection | null, partIndex?: number): void;
+  onSelect(selection: CadSelection | null, partIndex?: number, additive?: boolean): void;
+  onMarquee(selections: CadSelection[], additive: boolean): void;
   onDefinitionChange(selection: Exclude<CadSelection, { kind: "placement" }>, previous: EditorState): void;
   onPlacementChange(index: number): void;
 }
@@ -43,6 +47,7 @@ export class CadWorkspace {
   private resolved: ResolvedProblemGeometry;
   private placements: Placement[] = [];
   private selection: CadSelection | null = null;
+  private selections: CadSelection[] = [];
   private selectedPartIndex = 0;
   private view: View = { minX: -20, minY: -12, width: 40, height: 24 };
   private drag: Drag | null = null;
@@ -77,8 +82,9 @@ export class CadWorkspace {
     if (refit || !this.fitted) this.fit(); else this.render();
   }
 
-  setSelection(selection: CadSelection | null, partIndex = this.selectedPartIndex): void {
+  setSelection(selection: CadSelection | null, partIndex = this.selectedPartIndex, selections: CadSelection[] = selection ? [selection] : []): void {
     this.selection = selection;
+    this.selections = selections;
     this.selectedPartIndex = partIndex;
     this.render();
   }
@@ -149,11 +155,11 @@ export class CadWorkspace {
       <g class="cad-grid">${gridMarkup(this.view)}</g>
       <g class="cad-container"><defs><clipPath id="container-union-clip"><path fill-rule="evenodd" d="${compoundPath(this.resolved.container)}"/></clipPath></defs>
         ${this.problem.container.parts.map((part, index) => polygons(part.shape, part.rotation_deg, part.translation.x, part.translation.y).map((polygon) => `<path class="cad-part-color" clip-path="url(#container-union-clip)" style="fill:${partColor(this.state.containerParts[index]?.primitive, "#526b82")}" d="${path(polygon)}"/>`).join("")).join("")}
-        <path data-unified-geometry="container" class="cad-region unified ${this.selection?.kind === "container" ? "selected" : ""}" style="fill:transparent" fill-rule="evenodd" d="${compoundPath(this.resolved.container)}"/>
-        ${this.problem.container.parts.map((part, index) => polygons(part.shape, part.rotation_deg, part.translation.x, part.translation.y).map((polygon) => `<path data-cad-kind="container" data-cad-index="${index}" class="cad-source-hit ${this.selection?.kind === "container" && this.selection.index === index ? "selected" : ""}" d="${path(polygon)}"/>`).join("")).join("")}</g>
+        <path data-unified-geometry="container" class="cad-region unified ${this.selections.some((entry) => entry.kind === "container") ? "selected" : ""}" style="fill:transparent" fill-rule="evenodd" d="${compoundPath(this.resolved.container)}"/>
+        ${this.problem.container.parts.map((part, index) => polygons(part.shape, part.rotation_deg, part.translation.x, part.translation.y).map((polygon) => `<path data-cad-kind="container" data-cad-index="${index}" class="cad-source-hit ${this.isSelected({ kind: "container", index }) ? "selected" : ""}" d="${path(polygon)}"/>`).join("")).join("")}</g>
       ${this.clearance ? this.containerClearanceMarkup() : ""}
       <g class="cad-exclusions">${this.problem.exclusions.map((entry, index) => {
-        const selected = this.selection?.kind === "exclusion" && this.selection.index === index;
+        const selected = this.isSelected({ kind: "exclusion", index });
         const visible = this.resolved.exclusions.find((geometry) => geometry.id === entry.id)?.polygons ?? [];
         const sources = sourcePartPolygons(entry.shape);
         return `<defs><clipPath id="exclusion-union-clip-${index}"><path fill-rule="evenodd" d="${compoundPath(visible)}"/></clipPath></defs>${sources.map((partPolygons, partIndex) => partPolygons.map((polygon) => `<path class="cad-part-color exclusion" clip-path="url(#exclusion-union-clip-${index})" style="fill:${partColor(this.state.exclusions[index]?.parts[partIndex], "#ee716f")}" d="${path(polygon)}"/>`).join("")).join("")}<path data-unified-geometry="exclusion:${index}" class="cad-exclusion unified ${selected ? "selected" : ""}" style="fill:transparent" fill-rule="evenodd" d="${compoundPath(visible)}"/>${sources.map((partPolygons, partIndex) => partPolygons.map((polygon) => `<path data-cad-kind="exclusion" data-cad-index="${index}" data-cad-part="${partIndex}" class="cad-source-hit ${selected && this.selectedPartIndex === partIndex ? "selected" : ""}" d="${path(polygon)}"/>`).join("")).join("")}`;
@@ -162,7 +168,12 @@ export class CadWorkspace {
       <g class="cad-placements">${this.placements.map((placement, index) => this.placementMarkup(placement, index)).join("")}</g>
       <g class="cad-library">${samples.map((sample, index) => this.itemSampleMarkup(sample, index)).join("")}</g>
       ${this.dimensions ? this.dimensionMarkup() : ""}
-      ${this.selection ? this.selectionHandles(this.selection, scale) : ""}`;
+      ${this.selection ? this.selectionHandles(this.selection, scale) : ""}
+      ${this.marqueeMarkup()}`;
+  }
+
+  private isSelected(selection: CadSelection): boolean {
+    return this.selections.some((entry) => sameSelection(entry, selection));
   }
 
   private pointerDown(event: PointerEvent): void {
@@ -176,7 +187,7 @@ export class CadWorkspace {
         mode: "anchor-snap", startClient: { x: event.clientX, y: event.clientY }, startWorld: this.eventPoint(event), currentWorld: this.eventPoint(event),
         selection: definition, partIndex, ownAnchor: anchorHandle.dataset.snapOwnAnchor as AnchorName, originalState: structuredClone(this.state), moved: false,
       };
-      this.svg.setPointerCapture(event.pointerId); return;
+      this.svg.setPointerCapture(event.pointerId); this.render(); return;
     }
     const snapHandle = (event.target as Element).closest<SVGElement>("[data-snap-offset-handle]");
     if (snapHandle) {
@@ -201,7 +212,7 @@ export class CadWorkspace {
         mode: "part-move", startClient: { x: event.clientX, y: event.clientY }, startWorld: this.eventPoint(event),
         selection: definition, partIndex, originalState: structuredClone(this.state), moved: false,
       };
-      this.svg.setPointerCapture(event.pointerId);
+      this.svg.setPointerCapture(event.pointerId); this.render();
       return;
     }
     const geometryHandle = (event.target as Element).closest<SVGElement>("[data-geometry-handle]");
@@ -218,7 +229,7 @@ export class CadWorkspace {
         selection: definition, originalState: structuredClone(this.state), center: context.center, rotation: context.rotation,
         partIndex, geometryHandle: geometryHandle.dataset.geometryHandle, moved: false,
       };
-      this.svg.setPointerCapture(event.pointerId);
+      this.svg.setPointerCapture(event.pointerId); this.render();
       return;
     }
     const scaleHandle = (event.target as Element).closest<SVGElement>("[data-definition-scale]");
@@ -261,6 +272,17 @@ export class CadWorkspace {
     const target = (event.target as Element).closest<SVGElement>("[data-cad-kind]");
     const selection = target ? selectionFrom(target) : null;
     if (selection) {
+      const additive = event.ctrlKey || event.metaKey;
+      if (additive) {
+        const partIndex = selection.kind === "item" || selection.kind === "exclusion" ? Number(target?.dataset.cadPart ?? 0) : undefined;
+        const world = this.eventPoint(event);
+        this.drag = {
+          mode: "marquee", startClient: { x: event.clientX, y: event.clientY }, startWorld: world, currentWorld: world,
+          additive: true, clickSelection: selection, clickPartIndex: partIndex, moved: false,
+        };
+        this.svg.setPointerCapture(event.pointerId);
+        return;
+      }
       this.selection = selection;
       const partIndex = selection.kind === "item" || selection.kind === "exclusion" ? Number(target?.dataset.cadPart ?? 0) : undefined;
       if (partIndex !== undefined) this.selectedPartIndex = partIndex;
@@ -279,9 +301,13 @@ export class CadWorkspace {
       }
       return;
     }
-    this.selection = null;
-    this.callbacks.onSelect(null);
-    this.drag = { mode: "pan", startClient: { x: event.clientX, y: event.clientY }, startWorld: this.eventPoint(event), originalView: { ...this.view }, moved: false };
+    const world = this.eventPoint(event);
+    if (event.button === 0 && (event.ctrlKey || event.metaKey)) {
+      this.drag = { mode: "marquee", startClient: { x: event.clientX, y: event.clientY }, startWorld: world, currentWorld: world, additive: true, moved: false };
+    } else {
+      this.callbacks.onSelect(null);
+      this.drag = { mode: "pan", startClient: { x: event.clientX, y: event.clientY }, startWorld: world, originalView: { ...this.view }, moved: false };
+    }
     this.svg.setPointerCapture(event.pointerId);
     this.render();
   }
@@ -291,7 +317,15 @@ export class CadWorkspace {
     if (this.drag.mode === "anchor-snap") {
       this.drag.currentWorld = this.eventPoint(event); this.drag.moved = true; this.render(); return;
     }
+    if (this.drag.mode === "marquee") {
+      this.drag.currentWorld = this.eventPoint(event);
+      this.drag.moved = Math.hypot(event.clientX - this.drag.startClient.x, event.clientY - this.drag.startClient.y) > 3;
+      this.render();
+      return;
+    }
     if (this.drag.mode === "pan") {
+      const distance = Math.hypot(event.clientX - this.drag.startClient.x, event.clientY - this.drag.startClient.y);
+      if (distance <= 3) return;
       const pixelsToWorld = this.drag.originalView!.width / Math.max(this.svg.clientWidth, 1);
       this.view.minX = this.drag.originalView!.minX - (event.clientX - this.drag.startClient.x) * pixelsToWorld;
       this.view.minY = this.drag.originalView!.minY + (event.clientY - this.drag.startClient.y) * pixelsToWorld;
@@ -353,6 +387,18 @@ export class CadWorkspace {
     const drag = this.drag;
     this.drag = null;
     if (this.svg.hasPointerCapture(event.pointerId)) this.svg.releasePointerCapture(event.pointerId);
+    if (drag.mode === "marquee") {
+      if (drag.moved && drag.currentWorld) this.callbacks.onMarquee(this.selectionsInBox(drag.startWorld, drag.currentWorld), !!drag.additive);
+      else if (drag.clickSelection) this.callbacks.onSelect(drag.clickSelection, drag.clickPartIndex, true);
+      else this.callbacks.onSelect(null);
+      this.render();
+      return;
+    }
+    if (drag.mode === "pan" && !drag.moved) {
+      this.callbacks.onSelect(null);
+      this.render();
+      return;
+    }
     if (drag.moved && drag.mode === "anchor-snap" && drag.selection && drag.partIndex !== undefined && drag.ownAnchor && drag.currentWorld) {
       this.completeAnchorSnap(drag.selection, drag.partIndex, drag.ownAnchor, drag.currentWorld);
     }
@@ -368,12 +414,37 @@ export class CadWorkspace {
     return { x: local.x, y: -local.y };
   }
 
+  private marqueeMarkup(): string {
+    if (this.drag?.mode !== "marquee" || !this.drag.moved || !this.drag.currentWorld) return "";
+    const minX = Math.min(this.drag.startWorld.x, this.drag.currentWorld.x);
+    const maxX = Math.max(this.drag.startWorld.x, this.drag.currentWorld.x);
+    const minY = Math.min(this.drag.startWorld.y, this.drag.currentWorld.y);
+    const maxY = Math.max(this.drag.startWorld.y, this.drag.currentWorld.y);
+    return `<rect class="cad-marquee" x="${minX}" y="${-maxY}" width="${maxX - minX}" height="${maxY - minY}"/>`;
+  }
+
+  private selectionsInBox(a: Point, b: Point): CadSelection[] {
+    const minX = Math.min(a.x, b.x), maxX = Math.max(a.x, b.x);
+    const minY = Math.min(a.y, b.y), maxY = Math.max(a.y, b.y);
+    const candidates: CadSelection[] = [
+      ...this.state.containerParts.map((_, index) => ({ kind: "container", index }) as CadSelection),
+      ...this.state.exclusions.map((_, index) => ({ kind: "exclusion", index }) as CadSelection),
+      ...this.state.items.map((_, index) => ({ kind: "item", index }) as CadSelection),
+      ...this.placements.map((_, index) => ({ kind: "placement", index }) as CadSelection),
+    ];
+    return candidates.filter((selection) => {
+      const bounds = this.selectionBounds(selection);
+      if (!bounds) return false;
+      return bounds.maxX >= minX && bounds.minX <= maxX && bounds.maxY >= minY && bounds.minY <= maxY;
+    });
+  }
+
   private placementMarkup(placement: Placement, index: number): string {
     const itemIndex = this.problem.items.findIndex((entry) => entry.id === placement.item_id);
     const item = this.problem.items[itemIndex];
     if (!item) return "";
     const color = ITEM_COLORS[Math.max(itemIndex, 0) % ITEM_COLORS.length];
-    const selected = this.selection?.kind === "placement" && this.selection.index === index;
+    const selected = this.isSelected({ kind: "placement", index });
     const local = this.resolved.items.find((geometry) => geometry.id === item.id)?.polygons ?? [];
     const placed = transformPolygons(local, placement.rotation_deg, placement.x, placement.y);
     const sourceParts = sourcePartPolygons(item.shape).map((partPolygons) => transformPolygons(partPolygons, placement.rotation_deg, placement.x, placement.y));
@@ -384,7 +455,7 @@ export class CadWorkspace {
 
   private itemSampleMarkup(sample: ItemSample, index: number): string {
     const color = ITEM_COLORS[index % ITEM_COLORS.length];
-    const selected = this.selection?.kind === "item" && this.selection.index === index;
+    const selected = this.isSelected({ kind: "item", index });
     const padding = Math.max(sample.bounds.width, sample.bounds.height) * .2 + .35;
     return `${sample.sourcePolygons.map((partPolygons, partIndex) => partPolygons.map((polygon) => `<path class="cad-part-color item" style="fill:${partColor(this.state.items[index]?.parts[partIndex], color)}" d="${path(polygon)}"/>`).join("")).join("")}<path data-unified-geometry="item:${index}" class="cad-item-sample unified ${selected ? "selected" : ""}" fill-rule="evenodd" style="--item-color:${color};fill:transparent" d="${compoundPath(sample.polygons)}"/>${sample.sourcePolygons.map((partPolygons, partIndex) => partPolygons.map((polygon) => `<path data-cad-kind="item" data-cad-index="${index}" data-cad-part="${partIndex}" class="cad-source-hit ${selected && this.selectedPartIndex === partIndex ? "selected" : ""}" d="${path(polygon)}"/>`).join("")).join("")}${this.clearance && this.problem.clearance.item_to_item > 0 ? sample.polygons.map((polygon) => `<path class="cad-clearance item" d="${path(offsetPolygon(polygon, (contourArea(polygon) >= 0 ? 1 : -1) * this.problem.clearance.item_to_item / 2))}"/>`).join("") : ""}
       <text class="cad-label" x="${sample.bounds.minX}" y="${-sample.bounds.maxY - padding}">${escapeHtml(this.problem.items[index].id)} · ${this.problem.items[index].quantity} requested</text>`;
@@ -403,10 +474,11 @@ export class CadWorkspace {
     const snap = selection.kind !== "placement" ? this.snapMarkup(selection, scale) : "";
     const resize = selection.kind === "placement" ? "" : `<circle class="cad-global-scale-handle" data-definition-scale="${selection.kind}:${selection.index}" cx="${bounds.maxX}" cy="${-bounds.minY}" r="${Math.max(4.5 * scale, .09)}"/>`;
     const anchors = selection.kind === "placement" ? "" : this.anchorHandlesMarkup(selection, scale);
-    return `<g class="cad-selection-handles">${snap}${geometry}${anchors}${resize}<line x1="${top.x}" y1="${-top.y}" x2="${handle.x}" y2="${-handle.y}"/><circle class="cad-rotate-handle" ${attribute} cx="${handle.x}" cy="${-handle.y}" r="${Math.max(5 * scale, .1)}"/></g>`;
+    return `<g class="cad-selection-handles">${geometry}${anchors}${snap}${resize}<line x1="${top.x}" y1="${-top.y}" x2="${handle.x}" y2="${-handle.y}"/><circle class="cad-rotate-handle" ${attribute} cx="${handle.x}" cy="${-handle.y}" r="${Math.max(5 * scale, .1)}"/></g>`;
   }
 
   private snapMarkup(selection: Exclude<CadSelection, { kind: "placement" }>, scale: number): string {
+    if (this.drag?.mode !== "part-move" || !this.drag.selection || !sameSelection(this.drag.selection, selection)) return "";
     const parts = definitionParts(this.state, selection);
     const partIndex = selection.kind === "container" ? selection.index : this.selectedPartIndex;
     const part = parts?.[partIndex];
@@ -425,10 +497,13 @@ export class CadWorkspace {
     const targetCenter = { x: targetPosition.x + offset.x, y: targetPosition.y + offset.y };
     const ownCenter = { x: ownPosition.x + offset.x, y: ownPosition.y + offset.y };
     const radius = Math.max(4.5 * scale, .09);
-    return `<g class="cad-snap-constraint"><line x1="${targetCenter.x}" y1="${-targetCenter.y}" x2="${ownCenter.x}" y2="${-ownCenter.y}"/><line class="cad-snap-offset" x1="${destination.x}" y1="${-destination.y}" x2="${own.x}" y2="${-own.y}"/><circle cx="${destination.x}" cy="${-destination.y}" r="${radius}"/><circle class="own" data-snap-offset-handle="${selection.kind}:${selection.index}" data-snap-part="${partIndex}" cx="${own.x}" cy="${-own.y}" r="${radius}"/></g>`;
+    const handleOffset = Math.max(11 * scale, .2);
+    const ownHandle = { x: own.x + handleOffset, y: own.y + handleOffset };
+    return `<g class="cad-snap-constraint"><line x1="${targetCenter.x}" y1="${-targetCenter.y}" x2="${ownCenter.x}" y2="${-ownCenter.y}"/><line class="cad-snap-offset" x1="${destination.x}" y1="${-destination.y}" x2="${own.x}" y2="${-own.y}"/><line x1="${own.x}" y1="${-own.y}" x2="${ownHandle.x}" y2="${-ownHandle.y}"/><circle cx="${destination.x}" cy="${-destination.y}" r="${radius}"/><circle class="own" data-snap-offset-handle="${selection.kind}:${selection.index}" data-snap-part="${partIndex}" cx="${ownHandle.x}" cy="${-ownHandle.y}" r="${radius}"/></g>`;
   }
 
   private anchorHandlesMarkup(selection: Exclude<CadSelection, { kind: "placement" }>, scale: number): string {
+    if (this.drag?.mode !== "part-move" || !this.drag.selection || !sameSelection(this.drag.selection, selection)) return "";
     const parts = definitionParts(this.state, selection), partIndex = selection.kind === "container" ? selection.index : this.selectedPartIndex;
     const part = parts?.[partIndex]; if (!parts || !part) return "";
     const positions = resolveEditorTranslations(parts), displayOffset = this.definitionDisplayOffset(selection);
@@ -454,9 +529,7 @@ export class CadWorkspace {
       const point = pointFor(part, anchor), handle = ownHandlePoint(anchor), active = part.snap?.ownAnchor === anchor;
       return `<line class="cad-anchor-guide" x1="${point.x}" y1="${-point.y}" x2="${handle.x}" y2="${-handle.y}"/><circle class="cad-snap-anchor own ${active ? "active" : ""}" data-snap-anchor-source="${selection.kind}:${selection.index}" data-snap-part="${partIndex}" data-snap-own-anchor="${anchor}" cx="${handle.x}" cy="${-handle.y}" r="${ownRadius}"/>`;
     }).join("");
-    const drag = this.drag?.mode === "anchor-snap" && this.drag.selection?.kind === selection.kind && this.drag.selection.index === selection.index && this.drag.currentWorld
-      ? `<line class="cad-anchor-drag-line" x1="${ownHandlePoint(this.drag.ownAnchor!).x}" y1="${-ownHandlePoint(this.drag.ownAnchor!).y}" x2="${this.drag.currentWorld.x}" y2="${-this.drag.currentWorld.y}"/>` : "";
-    return `<g class="cad-anchor-points">${drag}${targets}${own}</g>`;
+    return `<g class="cad-anchor-points">${targets}${own}</g>`;
   }
 
   private definitionDisplayOffset(selection: Exclude<CadSelection, { kind: "placement" }>): Point {
@@ -932,6 +1005,10 @@ function rotateVector(point: Point, rotation: number): Point {
 
 function selectionFrom(element: SVGElement): CadSelection {
   return { kind: element.dataset.cadKind as CadSelection["kind"], index: Number(element.dataset.cadIndex) } as CadSelection;
+}
+
+function sameSelection(a: CadSelection, b: CadSelection): boolean {
+  return a.kind === b.kind && a.index === b.index;
 }
 
 function parseDefinitionKey(value: string): Exclude<CadSelection, { kind: "placement" }> {

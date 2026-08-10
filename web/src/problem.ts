@@ -44,6 +44,7 @@ export const defaultState = (): EditorState => ({
     grid_step: 0.5,
     restarts: 3,
     quality: "balanced",
+    baseline_only: false,
   },
   study: {
     parameterKey: "part_width:item-a:0",

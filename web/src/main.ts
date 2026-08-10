@@ -7,7 +7,7 @@ import { renderLayout, renderPolygonsPreview, renderSensitivity, sensitivityValu
 import { resolveGeometry } from "./geometry-resolver";
 import { WorkspaceHistory, WorkspaceStore } from "./workspace-store";
 import type {
-  AnchorName, EditorState, PackingProblem, ParameterPath, Placement, PrimitiveEditor, SensitivityProgress,
+  AnchorName, EditorItem, EditorState, PackingProblem, ParameterPath, Placement, PrimitiveEditor, SensitivityProgress,
   SensitivityResult, SensitivityStudy, SolveProgress, SolveResult,
 } from "./types";
 
@@ -27,7 +27,9 @@ let currentResult: SolveResult | null = null;
 let sensitivityResult: SensitivityResult | null = null;
 let sensitivitySelection: number | null = null;
 let selection: CadSelection | null = { kind: "container", index: 0 };
+let selections: CadSelection[] = selection ? [selection] : [];
 let selectedPartIndex = 0;
+let itemClipboard: EditorItem[] = [];
 let cad: CadWorkspace;
 let running = false;
 let manualLayout = false;
@@ -75,7 +77,7 @@ root.innerHTML = `
           <button id="theme-toggle" class="tool-button" aria-label="Toggle theme">◐</button>
         </div>
         <svg id="cad-canvas" class="cad-canvas" tabindex="0" aria-label="Interactive packing workspace"></svg>
-        <div class="cad-help">Drag shape to move · cyan grips edit · drag outer cyan snap points to amber anchors · top rotates all · corner scales all</div>
+        <div class="cad-help">Drag empty space to pan · Ctrl/⌘-drag box-selects · Ctrl/⌘-click adds selection · cyan grips edit · snap points appear only while dragging a snappable part</div>
         <div class="workspace-state"><span id="status-dot"></span><span id="status" class="status neutral">Saved locally</span><strong id="workspace-summary">Problem definition</strong></div>
       </main>
     </div>
@@ -112,6 +114,7 @@ root.innerHTML = `
 applyTheme(projects.theme);
 cad = new CadWorkspace(document.getElementById("cad-canvas") as unknown as SVGSVGElement, state, toProblem(state), {
   onSelect: selectCad,
+  onMarquee: selectMarquee,
   onDefinitionChange: definitionChanged,
   onPlacementChange: placementChanged,
 });
@@ -133,7 +136,8 @@ function bindShell(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-toolbar-shape]").forEach((button) => button.addEventListener("click", () => addGeometry(button.dataset.toolbarShape as PrimitiveEditor["kind"])));
   element<HTMLSelectElement>("toolbar-add-shape").addEventListener("change", (event) => { const input = event.target as HTMLSelectElement; if (input.value) addGeometry(input.value as PrimitiveEditor["kind"]); input.value = ""; });
   element<HTMLInputElement>("toolbar-part-color").addEventListener("input", (event) => mutate(() => {
-    const part = selectedPrimitive(); if (part) part.color = (event.target as HTMLInputElement).value;
+    const color = (event.target as HTMLInputElement).value;
+    selectedPrimitivesForColor().forEach((part) => { part.color = color; });
   }));
   element("join-material").addEventListener("click", joinSelectedMaterial);
   element("delete-selection").addEventListener("click", deleteToolbarSelection);
@@ -162,6 +166,8 @@ function bindShell(): void {
       event.preventDefault(); deleteToolbarSelection(); return;
     }
     if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+    if (event.key.toLowerCase() === "c" && !isEditingText(event.target)) { event.preventDefault(); copySelectedItems(); return; }
+    if (event.key.toLowerCase() === "v" && !isEditingText(event.target)) { event.preventDefault(); pasteItems(); return; }
     if (event.key.toLowerCase() === "z") { event.preventDefault(); event.shiftKey ? redo() : undo(); }
     if (event.key.toLowerCase() === "y") { event.preventDefault(); redo(); }
     if (event.key.toLowerCase() === "s") { event.preventDefault(); projects.save(state); setStatus("success", "Project saved on this device"); }
@@ -194,13 +200,33 @@ function showPage(next: PageName): void {
   else { renderSensitivitySidebar(); requestAnimationFrame(refreshSensitivityPage); }
 }
 
-function selectCad(next: CadSelection | null, partIndex?: number): void {
-  if (next?.kind !== selection?.kind || next?.index !== selection?.index) selectedPartIndex = 0;
+function selectCad(next: CadSelection | null, partIndex?: number, additive = false): void {
+  const previous = selection;
+  if (additive && next) {
+    const existing = selections.findIndex((entry) => sameSelection(entry, next));
+    if (existing >= 0) selections.splice(existing, 1); else selections.push(next);
+    selection = existing >= 0 ? selections.at(-1) ?? null : next;
+  } else {
+    selection = next;
+    selections = next ? [next] : [];
+  }
+  if (next?.kind !== previous?.kind || next?.index !== previous?.index) selectedPartIndex = 0;
   if ((next?.kind === "item" || next?.kind === "exclusion") && partIndex !== undefined) selectedPartIndex = partIndex;
-  selection = next;
-  cad.setSelection(next, selectedPartIndex);
+  cad.setSelection(selection, selectedPartIndex, selections);
   renderPackingSidebar();
   updateToolbarState();
+}
+
+function selectMarquee(next: CadSelection[], additive: boolean): void {
+  if (additive) {
+    next.forEach((candidate) => {
+      if (!selections.some((entry) => sameSelection(entry, candidate))) selections.push(candidate);
+    });
+  } else selections = next;
+  selection = selections.at(-1) ?? null;
+  selectedPartIndex = 0;
+  cad.setSelection(selection, selectedPartIndex, selections);
+  renderPackingSidebar();
 }
 
 function renderPackingSidebar(): void {
@@ -209,9 +235,9 @@ function renderPackingSidebar(): void {
   sidebar.innerHTML = `
     <section class="problem-section entity-section">
       <div class="section-title"><div><small>PROBLEM</small><h2>Drawing objects</h2></div></div>
-      <div class="entity-group"><span>Container</span>${state.containerParts.map((entry, index) => entityButton("container", index, entry.id, entry.operation === "add" ? "Material" : "Cut-out", selection)).join("")}</div>
-      <div class="entity-group"><span>Exclusions</span>${state.exclusions.map((entry, index) => entityButton("exclusion", index, entry.id, `${format(entry.clearance)} clearance`, selection)).join("") || '<p class="empty-inline">None</p>'}</div>
-      <div class="entity-group"><span>Packable shapes</span>${state.items.map((item, index) => entityButton("item", index, item.id, `${item.quantity} requested`, selection)).join("")}</div>
+      <div class="entity-group"><span>Container</span>${state.containerParts.map((entry, index) => entityButton("container", index, entry.id, entry.operation === "add" ? "Material" : "Cut-out")).join("")}</div>
+      <div class="entity-group"><span>Exclusions</span>${state.exclusions.map((entry, index) => entityButton("exclusion", index, entry.id, `${format(entry.clearance)} clearance`)).join("") || '<p class="empty-inline">None</p>'}</div>
+      <div class="entity-group"><span>Packable shapes</span>${state.items.map((item, index) => entityButton("item", index, item.id, `${item.quantity} requested`)).join("")}</div>
       <div class="object-add-row"><button data-add-object="item">+ Item</button><button data-add-object="material">+ Material</button><button data-add-object="cutout">+ Cut-out</button><button data-add-object="exclusion">+ Exclusion</button></div>
     </section>
     <section id="selection-inspector" class="problem-section inspector-section">${selectionInspector()}</section>
@@ -225,14 +251,17 @@ function renderPackingSidebar(): void {
       ${numberField("Seed", "option", "seed", state.options.seed, 1)}${numberField("Base iterations", "option", "max_iterations", state.options.max_iterations, 1000)}
       ${numberField("Grid step", "option", "grid_step", state.options.grid_step, .1)}${numberField("Restarts", "option", "restarts", state.options.restarts, 1)}
       <label class="wide">Quality<select data-pack-scope="option" data-field="quality"><option value="fast" ${state.options.quality === "fast" ? "selected" : ""}>Fast preview</option><option value="balanced" ${state.options.quality === "balanced" ? "selected" : ""}>Balanced</option><option value="thorough" ${state.options.quality === "thorough" ? "selected" : ""}>Thorough</option></select></label>
+      <label class="wide checkbox-field"><input type="checkbox" data-pack-scope="option" data-field="baseline_only" ${state.options.baseline_only ? "checked" : ""}> Baseline only · quick validation</label>
     </div></details>`;
-  sidebar.querySelectorAll<HTMLElement>("[data-cad-select]").forEach((node) => node.addEventListener("click", () => {
-    const next = parseSelection(node.dataset.cadSelect!); selectCad(next);
+  sidebar.querySelectorAll<HTMLElement>("[data-cad-select]").forEach((node) => node.addEventListener("click", (event) => {
+    const next = parseSelection(node.dataset.cadSelect!); selectCad(next, undefined, event.ctrlKey || event.metaKey);
   }));
   sidebar.querySelectorAll<HTMLButtonElement>("[data-add-object]").forEach((button) => button.addEventListener("click", () => addObject(button.dataset.addObject!)));
   sidebar.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-pack-scope]").forEach((input) => input.addEventListener("change", () => mutate(() => {
     const target = input.dataset.packScope === "clearance" ? state.clearance : state.options;
-    setField(target, input.dataset.field!, input instanceof HTMLInputElement && input.type === "number" ? Number(input.value) : input.value);
+    const value = input instanceof HTMLInputElement && input.type === "number" ? Number(input.value)
+      : input instanceof HTMLInputElement && input.type === "checkbox" ? input.checked : input.value;
+    setField(target, input.dataset.field!, value);
   }, false)));
   sidebar.querySelectorAll<HTMLInputElement>("[data-placement-field]").forEach((input) => input.addEventListener("change", () => {
     if (selection?.kind !== "placement" || !currentResult) return;
@@ -246,13 +275,14 @@ function renderPackingSidebar(): void {
   updateToolbarState();
 }
 
-function entityButton(kind: "container" | "exclusion" | "item", index: number, name: string, meta: string, current: CadSelection | null): string {
+function entityButton(kind: "container" | "exclusion" | "item", index: number, name: string, meta: string): string {
   const key = `${kind}:${index}`;
-  const selected = current?.kind === kind && current.index === index;
+  const selected = selections.some((entry) => entry.kind === kind && entry.index === index);
   return `<button class="entity-row ${selected ? "selected" : ""}" data-cad-select="${key}"><canvas data-entity-preview="${key}" aria-hidden="true"></canvas><span><strong>${escapeHtml(name)}</strong><small>${escapeHtml(meta)}</small></span></button>`;
 }
 
 function selectionInspector(): string {
+  if (selections.length > 1) return `<div class="inspector-empty"><small>MULTI-SELECTION</small><strong>${selections.length} objects selected</strong><p>Use Colour to recolour the selected objects, Delete to remove them, or Ctrl/⌘ C and Ctrl/⌘ V to duplicate selected packable items.</p></div>`;
   if (!selection) return `<div class="inspector-empty"><small>INSPECTOR</small><strong>Nothing selected</strong><p>Click a container region, exclusion, shape definition, or packed item in the drawing.</p></div>`;
   if (selection.kind === "placement") {
     const placement = currentResult?.placements[selection.index];
@@ -323,7 +353,7 @@ function snapEditorHtml(parts: PrimitiveEditor[], part: PrimitiveEditor, title: 
 
 function bindInlineInspector(sidebar: HTMLElement): void {
   sidebar.querySelector<HTMLSelectElement>("#item-part-select")?.addEventListener("change", (event) => {
-    selectedPartIndex = Number((event.target as HTMLSelectElement).value); cad.setSelection(selection, selectedPartIndex); renderPackingSidebar();
+    selectedPartIndex = Number((event.target as HTMLSelectElement).value); cad.setSelection(selection, selectedPartIndex, selections); renderPackingSidebar();
   });
   sidebar.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-object-field]").forEach((input) => input.addEventListener("change", () => mutate(() => {
     const target = selectedObject(); if (!target) return;
@@ -403,6 +433,23 @@ function selectedPrimitive(): PrimitiveEditor | null {
   return state.items[selection.index]?.parts[selectedPartIndex] ?? null;
 }
 
+function selectedPrimitivesForColor(): PrimitiveEditor[] {
+  if (selections.length <= 1) return selectedPrimitive() ? [selectedPrimitive()!] : [];
+  const parts: PrimitiveEditor[] = [];
+  selections.forEach((entry) => {
+    if (entry.kind === "container") {
+      const primitive = state.containerParts[entry.index]?.primitive; if (primitive) parts.push(primitive);
+    } else if (entry.kind === "exclusion") parts.push(...(state.exclusions[entry.index]?.parts ?? []));
+    else if (entry.kind === "item") parts.push(...(state.items[entry.index]?.parts ?? []));
+    else {
+      const itemId = currentResult?.placements[entry.index]?.item_id;
+      const item = state.items.find((candidate) => candidate.id === itemId);
+      if (item) parts.push(...item.parts);
+    }
+  });
+  return [...new Set(parts)];
+}
+
 function selectedConstraintParts(): PrimitiveEditor[] | null {
   if (selection?.kind === "item") return state.items[selection.index]?.parts ?? null;
   if (selection?.kind === "container") return state.containerParts.map((entry) => entry.primitive);
@@ -453,6 +500,7 @@ function moveSelectedPart(targetOwner: string): void {
       state.exclusions[targetIndex].parts.push(part); selection = { kind: "exclusion", index: targetIndex }; selectedPartIndex = state.exclusions[targetIndex].parts.length - 1;
     }
   });
+  selections = selection ? [selection] : [];
   refreshPacking(true);
 }
 
@@ -473,6 +521,7 @@ function addObject(kind: string): void {
       selection = { kind: "container", index: state.containerParts.length - 1 };
     }
     selectedPartIndex = 0;
+    selections = selection ? [selection] : [];
   });
   refreshPacking(true);
 }
@@ -503,6 +552,7 @@ function addGeometry(kind: PrimitiveEditor["kind"]): void {
     state.containerParts.push({ id: uniqueId("material", state.containerParts.map((entry) => entry.id)), operation: "add", primitive });
     selection = { kind: "container", index: state.containerParts.length - 1 }; selectedPartIndex = 0;
   });
+  selections = selection ? [selection] : [];
   refreshPacking(true);
 }
 
@@ -520,9 +570,39 @@ function joinSelectedMaterial(): void {
 }
 
 function deleteToolbarSelection(): void {
+  if (selections.length > 1) { deleteMultipleSelections(); return; }
   if (!selection || selection.kind === "placement") return;
   if (selection.kind === "container") { deleteSelectedObject(); return; }
   mutate(deleteSelectedPart);
+}
+
+function deleteMultipleSelections(): void {
+  const definitions = selections.filter((entry) => entry.kind !== "placement");
+  if (definitions.length) {
+    mutate(() => {
+      const remove = (kind: CadSelection["kind"], values: unknown[]) => selections
+        .filter((entry) => entry.kind === kind)
+        .map((entry) => entry.index)
+        .sort((a, b) => b - a)
+        .forEach((index) => values.splice(index, 1));
+      remove("container", state.containerParts);
+      remove("exclusion", state.exclusions);
+      remove("item", state.items);
+      selection = null; selections = []; selectedPartIndex = 0;
+    });
+    refreshPacking(true);
+    return;
+  }
+  if (!currentResult) return;
+  const indexes = selections.map((entry) => entry.index).sort((a, b) => b - a);
+  indexes.forEach((index) => currentResult?.placements.splice(index, 1));
+  currentResult.packed_item_count = currentResult.placements.length;
+  currentResult.packed_count_by_item = currentResult.placements.reduce<Record<string, number>>((counts, placement) => {
+    counts[placement.item_id] = (counts[placement.item_id] ?? 0) + 1; return counts;
+  }, {});
+  manualLayout = true; selection = null; selections = [];
+  refreshPacking(); renderPackingSidebar(); updateDiagnostics();
+  setStatus("neutral", "Selected placements deleted · validation is now stale");
 }
 
 function deleteSelectedPart(): void {
@@ -537,9 +617,9 @@ function updateToolbarState(): void {
   const primitives = state.containerParts.map((entry) => entry.primitive);
   const canJoin = selectedRegion?.operation === "add" && state.containerParts.some((entry) => entry !== selectedRegion && entry.operation === "add" && !dependsOn(primitives, entry.primitive.id, selectedRegion.primitive.id));
   element<HTMLButtonElement>("join-material").disabled = !canJoin;
-  element<HTMLButtonElement>("delete-selection").disabled = !selection || selection.kind === "placement";
-  const color = element<HTMLInputElement>("toolbar-part-color"), part = selectedPrimitive();
-  color.disabled = !part; color.value = partColor(part);
+  element<HTMLButtonElement>("delete-selection").disabled = selections.length === 0 || (selections.length === 1 && selection?.kind === "placement");
+  const color = element<HTMLInputElement>("toolbar-part-color"), parts = selectedPrimitivesForColor();
+  color.disabled = parts.length === 0; color.value = partColor(parts[0]);
 }
 
 function deleteSelectedObject(): void {
@@ -550,9 +630,31 @@ function deleteSelectedObject(): void {
     else if (selection?.kind === "container") {
       state.containerParts.splice(selection.index, 1); selection = null;
     }
-    selectedPartIndex = 0;
+    selections = []; selectedPartIndex = 0;
   });
   refreshPacking(true);
+}
+
+function copySelectedItems(): void {
+  const indexes = selections.filter((entry) => entry.kind === "item").map((entry) => entry.index);
+  itemClipboard = indexes.map((index) => state.items[index]).filter(Boolean).map((item) => structuredClone(item));
+  setStatus(itemClipboard.length ? "success" : "neutral", itemClipboard.length ? `${itemClipboard.length} item${itemClipboard.length === 1 ? "" : "s"} copied` : "Select a packable item to copy");
+}
+
+function pasteItems(): void {
+  if (!itemClipboard.length) { setStatus("neutral", "Copy a packable item before pasting"); return; }
+  mutate(() => {
+    const added: CadSelection[] = [];
+    itemClipboard.forEach((source) => {
+      const item = structuredClone(source);
+      item.id = uniqueId(`${source.id}-copy`, state.items.map((entry) => entry.id));
+      state.items.push(item);
+      added.push({ kind: "item", index: state.items.length - 1 });
+    });
+    selections = added; selection = added.at(-1) ?? null; selectedPartIndex = 0;
+  });
+  refreshPacking(true);
+  setStatus("success", `${itemClipboard.length} new item${itemClipboard.length === 1 ? "" : "s"} pasted`);
 }
 
 function openProjects(): void {
@@ -587,6 +689,7 @@ function loadProject(id: string): void {
   const project = projects.switch(id);
   state = structuredClone(project.state); history.clear(); clearResults();
   selection = { kind: "container", index: 0 };
+  selections = [selection];
   renderPackingSidebar(); renderSensitivitySidebar(); updateHistoryButtons(); showPage("packing"); refreshPacking(true);
   setStatus("success", `Opened ${project.name}`);
 }
@@ -670,7 +773,7 @@ async function solve(): Promise<void> {
   try {
     const problem = toProblem(state); setRunning(true, "Preparing geometry…"); currentResult = null; manualLayout = false;
     currentResult = await client.solve(problem, state.options, (progress) => updateProgress(problem, progress));
-    setStatus("success", `${currentResult.packed_item_count} items · ${humanStatus(currentResult.status)}`); showPackingResult(problem, currentResult);
+    setStatus("success", `${currentResult.packed_item_count} items · ${state.options.baseline_only ? "Baseline validated" : humanStatus(currentResult.status)}`); showPackingResult(problem, currentResult);
   } catch (error) { handleRunError(error); } finally { setRunning(false); }
 }
 
@@ -759,7 +862,7 @@ function undo(): void { const restored = history.undo(state); if (restored) rest
 function redo(): void { const restored = history.redo(state); if (restored) restoreHistory(restored, "Redid workspace action"); }
 function restoreHistory(restored: EditorState, message: string): void {
   state = restored; projects.save(state); clearResults(); updateHistoryButtons();
-  selection = normalizeSelection(selection); renderPackingSidebar(); renderSensitivitySidebar(); refreshCurrentPage(true); setStatus("neutral", message);
+  selection = normalizeSelection(selection); selections = selection ? [selection] : []; renderPackingSidebar(); renderSensitivitySidebar(); refreshCurrentPage(true); setStatus("neutral", message);
 }
 
 function clearResults(): void {
@@ -771,7 +874,7 @@ function clearResults(): void {
 
 function refreshCurrentPage(refit = false): void { if (page === "packing") refreshPacking(refit); else refreshSensitivityPage(); }
 function refreshPacking(refit = false): void {
-  try { cad.setModel(state, toProblem(state), currentResult?.placements ?? [], refit); cad.setSelection(selection, selectedPartIndex); }
+  try { cad.setModel(state, toProblem(state), currentResult?.placements ?? [], refit); cad.setSelection(selection, selectedPartIndex, selections); }
   catch (error) { setStatus("error", errorMessage(error)); }
 }
 function refreshSensitivityPage(): void { renderStudyGeometryPreview(); renderSensitivityResults(); if (sensitivityResult && sensitivitySelection !== null) selectSensitivityEvaluation(sensitivitySelection, "selected"); }
@@ -849,6 +952,7 @@ function isEditingText(target: EventTarget | null): boolean {
   return !!element?.closest("input, textarea, select, [contenteditable='true']");
 }
 function parseSelection(value: string): CadSelection { const [kind, index] = value.split(":"); return { kind: kind as CadSelection["kind"], index: Number(index) } as CadSelection; }
+function sameSelection(a: CadSelection, b: CadSelection): boolean { return a.kind === b.kind && a.index === b.index; }
 function itemIndexForParameter(key: string): number { const [kind, id] = key.split(":"); return kind.startsWith("part_") || kind.startsWith("item_") ? state.items.findIndex((item) => item.id === id) : -1; }
 function studyValues(start: number, end: number, step: number): number[] { const values = [start]; if (step > 0) for (let value = start + step; value < end && values.length < 6; value += step) values.push(value); if (end !== start) values.push(end); return values; }
 function numberField(label: string, scope: string, field: string, value: number, step: number): string { return `<label>${label}<input type="number" value="${value}" step="${step}" data-pack-scope="${scope}" data-field="${field}"></label>`; }

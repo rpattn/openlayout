@@ -49,6 +49,11 @@ deliberately skips the structured grid already scanned by the greedy pass. On th
 fixture this turns the 18-piece learned lattice into the validated 20-piece layout during
 `baseline`, before angle refinement.
 
+`SolveOptions.baseline_only` returns at this boundary after normal independent validation. It is a
+quick solution-quality check, not an alias for `fast`: the selected quality still controls the
+pre-boundary iteration multiplier, while the option explicitly skips portfolio rotations,
+continuation, neighbourhood repair, beam search, and conflict-graph refinement.
+
 ## Valid upper bounds
 
 The tightest applicable bound is used:

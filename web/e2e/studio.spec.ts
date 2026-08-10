@@ -119,16 +119,7 @@ test("edits item, container, cut-out, and exclusion geometry without leaving the
   if (!circleBox) throw new Error("Scaled snapped circle has no bounding box");
   await circle.click({ position: { x: circleBox.width * .2, y: circleBox.height / 2 } });
   await expect(page.locator("[data-snap-target]")).toHaveValue("body");
-  await expect(page.locator(".cad-snap-constraint")).toHaveCount(1);
-  const snapHandle = page.locator("[data-snap-offset-handle]");
-  const snapBox = await snapHandle.boundingBox();
-  if (!snapBox) throw new Error("Snap offset handle has no bounding box");
-  const originalSnapX = await page.locator('[data-snap-offset="x"]').inputValue();
-  await page.mouse.move(snapBox.x + snapBox.width / 2, snapBox.y + snapBox.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(snapBox.x + snapBox.width / 2 + 24, snapBox.y + snapBox.height / 2 - 12);
-  await page.mouse.up();
-  await expect(page.locator('[data-snap-offset="x"]')).not.toHaveValue(originalSnapX);
+  await expect(page.locator(".cad-snap-constraint")).toHaveCount(0);
   await page.locator('[data-snap-offset="x"]').fill("1"); await page.locator('[data-snap-offset="x"]').blur();
   const rotateHandle = page.locator(".cad-rotate-handle");
   const rotateBox = await rotateHandle.boundingBox();
@@ -145,7 +136,7 @@ test("edits item, container, cut-out, and exclusion geometry without leaving the
   await expect(page.locator("[data-snap-target]")).toHaveValue("");
   await page.locator("[data-snap-target]").selectOption("body");
   await expect(page.locator("[data-snap-anchor]")).toHaveCount(2);
-  await expect(page.locator(".cad-snap-constraint")).toHaveCount(1);
+  await expect(page.locator(".cad-snap-constraint")).toHaveCount(0);
 
   await page.locator('[data-add-part="bezier"]').click();
   await expect(page.locator("#item-part-select")).toHaveValue("3");
@@ -203,7 +194,7 @@ test("builds and transforms a joined multi-region material from the toolbar", as
   await page.getByRole("button", { name: "Add circle" }).click();
   await expect(page.locator('[data-cad-kind="container"]')).toHaveCount(2);
   await expect(page.locator("[data-snap-target]")).toHaveValue("container-boundary");
-  await expect(page.locator(".cad-snap-constraint")).toHaveCount(1);
+  await expect(page.locator(".cad-snap-constraint")).toHaveCount(0);
   await expect(page.locator(".cad-edit-dimensions text")).toHaveCount(2);
 
   await page.getByRole("button", { name: "Unify selected material" }).click();
@@ -340,42 +331,41 @@ test("snaps by visible anchors, reassigns construction ownership, and colours pa
   await page.goto("/");
   await page.locator('[data-cad-select="item:0"]').click();
   await page.locator("#item-part-select").selectOption("1");
-  const own = page.locator('[data-snap-own-anchor="center"]');
-  const target = page.locator('[data-snap-target-id="body"][data-snap-target-anchor="top_right"]');
-  const ownBox = await own.boundingBox(), targetBox = await target.boundingBox();
-  if (!ownBox || !targetBox) throw new Error("Visual snap anchors have no bounding boxes");
-  await page.mouse.move(ownBox.x + ownBox.width / 2, ownBox.y + ownBox.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(targetBox.x + targetBox.width / 2, targetBox.y + targetBox.height / 2);
-  await page.mouse.up();
-  await expect(page.locator('[data-snap-anchor="ownAnchor"]')).toHaveValue("center");
-  await expect(page.locator('[data-snap-anchor="targetAnchor"]')).toHaveValue("top_right");
-  await expect(page.locator('[data-snap-offset="x"]')).toHaveValue("0");
-
+  await expect(page.locator(".cad-snap-anchor")).toHaveCount(0);
+  await expect(page.locator(".cad-snap-constraint")).toHaveCount(0);
   const moveHandle = page.locator(".cad-part-move-handle");
-  const newTarget = page.locator('[data-snap-target-id="body"][data-snap-target-anchor="bottom_left"]');
-  const moveBox = await moveHandle.boundingBox(), newTargetBox = await newTarget.boundingBox();
-  if (!moveBox || !newTargetBox) throw new Error("Part move or replacement snap target is unavailable");
+  const moveBox = await moveHandle.boundingBox();
+  if (!moveBox) throw new Error("Part move handle is unavailable");
   await page.mouse.move(moveBox.x + moveBox.width / 2, moveBox.y + moveBox.height / 2);
   await page.mouse.down();
+  await expect(page.locator(".cad-snap-anchor.own")).not.toHaveCount(0);
+  const newTarget = page.locator('[data-snap-target-id="body"][data-snap-target-anchor="bottom_left"]');
+  const newTargetBox = await newTarget.boundingBox();
+  if (!newTargetBox) throw new Error("Snap target is unavailable during part drag");
   await page.mouse.move(newTargetBox.x + newTargetBox.width / 2, newTargetBox.y + newTargetBox.height / 2);
   await page.mouse.up();
   await expect(page.locator('[data-snap-anchor="ownAnchor"]')).toHaveValue("center");
   await expect(page.locator('[data-snap-anchor="targetAnchor"]')).toHaveValue("bottom_left");
   await expect(page.locator('[data-snap-offset="x"]')).toHaveValue("0");
+  await expect(page.locator(".cad-snap-anchor")).toHaveCount(0);
+  await expect(page.locator(".cad-snap-constraint")).toHaveCount(0);
 
   await page.locator('[data-cad-select="container:0"]').click();
   await page.getByRole("button", { name: "Add rectangle" }).click();
-  const regionOwn = page.locator('[data-snap-own-anchor="bottom_left"]');
-  const regionTarget = page.locator('[data-snap-target-id="container-boundary"][data-snap-target-anchor="top_left"]');
-  const regionOwnBox = await regionOwn.boundingBox(), regionTargetBox = await regionTarget.boundingBox();
-  if (!regionOwnBox || !regionTargetBox) throw new Error("Container snap anchors have no bounding boxes");
-  await page.mouse.move(regionOwnBox.x + regionOwnBox.width / 2, regionOwnBox.y + regionOwnBox.height / 2);
+  await expect(page.locator(".cad-snap-anchor")).toHaveCount(0);
+  const regionMove = page.locator(".cad-part-move-handle");
+  const regionMoveBox = await regionMove.boundingBox();
+  if (!regionMoveBox) throw new Error("Container part move handle is unavailable");
+  await page.mouse.move(regionMoveBox.x + regionMoveBox.width / 2, regionMoveBox.y + regionMoveBox.height / 2);
   await page.mouse.down();
+  const regionTarget = page.locator('[data-snap-target-id="container-boundary"][data-snap-target-anchor="top_left"]');
+  const regionTargetBox = await regionTarget.boundingBox();
+  if (!regionTargetBox) throw new Error("Container snap target is unavailable during drag");
   await page.mouse.move(regionTargetBox.x + regionTargetBox.width / 2, regionTargetBox.y + regionTargetBox.height / 2);
   await page.mouse.up();
-  await expect(page.locator('[data-snap-anchor="ownAnchor"]')).toHaveValue("bottom_left");
+  await expect(page.locator('[data-snap-anchor="ownAnchor"]')).toHaveValue("center");
   await expect(page.locator('[data-snap-anchor="targetAnchor"]')).toHaveValue("top_left");
+  await expect(page.locator(".cad-snap-anchor")).toHaveCount(0);
 
   await page.locator("[data-part-owner]").selectOption("item:0");
   await expect(page.locator("#selection-inspector")).toContainText("PACKABLE SHAPE");
@@ -387,6 +377,57 @@ test("snaps by visible anchors, reassigns construction ownership, and colours pa
   await page.locator("#toolbar-part-color").fill("#00cc44");
   await expect(page.locator("[data-primitive-color]")).toHaveValue("#00cc44");
   await expect(page.locator('.cad-library .cad-part-color[style*="#00cc44"]')).toHaveCount(1);
+});
+
+test("multi-selects, applies bulk actions, and duplicates item definitions", async ({ page }) => {
+  await page.goto("/");
+  await openSolverSettings(page);
+  const baselineOnly = page.locator('[data-field="baseline_only"]');
+  await baselineOnly.check();
+  await expect(baselineOnly).toBeChecked();
+
+  await page.locator('[data-add-object="item"]').click();
+  await page.locator('[data-cad-select="item:0"]').click({ modifiers: ["Control"] });
+  await expect(page.locator("#selection-inspector")).toContainText("2 objects selected");
+  await page.locator("#toolbar-part-color").fill("#3366ff");
+  await expect(page.locator('.cad-library .cad-part-color[style*="#3366ff"]')).toHaveCount(4);
+
+  await page.locator("#cad-canvas").focus();
+  await page.keyboard.press("Control+c");
+  await page.keyboard.press("Control+v");
+  await expect(page.locator('[data-cad-select^="item:"]')).toHaveCount(4);
+  await expect(page.locator("#selection-inspector")).toContainText("2 objects selected");
+  await page.getByRole("button", { name: "Delete selection" }).click();
+  await expect(page.locator('[data-cad-select^="item:"]')).toHaveCount(2);
+
+  const samples = page.locator('[data-unified-geometry^="item:"]');
+  const first = await samples.nth(0).boundingBox(), second = await samples.nth(1).boundingBox();
+  if (!first || !second) throw new Error("Item samples are unavailable for marquee selection");
+  const left = Math.min(first.x, second.x) - 8, top = Math.min(first.y, second.y) - 8;
+  const right = Math.max(first.x + first.width, second.x + second.width) + 8;
+  const bottom = Math.max(first.y + first.height, second.y + second.height) + 8;
+  await page.keyboard.down("Control");
+  await page.mouse.move(left, top); await page.mouse.down();
+  await page.mouse.move(right, bottom, { steps: 4 });
+  await expect(page.locator(".cad-marquee")).toHaveCount(1);
+  await page.mouse.up();
+  await page.keyboard.up("Control");
+  await expect(page.locator("#selection-inspector")).toContainText("2 objects selected");
+  await expect(page.locator(".cad-item-sample.selected")).toHaveCount(2);
+
+  const emptyPoint = await page.locator("#cad-canvas").evaluate((svg) => {
+    const bounds = svg.getBoundingClientRect();
+    for (let y = bounds.top + 12; y < bounds.bottom - 12; y += 24) {
+      for (let x = bounds.left + 12; x < bounds.right - 12; x += 24) {
+        if ((document.elementFromPoint(x, y) as Element | null)?.matches("[data-cad-background]")) return { x, y };
+      }
+    }
+    return null;
+  });
+  if (!emptyPoint) throw new Error("CAD workspace has no empty point for clearing selection");
+  await page.mouse.click(emptyPoint.x, emptyPoint.y);
+  await expect(page.locator("#selection-inspector")).toContainText("Nothing selected");
+  await expect(page.locator(".cad-item-sample.selected")).toHaveCount(0);
 });
 
 async function configureFastSolve(page: import("@playwright/test").Page): Promise<void> {

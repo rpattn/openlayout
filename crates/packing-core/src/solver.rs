@@ -390,6 +390,19 @@ fn solve_with_observer_internal(
         placements: best.iter().map(|entry| entry.placement.clone()).collect(),
         solver_strategy: best_strategy.clone(),
     });
+    if options.baseline_only {
+        counters.greedy_lower_bound = best.len();
+        return finalize_solve(
+            prepared,
+            options,
+            &run_options,
+            best,
+            best_strategy,
+            counters,
+            started,
+            observer,
+        );
+    }
     let effective_restarts = match options.quality {
         crate::SolveQuality::Fast => options.restarts.min(2),
         crate::SolveQuality::Balanced => options.restarts,
@@ -613,6 +626,29 @@ fn solve_with_observer_internal(
             best_strategy = outcome.strategy;
         }
     }
+    finalize_solve(
+        prepared,
+        options,
+        &run_options,
+        best,
+        best_strategy,
+        counters,
+        started,
+        observer,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finalize_solve(
+    prepared: &PreparedProblem,
+    options: &SolveOptions,
+    run_options: &SolveOptions,
+    best: Vec<CandidatePlacement>,
+    best_strategy: String,
+    counters: Counters,
+    started: SolveInstant,
+    observer: &mut dyn SolveObserver,
+) -> Result<SolveResult, PackingError> {
     let best_placements = best
         .iter()
         .map(|entry| entry.placement.clone())
