@@ -69,5 +69,21 @@ bounded-search candidates and 158,891 exact checks in every run. The timing outl
 identical operation counts is why operation counts, not a claimed percentage speedup, are the
 acceptance signal here. The prior static-frontier/shared-geometry median was about 20.6 s.
 
+### Incumbent contact closure review (2026-08-10)
+
+The screenshot regression exposed an 18-piece learned capsule lattice with two reachable slots,
+followed by angle refinement. The portfolio previously inserted before compaction but not after
+it, and never tried to complete the best learned lattice before launching the angle portfolio.
+A bounded contact-only closure now runs at those phase boundaries, prioritizes already-used and
+orthogonal rotations, and immediately rescans a variant after a successful placement.
+
+The native authoritative fixture now reaches the independently validated 20-piece layout during
+`baseline` with the 40,000-iteration direct worker budget. Its deterministic ceilings are 450,000
+generated candidates and 80,000 exact geometry checks (the measured run used 407,537 and 70,060).
+For comparison, the pre-closure 80,000-iteration direct run stopped at 18 with 619,994 generated
+candidates and 143,730 exact checks. Thus the regression protects both the earlier solution phase
+and an operation-count improvement without relying on machine-dependent wall time. The generated
+Wasm runtime test asserts the same phase, count, validation, and ceilings.
+
 See [the solver review](solver-review.md) for the literature mapping, rejected experiments, and
 the recommended overlap-repair/NFP/exact-mode sequence.

@@ -17,6 +17,7 @@ proof is deliberately labelled more narrowly.
 | Curved and compound items | Increasing every contact set to 32 points caused 17.1 million candidates in the capsule regression and did not improve its count. | Detailed contacts are enabled only for polygon sets with at most 16 vertices; sampled curves and compounds retain an eight-point dynamic frontier. | Uniform sampling can miss a critical curved tangency. |
 | Bounds | Area, split-region, and rectangular projection bounds are safe and tested, but the studio area's bound is much larger than its 20-item witness. | Bound provenance and prune counts remain explicit. | General non-convex continuous packing needs stronger relaxation or exact decomposition to prove optimality. |
 | Search | Greedy portfolios, bounded beam search, local remove/repack, continuation, and a small finite conflict graph cover complementary cases. | The validated lower bound is never discarded; candidate/state budgets remain deterministic. | Feasible-only construction cannot cross an overlap barrier and can become trapped in a poor combinatorial basin. |
+| Phase ordering | Learned lattices could open obvious slots but proceed into coarse/angle refinement without closing the incumbent under insertion. | A bounded contact-only closure now completes repeated-item learned layouts and runs after general compaction and rotation; successful variants are immediately rescanned. The studio direct lane reaches 20 during baseline at half the former direct budget. | Closure remains a local feasible insertion operator, not a rearrangement or proof method. |
 | Browser execution | A two-to-four Web Worker portfolio already runs direct, continuation, and deterministic seed lanes concurrently. | Workers own isolated Wasm engines, keeping the UI responsive without shared-memory requirements. | More workers duplicate prepared data and cannot compensate for weak candidates or bounds. |
 | Benchmarking | The studio case protects the 20-item witness; official ESICUP Dighe1 and Dighe2 data provide published exact-density targets. | Dighe1 has a 10/16 floor and Dighe2 a 7/10 floor, both with safe area bounds and independent validation. | Two related puzzle instances are still not enough for broad solver-quality claims. |
 
@@ -34,7 +35,9 @@ the studio problem. It was removed rather than retained as speculative complexit
 - Sato, Martins, and Tsuzuki describe [collision-free regions and exact fitting
   placements](https://www.sciencedirect.com/science/article/pii/S0010448512000565). The new
   multi-contact support score is a bounded discrete version of that priority: translations implied
-  by several contact pairs enter the beam before single-contact alternatives.
+  by several contact pairs enter the beam before single-contact alternatives. Incumbent contact
+  closure applies the same constructive principle at phase boundaries, including orthogonal
+  two-contact intersections, before paying for a broader orientation search.
 - Burke et al. construct [no-fit polygons for line-and-arc
   geometry](https://pubsonline.informs.org/doi/10.1287/opre.1090.0770). Cached NFP/inner-fit
   boundaries would replace many transform-and-collision probes, but adopting them requires a
@@ -49,7 +52,9 @@ the studio problem. It was removed rather than retained as speculative complexit
   `exact` mode that must prove Dighe-style targets rather than merely search longer.
 - [Semi-discrete bottom-left fill](https://arxiv.org/abs/2103.08739) provides a deterministic
   compromise for free rotations. OpenLayout's adaptive-angle variants serve a similar practical
-  role, although candidate positions remain contact/grid based.
+  role, although candidate positions remain contact/grid based. Its role as a fast constructive
+  building block also supports exhausting cheap feasible insertions before metaheuristic/refinement
+  stages rather than treating refinement as a substitute for insertion closure.
 
 ## Recommended development order
 
@@ -65,7 +70,7 @@ the studio problem. It was removed rather than retained as speculative complexit
    The existing worker portfolio already supplies coarse browser parallelism without deployment
    requirements such as cross-origin isolation.
 
-The immediate next performance gain is therefore algorithmic, not simply more browser threads.
-Parallel workers are useful for independent strategies, but stronger contact arrangements,
-overlap repair, and bounds reduce the work each worker must do and improve solution quality as well
-as latency.
+The immediate phase-ordering gap is now closed and protected by native and Wasm regressions. The
+next search-family gain remains algorithmic, not simply more browser threads. Parallel workers are
+useful for independent strategies, but overlap repair, fuller contact arrangements, and stronger
+bounds reduce the work each worker must do and improve solution quality as well as latency.

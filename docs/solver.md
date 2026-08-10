@@ -40,6 +40,15 @@ A state contains selected placement records, per-item counts, a secondary score,
 
 The baseline layout initializes the lower bound. Therefore bounded modes cannot return fewer items than their completed greedy portfolio. The beam starts from fixed placements so it can explore genuinely different construction paths rather than only append to the incumbent.
 
+Before a repeated-item portfolio moves from learned lattices and motifs into coarse and refined
+angle search, the incumbent is closed under a bounded contact-only insertion pass. It first reuses
+orientations already present in the layout, then orthogonal edge-aligned variants, and immediately
+rescans a variant after a successful insertion so the new contacts can expose another easy fit.
+The same cheap closure runs after compaction and in-place rotation for general portfolios. It
+deliberately skips the structured grid already scanned by the greedy pass. On the studio capsule
+fixture this turns the 18-piece learned lattice into the validated 20-piece layout during
+`baseline`, before angle refinement.
+
 ## Valid upper bounds
 
 The tightest applicable bound is used:
@@ -94,6 +103,6 @@ Ordered vectors and maps, total float comparisons, canonical signatures, stable 
 
 Long portfolio, beam, neighbourhood, and graph loops use bounded budgets; portfolio and beam loops check cancellation. Progress distinguishes baseline, beam, neighbourhood, and refinement phases. Browser cancellation remains immediate by terminating the owning Web Worker, without browser APIs or threading in the core.
 
-Expected failures are sparse finite candidates for tight interlocks, weak bounds on concave or disconnected geometry, high candidate-generation cost in thorough mode, polygon approximation error at low segment counts, and numeric ambiguity near the epsilon. All accepted results still pass the independent validator. `BestFound` and `LimitReached` are honest heuristic outcomes, not optimality claims.
+Expected failures are sparse finite candidates for tight interlocks, weak bounds on concave or disconnected geometry, high candidate-generation cost in thorough mode, polygon approximation error at low segment counts, and numeric ambiguity near the epsilon. Contact closure can exploit a gap reachable by one or two feasible insertions but cannot cross an overlap barrier. All accepted results still pass the independent validator. `BestFound` and `LimitReached` are honest heuristic outcomes, not optimality claims.
 
 The broader audit and its primary-literature mapping are recorded in [solver review and literature map](solver-review.md).

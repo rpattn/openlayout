@@ -4,7 +4,7 @@ Work is ordered by evidence needed for the intended private interactive applicat
 
 ## Current engine milestone
 
-The engine now has reusable prepared rotations and bounds, a measured greedy baseline, explicit contact candidates, staged broad/exact collision work, bounded beam states, conservative deduplication and pruning, remove/repack repair, target feasibility, adjacent sensitivity warm starts, transition-focused stronger search, and optional finite conflict-graph refinement. Native and Wasm adapters call the same core, and every accepted layout is independently validated. [Performance notes](performance.md) record where the current modes spend time.
+The engine now has reusable prepared rotations and bounds, a measured greedy baseline, learned-layout and post-compaction contact closure, explicit contact candidates, staged broad/exact collision work, bounded beam states, conservative deduplication and pruning, remove/repack repair, target feasibility, adjacent sensitivity warm starts, transition-focused stronger search, and optional finite conflict-graph refinement. Native and Wasm adapters call the same core, and every accepted layout is independently validated. [Performance notes](performance.md) record where the current modes spend time.
 
 ## Worker integration
 

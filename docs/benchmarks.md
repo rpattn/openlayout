@@ -31,7 +31,7 @@ the source orientation policy. This does not change feasibility at that target l
 | --- | ---: | ---: | --- |
 | ESICUP `Dighe1` | 16 pieces in 100 × 100 (100% density) | 10 / 16 with the retained balanced regression budget | The reflected up-left source coordinates preserve feasibility in OpenLayout's coordinate convention. Input area gives a safe upper bound of 16; all transforms pass independent validation. |
 | ESICUP `Dighe2` | 10 pieces in 100 × 100 (100% density) | 7 / 10 with the retained balanced regression budget | Input area gives a safe upper bound of 10; every returned transform passes independent containment and pair-overlap validation. The three-piece quality gap remains explicit. |
-| Studio start problem | 20 capsules | 20 / 20 with balanced defaults | A deterministic clearance-continuation run returns a 20-item witness, and the ordinary final validator accepts it at the full item, boundary, and exclusion clearances. |
+| Studio start problem | 20-capsule regression target | 20 / 20 in the 40,000-iteration direct lane | Contact closure completes the learned lattice during baseline, before angle refinement; the ordinary final validator accepts it at the full item, boundary, and exclusion clearances. Clearance continuation independently retains the same floor. |
 
 Neither Dighe case is labelled solved by OpenLayout. Reaching every requested piece would prove
 optimality because each set exactly consumes its 100 × 100 target. The current partial results are
@@ -47,6 +47,7 @@ Run the native suite for both embedded Dighe coordinate sets:
 cargo test -p packing-core published_dighe
 ```
 
-The studio start case uses seed 7, balanced quality, 80,000 base iterations, grid step 0.5, and
-three restarts. Its 20-item result is deterministic; it is a feasible witness, not a proof that 20
-is globally maximal, because the safe unrestricted area bound is higher.
+The studio start case uses seed 7, balanced quality, grid step 0.5, and three restarts. The direct
+worker regression uses 40,000 iterations, while the full continuation lane retains the 80,000 base
+budget. Its 20-item result is deterministic; it is a feasible witness, not a proof that 20 is
+globally maximal, because the safe unrestricted area bound is higher.

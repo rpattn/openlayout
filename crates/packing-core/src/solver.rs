@@ -353,6 +353,33 @@ fn solve_with_observer_internal(
         }
     }
     clear_local_limit(&mut counters, &run_options);
+    let requested_count = prepared
+        .problem
+        .items
+        .iter()
+        .map(|item| item.quantity as usize)
+        .sum::<usize>();
+    if prepared.problem.items.len() == 1 && best.len() < requested_count {
+        let count_before = best.len();
+        let order = completion_variant_order(prepared, &best);
+        let mut completion_options = run_options;
+        completion_options.max_iterations = (counters.iterations
+            + run_options.max_iterations.saturating_mul(10) / 100)
+            .min(run_options.max_iterations);
+        contact_fill(
+            prepared,
+            &completion_options,
+            &order,
+            &mut best,
+            &mut counters,
+            started,
+            observer,
+        );
+        if best.len() > count_before {
+            best_strategy.push_str("+contact_fill");
+        }
+        clear_local_limit(&mut counters, &run_options);
+    }
     observer.on_progress(&SolveProgress {
         phase: SolvePhase::Baseline,
         completed_fraction: (counters.iterations as f64 / run_options.max_iterations as f64)
@@ -382,8 +409,10 @@ fn solve_with_observer_internal(
         let attempt_start = counters.iterations;
         let structured_end = attempt_start + attempt_budget.saturating_mul(30) / 100;
         let greedy_end = attempt_start + attempt_budget.saturating_mul(85) / 100;
-        let compact_end = attempt_start + attempt_budget.saturating_mul(92) / 100;
-        let rotate_end = attempt_start + attempt_budget.saturating_mul(96) / 100;
+        let compact_end = attempt_start + attempt_budget.saturating_mul(90) / 100;
+        let compact_refill_end = attempt_start + attempt_budget.saturating_mul(92) / 100;
+        let rotate_end = attempt_start + attempt_budget.saturating_mul(95) / 100;
+        let rotate_refill_end = attempt_start + attempt_budget.saturating_mul(97) / 100;
         let attempt_end = (attempt_start + attempt_budget).min(run_options.max_iterations);
         let mut phase_options = run_options;
         phase_options.max_iterations = structured_end
@@ -438,6 +467,23 @@ fn solve_with_observer_internal(
             started,
             observer,
         );
+        // Compaction changes the free-space arrangement. Close the incumbent under cheap
+        // contact insertion before spending the next slice of the budget on rotations. Without
+        // this pass, an obvious gap opened by compaction remains empty until destroy/reinsert or
+        // the later beam search happens to reconstruct it.
+        clear_local_limit(&mut counters, &run_options);
+        phase_options.max_iterations = compact_refill_end
+            .max(counters.iterations + 1)
+            .min(run_options.max_iterations);
+        contact_fill(
+            prepared,
+            &phase_options,
+            &order,
+            &mut placements,
+            &mut counters,
+            started,
+            observer,
+        );
         let mut neighbourhood_improved = false;
         if options.quality != crate::SolveQuality::Fast {
             clear_local_limit(&mut counters, &run_options);
@@ -447,6 +493,19 @@ fn solve_with_observer_internal(
             rotate_and_compact(
                 prepared,
                 &phase_options,
+                &mut placements,
+                &mut counters,
+                started,
+                observer,
+            );
+            clear_local_limit(&mut counters, &run_options);
+            phase_options.max_iterations = rotate_refill_end
+                .max(counters.iterations + 1)
+                .min(run_options.max_iterations);
+            contact_fill(
+                prepared,
+                &phase_options,
+                &order,
                 &mut placements,
                 &mut counters,
                 started,
@@ -1741,28 +1800,99 @@ fn greedy_fill(
     }
 }
 
+/// Completes a locally improved incumbent using only contact-derived positions. This deliberately
+/// omits the full structured grid already scanned by `greedy_fill`, making it cheap enough to run
+/// after compaction and rotation in every portfolio attempt.
+fn contact_fill(
+    prepared: &PreparedProblem,
+    options: &SolveOptions,
+    order: &[usize],
+    placed: &mut Vec<CandidatePlacement>,
+    counters: &mut Counters,
+    started: SolveInstant,
+    observer: &mut dyn SolveObserver,
+) {
+    for &variant_index in order {
+        let variant = &prepared.variants[variant_index];
+        if item_count(placed, &variant.item_id)
+            >= prepared.problem.items[variant.item_index].quantity as usize
+        {
+            continue;
+        }
+        // Immediately rescan a successful variant once. This exposes contacts created by the new
+        // placement before unrelated angles consume the bounded completion budget.
+        for _ in 0..2 {
+            let count_before = placed.len();
+            let mut positions = contact_positions(prepared, variant, placed);
+            positions.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.total_cmp(&b.0)));
+            positions.dedup_by(|a, b| (a.0 - b.0).abs() < EPSILON && (a.1 - b.1).abs() < EPSILON);
+            for (x, y) in positions {
+                if stop_requested(options, started, counters, observer) {
+                    return;
+                }
+                try_place(prepared, variant, x, y, placed, counters);
+            }
+            if placed.len() == count_before {
+                break;
+            }
+        }
+    }
+}
+
+fn completion_variant_order(
+    prepared: &PreparedProblem,
+    incumbent: &[CandidatePlacement],
+) -> Vec<usize> {
+    let mut order = (0..prepared.variants.len()).collect::<Vec<_>>();
+    order.sort_by(|a, b| {
+        let a_variant = &prepared.variants[*a];
+        let b_variant = &prepared.variants[*b];
+        let a_used = incumbent.iter().any(|placed| {
+            placed.placement.item_id == a_variant.item_id
+                && same_rotation(placed.placement.rotation_deg, a_variant.rotation_deg)
+        });
+        let b_used = incumbent.iter().any(|placed| {
+            placed.placement.item_id == b_variant.item_id
+                && same_rotation(placed.placement.rotation_deg, b_variant.rotation_deg)
+        });
+        let a_orthogonal = (a_variant.rotation_deg / 90.0).round() * 90.0;
+        let b_orthogonal = (b_variant.rotation_deg / 90.0).round() * 90.0;
+        (!a_used)
+            .cmp(&(!b_used))
+            .then_with(|| {
+                ((a_variant.rotation_deg - a_orthogonal).abs() > EPSILON)
+                    .cmp(&((b_variant.rotation_deg - b_orthogonal).abs() > EPSILON))
+            })
+            .then_with(|| a_variant.item_index.cmp(&b_variant.item_index))
+            .then_with(|| a_variant.rotation_deg.total_cmp(&b_variant.rotation_deg))
+            .then_with(|| a.cmp(b))
+    });
+    order
+}
+
 fn contact_positions(
     prepared: &PreparedProblem,
     variant: &crate::prepare::PreparedVariant,
     placed: &[CandidatePlacement],
 ) -> Vec<(f64, f64)> {
     let gap = prepared.problem.clearance.item_to_item + EPSILON * 10.0;
+    let boundary_gap = prepared.problem.clearance.item_to_boundary + EPSILON * 10.0;
     let mut positions = vec![
         (
-            prepared.container_bounds.min_x - variant.bounds.min_x,
-            prepared.container_bounds.min_y - variant.bounds.min_y,
+            prepared.container_bounds.min_x + boundary_gap - variant.bounds.min_x,
+            prepared.container_bounds.min_y + boundary_gap - variant.bounds.min_y,
         ),
         (
-            prepared.container_bounds.max_x - variant.bounds.max_x,
-            prepared.container_bounds.min_y - variant.bounds.min_y,
+            prepared.container_bounds.max_x - boundary_gap - variant.bounds.max_x,
+            prepared.container_bounds.min_y + boundary_gap - variant.bounds.min_y,
         ),
         (
-            prepared.container_bounds.min_x - variant.bounds.min_x,
-            prepared.container_bounds.max_y - variant.bounds.max_y,
+            prepared.container_bounds.min_x + boundary_gap - variant.bounds.min_x,
+            prepared.container_bounds.max_y - boundary_gap - variant.bounds.max_y,
         ),
         (
-            prepared.container_bounds.max_x - variant.bounds.max_x,
-            prepared.container_bounds.max_y - variant.bounds.max_y,
+            prepared.container_bounds.max_x - boundary_gap - variant.bounds.max_x,
+            prepared.container_bounds.max_y - boundary_gap - variant.bounds.max_y,
         ),
     ];
     // Exact vertex and edge-midpoint alignment supplies useful contacts for rotated, concave,
@@ -1785,23 +1915,28 @@ fn contact_positions(
             positions.push((boundary.x - item.x, boundary.y - item.y));
         }
     }
+    let mut contact_xs = Vec::new();
+    let mut contact_ys = Vec::new();
     for existing in placed {
-        positions.push((
-            existing.bounds.max_x + gap - variant.bounds.min_x,
-            existing.placement.y,
-        ));
-        positions.push((
-            existing.bounds.min_x - gap - variant.bounds.max_x,
-            existing.placement.y,
-        ));
-        positions.push((
-            existing.placement.x,
-            existing.bounds.max_y + gap - variant.bounds.min_y,
-        ));
-        positions.push((
-            existing.placement.x,
-            existing.bounds.min_y - gap - variant.bounds.max_y,
-        ));
+        let right = existing.bounds.max_x + gap - variant.bounds.min_x;
+        let left = existing.bounds.min_x - gap - variant.bounds.max_x;
+        let above = existing.bounds.max_y + gap - variant.bounds.min_y;
+        let below = existing.bounds.min_y - gap - variant.bounds.max_y;
+        contact_xs.extend([right, left]);
+        contact_ys.extend([above, below]);
+        positions.extend([
+            (right, existing.placement.y),
+            (left, existing.placement.y),
+            (existing.placement.x, above),
+            (existing.placement.x, below),
+        ]);
+    }
+    // Intersect orthogonal contacts from different neighbours. These two-constraint points are
+    // the inexpensive rectangular analogue of an exact-fit vertex in a collision-free region.
+    for x in contact_xs.into_iter().take(12) {
+        for y in contact_ys.iter().take(12) {
+            positions.push((x, *y));
+        }
     }
     for exclusion in &prepared.exclusions {
         let boundary = bounds(exclusion);

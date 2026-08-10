@@ -107,6 +107,19 @@ test("Wasm studio defaults recover the validated 20-item layout", () => {
     grid_step: 0.5, restarts: 3, quality: "balanced",
   };
   const engine = new PackingEngine();
+  const directProgress = [];
+  const direct = JSON.parse(engine.solve_direct_with_progress(
+    JSON.stringify(studioProblem),
+    JSON.stringify({ ...studioOptions, max_iterations: 40_000 }),
+    (json) => directProgress.push(JSON.parse(json)),
+  ));
+  assert.equal(direct.packed_item_count, 20);
+  assert.equal(direct.validation.valid, true);
+  assert.match(direct.solver_strategy, /\+contact_fill$/);
+  assert.ok(directProgress.some((entry) => entry.phase === "baseline" && entry.packed_item_count === 20));
+  assert.ok(direct.statistics.generated_candidates <= 450_000);
+  assert.ok(direct.statistics.exact_geometry_checks <= 80_000);
+
   const progress = [];
   const result = JSON.parse(engine.solve_clearance_continuation_with_progress(
     JSON.stringify(studioProblem),

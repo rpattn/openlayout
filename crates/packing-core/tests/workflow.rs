@@ -63,6 +63,17 @@ fn options() -> SolveOptions {
     }
 }
 
+#[derive(Default)]
+struct RecordingObserver {
+    progress: Vec<SolveProgress>,
+}
+
+impl SolveObserver for RecordingObserver {
+    fn on_progress(&mut self, progress: &SolveProgress) {
+        self.progress.push(progress.clone());
+    }
+}
+
 #[test]
 fn container_snaps_and_resolved_boolean_geometry_follow_rotation() {
     let mut problem = rectangle_problem(4.0, 2.0, 1.0, 1.0);
@@ -1087,4 +1098,28 @@ fn capsule_quality_and_studio_twenty_item_witness_are_validated() {
     let prepared = prepare_problem(&problem).unwrap();
     let validation = validate_placements(&prepared, &witness).unwrap();
     assert!(validation.valid, "{}", validation.errors.join("; "));
+    let mut direct_options = solve_options;
+    direct_options.quality = SolveQuality::Balanced;
+    direct_options.max_iterations = 40_000;
+    let mut observer = RecordingObserver::default();
+    let direct = solve_with_observer_direct(&prepared, &direct_options, &mut observer).unwrap();
+    assert_eq!(direct.packed_item_count, 20);
+    assert!(direct.validation.valid);
+    assert!(direct.solver_strategy.ends_with("+contact_fill"));
+    assert!(
+        observer.progress.iter().any(|progress| {
+            progress.phase == SolvePhase::Baseline && progress.packed_item_count == 20
+        }),
+        "the direct lane should complete the lattice before angle refinement"
+    );
+    assert!(
+        direct.statistics.generated_candidates <= 450_000,
+        "direct completion regressed to {} generated candidates",
+        direct.statistics.generated_candidates
+    );
+    assert!(
+        direct.statistics.exact_geometry_checks <= 80_000,
+        "direct completion regressed to {} exact checks",
+        direct.statistics.exact_geometry_checks
+    );
 }
