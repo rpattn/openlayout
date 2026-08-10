@@ -1244,9 +1244,6 @@ fn learned_motif_layouts(
     started: SolveInstant,
     observer: &mut dyn SolveObserver,
 ) -> Vec<(String, Vec<CandidatePlacement>)> {
-    if prepared.problem.clearance.item_to_item > EPSILON {
-        return Vec::new();
-    }
     let mut layouts = Vec::new();
     for (item_id, variant_indexes) in &prepared.variants_by_item {
         let item = prepared
@@ -1269,17 +1266,35 @@ fn learned_motif_layouts(
         {
             continue;
         }
+        // Pairwise contact offsets are intentionally a low-complexity polygon strategy. Curved
+        // and compound variants make each offset/distance probe much more expensive and already
+        // have dedicated lattice, contact-closure, and continuation paths. Applying the motif
+        // cross-product to the studio capsule causes a large latency regression without adding a
+        // useful seed.
+        if variant_indexes.iter().any(|index| {
+            prepared.variants[*index]
+                .geometry
+                .polygons
+                .iter()
+                .map(Vec::len)
+                .sum::<usize>()
+                > 16
+        }) {
+            continue;
+        }
         let mut pairs = Vec::new();
         for first_position in 0..variant_indexes.len() {
             for second_position in (first_position + 1)..variant_indexes.len() {
                 let first = &prepared.variants[variant_indexes[first_position]];
                 let second = &prepared.variants[variant_indexes[second_position]];
+                // Complementary polygon motifs most often come from a half-turn: an upright and
+                // inverted triangle, for example. Rank those pairs before quarter-turn and nearby
+                // continuous variants so the bounded pair portfolio does not spend all eight
+                // slots on 90-degree combinations.
                 let difference = (first.rotation_deg - second.rotation_deg)
                     .abs()
-                    .rem_euclid(180.0);
-                let priority = (difference - 90.0)
-                    .abs()
-                    .min(difference.min(180.0 - difference));
+                    .rem_euclid(360.0);
+                let priority = (difference - 180.0).abs();
                 pairs.push((priority, first_position, second_position));
             }
         }
@@ -1291,7 +1306,11 @@ fn learned_motif_layouts(
         for (_, first_position, second_position) in pairs.into_iter().take(8) {
             let first = &prepared.variants[variant_indexes[first_position]];
             let second = &prepared.variants[variant_indexes[second_position]];
-            for (offset, motif_bounds) in best_motif_offsets(first, second).into_iter().take(2) {
+            for (offset, motif_bounds) in
+                best_motif_offsets(first, second, prepared.problem.clearance.item_to_item)
+                    .into_iter()
+                    .take(2)
+            {
                 for (vertical_high, horizontal_high) in
                     [(false, false), (false, true), (true, false), (true, true)]
                 {
@@ -1330,6 +1349,7 @@ fn learned_motif_layouts(
 fn best_motif_offsets(
     first: &crate::prepare::PreparedVariant,
     second: &crate::prepare::PreparedVariant,
+    clearance: f64,
 ) -> Vec<(crate::Point, Bounds)> {
     let first_contacts = first
         .geometry
@@ -1349,9 +1369,17 @@ fn best_motif_offsets(
     let mut candidates = Vec::new();
     for first_point in &first_contacts {
         for second_point in &second_contacts {
-            let offset = crate::Point {
+            let contact_offset = crate::Point {
                 x: first_point.x - second_point.x,
                 y: first_point.y - second_point.y,
+            };
+            let Some(offset) = separated_motif_offset(
+                &first.geometry,
+                &second.geometry,
+                contact_offset,
+                clearance,
+            ) else {
+                continue;
             };
             let moved = transform(&second.geometry, 0.0, offset.x, offset.y);
             if sets_overlap(&first.geometry, &moved) {
@@ -1386,6 +1414,56 @@ fn best_motif_offsets(
         .collect()
 }
 
+/// Moves a touching motif pair apart along its centre-to-centre direction until the requested
+/// clearance is reached. Contact-derived pairs are already non-overlapping at zero clearance;
+/// retaining their direction preserves complementary edge alignment for triangles and other
+/// low-complexity polygons instead of falling back to their bounding boxes.
+fn separated_motif_offset(
+    first: &PolygonSet,
+    second: &PolygonSet,
+    contact_offset: crate::Point,
+    clearance: f64,
+) -> Option<crate::Point> {
+    let length = contact_offset.x.hypot(contact_offset.y);
+    if length <= EPSILON {
+        return (clearance <= EPSILON).then_some(contact_offset);
+    }
+    let direction = crate::Point {
+        x: contact_offset.x / length,
+        y: contact_offset.y / length,
+    };
+    let offset_at = |extra: f64| crate::Point {
+        x: contact_offset.x + direction.x * extra,
+        y: contact_offset.y + direction.y * extra,
+    };
+    let separated = |extra: f64| {
+        let offset = offset_at(extra);
+        let moved = transform(second, 0.0, offset.x, offset.y);
+        !sets_overlap(first, &moved) && set_distance(first, &moved) + EPSILON >= clearance
+    };
+    if separated(0.0) {
+        return Some(contact_offset);
+    }
+    let mut high = clearance.max(EPSILON * 10.0);
+    let search_limit = length + clearance + bounds(first).width() + bounds(second).width();
+    while high <= search_limit && !separated(high) {
+        high *= 2.0;
+    }
+    if !separated(high) {
+        return None;
+    }
+    let mut low = 0.0;
+    for _ in 0..32 {
+        let middle = (low + high) / 2.0;
+        if separated(middle) {
+            high = middle;
+        } else {
+            low = middle;
+        }
+    }
+    Some(offset_at(high + EPSILON * 10.0))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn motif_fill(
     prepared: &PreparedProblem,
@@ -1402,8 +1480,16 @@ fn motif_fill(
     observer: &mut dyn SolveObserver,
 ) {
     let boundary_clearance = prepared.problem.clearance.item_to_boundary;
-    let pitch_x = motif_bounds.width();
-    let pitch_y = motif_bounds.height();
+    let moved_second = transform(&second.geometry, 0.0, offset.x, offset.y);
+    let mut motif_polygons = first.geometry.polygons.clone();
+    motif_polygons.extend(moved_second.polygons);
+    let motif = PolygonSet {
+        polygons: motif_polygons,
+    };
+    let clearance = prepared.problem.clearance.item_to_item;
+    let pitch_x =
+        learned_geometry_separation(&motif, motif_bounds, 0.0, false, clearance, counters);
+    let pitch_y = learned_geometry_separation(&motif, motif_bounds, 0.0, true, clearance, counters);
     if pitch_x <= EPSILON || pitch_y <= EPSILON {
         return;
     }
@@ -1440,6 +1526,21 @@ fn motif_fill(
             }
             try_place_pair(prepared, first, second, x, y, offset, placed, counters);
             x += if horizontal_high { -pitch_x } else { pitch_x };
+        }
+        // A repeated pair can leave room for one final member of the alternating chain even
+        // though the complete two-item motif no longer fits. Trying both members at that next
+        // origin closes odd-length rows directly and avoids spending thousands of generic
+        // contact probes to recover the elementary ninth triangle in a row.
+        if !stop_requested(options, started, counters, observer) {
+            try_place(prepared, first, x, y, placed, counters);
+            try_place(
+                prepared,
+                second,
+                x + offset.x,
+                y + offset.y,
+                placed,
+                counters,
+            );
         }
         y += if vertical_high { -pitch_y } else { pitch_y };
     }
@@ -1552,10 +1653,28 @@ fn learned_separation(
     clearance: f64,
     counters: &mut Counters,
 ) -> f64 {
+    learned_geometry_separation(
+        &variant.geometry,
+        variant.bounds,
+        orthogonal_offset,
+        vertical,
+        clearance,
+        counters,
+    )
+}
+
+fn learned_geometry_separation(
+    geometry: &PolygonSet,
+    geometry_bounds: Bounds,
+    orthogonal_offset: f64,
+    vertical: bool,
+    clearance: f64,
+    counters: &mut Counters,
+) -> f64 {
     let upper = if vertical {
-        variant.bounds.height()
+        geometry_bounds.height()
     } else {
-        variant.bounds.width()
+        geometry_bounds.width()
     } + clearance;
     let samples = 64;
     let mut previous = 0.0;
@@ -1563,14 +1682,14 @@ fn learned_separation(
         let separation = upper * sample as f64 / samples as f64;
         counters.iterations += 1;
         counters.evaluated += 1;
-        if variants_separated(variant, orthogonal_offset, separation, vertical, clearance) {
+        if geometries_separated(geometry, orthogonal_offset, separation, vertical, clearance) {
             let mut low = previous;
             let mut high = separation;
             for _ in 0..24 {
                 let middle = (low + high) / 2.0;
                 counters.iterations += 1;
                 counters.evaluated += 1;
-                if variants_separated(variant, orthogonal_offset, middle, vertical, clearance) {
+                if geometries_separated(geometry, orthogonal_offset, middle, vertical, clearance) {
                     high = middle;
                 } else {
                     low = middle;
@@ -1583,20 +1702,19 @@ fn learned_separation(
     upper
 }
 
-fn variants_separated(
-    variant: &crate::prepare::PreparedVariant,
+fn geometries_separated(
+    geometry: &PolygonSet,
     orthogonal_offset: f64,
     separation: f64,
     vertical: bool,
     clearance: f64,
 ) -> bool {
     let moved = if vertical {
-        transform(&variant.geometry, 0.0, orthogonal_offset, separation)
+        transform(geometry, 0.0, orthogonal_offset, separation)
     } else {
-        transform(&variant.geometry, 0.0, separation, orthogonal_offset)
+        transform(geometry, 0.0, separation, orthogonal_offset)
     };
-    !sets_overlap(&variant.geometry, &moved)
-        && set_distance(&variant.geometry, &moved) + EPSILON >= clearance
+    !sets_overlap(geometry, &moved) && set_distance(geometry, &moved) + EPSILON >= clearance
 }
 
 fn alternating_fill(

@@ -939,6 +939,66 @@ fn learned_complementary_motif_tiles_right_triangles_exactly() {
 }
 
 #[test]
+fn learned_clearance_motif_packs_basic_triangles_densely() {
+    let mut problem = rectangle_problem(20.0, 15.0, 3.0, 3.0);
+    problem.items[0].quantity = 50;
+    problem.items[0].shape = Shape::Compound {
+        parts: vec![ShapePart {
+            shape: Box::new(Shape::Triangle {
+                base: 3.0,
+                height: 3.0,
+            }),
+            translation: Point::default(),
+            rotation_deg: 0.0,
+            snap: None,
+        }],
+    };
+    problem.items[0].rotation_policy = RotationPolicy::Continuous {
+        min_deg: 0.0,
+        max_deg: 360.0,
+        coupling: RotationCoupling::Independent,
+    };
+    problem.clearance = Clearance {
+        item_to_item: 0.35,
+        item_to_boundary: 0.3,
+        item_to_exclusion: 0.25,
+    };
+    let mut solve_options = options();
+    solve_options.seed = 7;
+    solve_options.max_iterations = 10_000;
+    solve_options.restarts = 3;
+    solve_options.baseline_only = true;
+
+    let result = solve(&problem, &solve_options).unwrap();
+
+    // Four rows of nine alternating triangles are an elementary witness: adjacent sloping
+    // edges are separated by 0.35 and rows are separated by the same clearance. The solver
+    // should recover at least that construction without treating each triangle as its box.
+    assert!(
+        result.packed_item_count >= 36,
+        "expected the 36-piece alternating-triangle witness, got {} via {}",
+        result.packed_item_count,
+        result.solver_strategy
+    );
+    assert!(
+        result.solver_strategy.starts_with("learned_motif_"),
+        "expected the clearance-aware motif baseline, got {}",
+        result.solver_strategy
+    );
+    assert!(
+        result.statistics.generated_candidates <= 15_000,
+        "basic triangle packing generated {} candidates",
+        result.statistics.generated_candidates
+    );
+    assert!(
+        result.statistics.exact_geometry_checks <= 6_000,
+        "basic triangle packing used {} exact checks",
+        result.statistics.exact_geometry_checks
+    );
+    assert!(result.validation.valid);
+}
+
+#[test]
 fn learned_decomposition_fills_offset_disconnected_regions() {
     let mut problem = rectangle_problem(1.0, 1.0, 2.0, 2.0);
     problem.items[0].quantity = 4;

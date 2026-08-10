@@ -85,5 +85,26 @@ candidates and 143,730 exact checks. Thus the regression protects both the earli
 and an operation-count improvement without relying on machine-dependent wall time. The generated
 Wasm runtime test asserts the same phase, count, validation, and ceilings.
 
+### Clearance-aware triangle motifs (2026-08-10)
+
+The latest basic-shape screenshot returned 26 of 50 triangles. The single-orientation lattice
+could only stagger identical rotations, the complementary motif path was disabled for every
+positive item clearance, and the generic alternating fallback advanced by full triangle bounding
+boxes. Increasing iterations therefore searched around a structurally sparse seed.
+
+The motif learner now separates a contact-derived pair to the requested clearance and learns the
+repeat pitch from the combined geometry. A deterministic baseline-only regression packs the known
+36-piece alternating-row witness for 3 × 3 triangles in a 20 × 15 rectangle with 0.35 pair and
+0.3 boundary clearance. It does so at a 10,000-iteration budget; the continuous-rotation web
+fixture generated 12,973 candidates and used 4,171 exact checks, with test ceilings of 15,000 and
+6,000 respectively. The independent final validator remains the acceptance gate.
+
+Pairwise motif learning is capped at 16 vertices per prepared variant. The default compound
+capsule therefore remains on its existing lattice, contact-closure, and continuation paths rather
+than paying a continuous-rotation motif cross-product. After adding the gate, the combined release
+regression covering the 17-piece width-4.375 case and the 20-piece direct studio witness completed
+in 5.44 seconds locally; the direct witness still stays below its 450,000 generated-candidate and
+80,000 exact-check ceilings.
+
 See [the solver review](solver-review.md) for the literature mapping, rejected experiments, and
 the recommended overlap-repair/NFP/exact-mode sequence.

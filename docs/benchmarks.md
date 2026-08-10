@@ -4,6 +4,12 @@ OpenLayout keeps geometric validity and solution quality separate. Every reporte
 independently revalidated, while a published best-known solution is treated as a target rather
 than as proof that this heuristic has attained it.
 
+Small canonical constructions complement the published irregular instances. Automated checks
+cover the exact 15-square tiling of a 10 × 6 rectangle, the exact 50-piece complementary
+right-triangle tiling of a 10 × 10 square, a 23-disk five-row hexagonal lattice, and a 36-piece
+alternating-triangle witness with positive pair and boundary clearance. The last case directly
+guards against reducing non-rectangular pieces to their bounding boxes during pattern learning.
+
 ## Sources and adaptation
 
 - The [official ESICUP dataset repository](https://github.com/ESICUP/datasets/tree/main/2d_irregular/dighe)

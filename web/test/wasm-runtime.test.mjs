@@ -88,6 +88,46 @@ test("Wasm baseline-only mode validates without refinement phases", () => {
   engine.free();
 });
 
+test("Wasm baseline learns clearance-aware complementary triangle rows", () => {
+  const triangleProblem = {
+    schema_version: 2,
+    container: { parts: [{
+      id: "stock", operation: "add",
+      shape: { kind: "rectangle", width: 20, height: 15 },
+      translation: { x: 0, y: 0 }, rotation_deg: 0,
+    }] },
+    exclusions: [],
+    items: [{
+      id: "item-a", quantity: 50,
+      rotation_policy: { kind: "continuous", min_deg: 0, max_deg: 360, coupling: "independent" },
+      shape: { kind: "compound", parts: [{
+        shape: { kind: "triangle", base: 3, height: 3 },
+        translation: { x: 0, y: 0 }, rotation_deg: 0, snap: null,
+      }] },
+    }],
+    fixed_placements: [],
+    clearance: { item_to_item: 0.35, item_to_boundary: 0.3, item_to_exclusion: 0.25 },
+  };
+  const engine = new PackingEngine();
+  const result = JSON.parse(engine.solve_with_progress(
+    JSON.stringify(triangleProblem),
+    JSON.stringify({ ...options, seed: 7, max_iterations: 10_000, grid_step: 0.5, restarts: 3, baseline_only: true }),
+    () => {},
+  ));
+
+  assert.ok(result.packed_item_count >= 36, JSON.stringify({
+    count: result.packed_item_count,
+    strategy: result.solver_strategy,
+    generated: result.statistics.generated_candidates,
+    exact: result.statistics.exact_geometry_checks,
+  }));
+  assert.match(result.solver_strategy, /^learned_motif_/);
+  assert.equal(result.validation.valid, true);
+  assert.ok(result.statistics.generated_candidates <= 15_000);
+  assert.ok(result.statistics.exact_geometry_checks <= 6_000);
+  engine.free();
+});
+
 test("Wasm studio defaults recover the validated 20-item layout", () => {
   const exclusion = Array.from({ length: 32 }, (_, index) => {
     const angle = Math.PI * 2 * index / 32;

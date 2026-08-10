@@ -40,6 +40,14 @@ A state contains selected placement records, per-item counts, a secondary score,
 
 The baseline layout initializes the lower bound. Therefore bounded modes cannot return fewer items than their completed greedy portfolio. The beam starts from fixed placements so it can explore genuinely different construction paths rather than only append to the incumbent.
 
+Repeated-item pattern learning includes both single-orientation lattices and complementary
+two-orientation motifs. Motifs begin at vertex or edge-midpoint contacts. With positive pair
+clearance, the second shape is moved along the contact direction until exact geometry reaches the
+requested separation; the solver then learns horizontal and vertical repeat distances from the
+whole two-shape motif. This matters for triangles: advancing by an axis-aligned bounding box
+throws away the interlocking space, while disabling motifs at positive clearance leaves the
+general portfolio to rediscover a basic alternating row one placement at a time.
+
 Before a repeated-item portfolio moves from learned lattices and motifs into coarse and refined
 angle search, the incumbent is closed under a bounded contact-only insertion pass. It first reuses
 orientations already present in the layout, then orthogonal edge-aligned variants, and immediately
