@@ -129,7 +129,7 @@ test("Wasm baseline learns clearance-aware complementary triangle rows", () => {
   engine.free();
 });
 
-test("Wasm studio defaults recover the validated 20-item layout", () => {
+test("Wasm studio defaults recover direct 20 and continuation 21", () => {
   const exclusion = Array.from({ length: 32 }, (_, index) => {
     const angle = Math.PI * 2 * index / 32;
     return { x: 15 + 2.1 * Math.cos(angle), y: 8 + 2.1 * Math.sin(angle) };
@@ -175,8 +175,9 @@ test("Wasm studio defaults recover the validated 20-item layout", () => {
   assert.equal(direct.validation.valid, true);
   assert.match(direct.solver_strategy, /\+contact_fill$/);
   assert.ok(directProgress.some((entry) => entry.phase === "baseline" && entry.packed_item_count === 20));
-  assert.ok(direct.statistics.generated_candidates <= 450_000);
-  assert.ok(direct.statistics.exact_geometry_checks <= 80_000);
+  assert.ok(direct.statistics.iterations <= 20_000);
+  assert.ok(direct.statistics.generated_candidates <= 390_000);
+  assert.ok(direct.statistics.exact_geometry_checks <= 40_000);
 
   const progress = [];
   const result = JSON.parse(engine.solve_clearance_continuation_with_progress(
@@ -184,16 +185,15 @@ test("Wasm studio defaults recover the validated 20-item layout", () => {
     JSON.stringify(studioOptions),
     (json) => progress.push(JSON.parse(json)),
   ));
-
-  assert.equal(result.packed_item_count, 20);
+  assert.equal(result.packed_item_count, 21);
   assert.equal(result.solver_strategy, "clearance_continuation");
   assert.equal(result.validation.valid, true);
-  assert.equal(result.statistics.continuation_stages, 8);
+  assert.ok(result.statistics.continuation_stages <= 2);
   assert.ok(result.statistics.continuation_repair_only_stages > 0);
   assert.ok(progress.some((entry) => entry.phase === "clearance_continuation"));
   const continuationProgress = progress.filter((entry) => entry.phase === "clearance_continuation");
   assert.ok(continuationProgress.every((entry) => entry.packed_item_count === entry.placements.length));
-  assert.ok(continuationProgress.every((entry) => entry.packed_item_count <= 20));
+  assert.ok(continuationProgress.every((entry) => entry.packed_item_count <= 21));
   assert.ok(continuationProgress.flatMap((entry) => entry.placements)
     .every((placement) => placement.x >= 0 && placement.x <= 30 && placement.y >= 0 && placement.y <= 18));
   engine.free();
