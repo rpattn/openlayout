@@ -62,6 +62,12 @@ quick solution-quality check, not an alias for `fast`: the selected quality stil
 pre-boundary iteration multiplier, while the option explicitly skips portfolio rotations,
 continuation, neighbourhood repair, beam search, and conflict-graph refinement.
 
+For a single continuously rotatable item whose prepared outline has more than 16 vertices, the
+portfolio stops after two structurally different attempts fail to improve the contact-closed
+incumbent. This complexity-aware stagnation rule still probes rows and staggered rows, but avoids
+spending the remainder of a deterministic budget on equivalent curved-shape angle orders. Any
+improvement resets the counter, and low-complexity polygons retain the complete angle portfolio.
+
 ## Valid upper bounds
 
 The tightest applicable bound is used:
@@ -124,12 +130,19 @@ use a bounded clearance continuation when their direct portfolio leaves a gap. T
 from relaxed separation, raises it through deterministic stages, repairs the prior placement set,
 and first attempts to retain the incumbent at every stage. A damaged stage uses a bounded target
 beam before a reduced-budget full warm solve; an intact stage performs no portfolio search.
+For one independently rotatable elongated compound item, the first improved relaxed layout also
+enters a small deterministic annealing portfolio. Its cheap objective replaces each item by a
+slightly conservative capsule and keeps containment and exclusions hard. A large axis-aligned
+rectangle proven to lie in the container avoids repeated polygon containment work in its interior;
+trials outside it use exact containment. Surrogate zero is never sufficient: the ordinary
+independent validator must accept the original compound geometry before continuation can stop.
 Prepared variants, normalized regions, contacts, and bounds are cloned from one canonical prepared
 problem rather than rebuilt. Continuation runs in a container-centred coordinate frame so an
 equivalent translation of the entire problem cannot select a different search path; placements
 are translated back before validation. The final stage uses the requested clearance, and the
 normal independent validator still decides whether the result is accepted. This path recovers the
-studio start problem's 20-item layout, which direct greedy and beam starts miss.
+studio start problem's 21-item layout after two clearance stages; the faster direct lane retains
+its 20-item baseline result.
 
 Adaptive midpoint evaluations automatically use `thorough`, concentrating work around observed capacity transitions. Easier and harder changes follow the same validation-first repair path. Non-monotonic capacities remain visible as warnings rather than being rewritten.
 

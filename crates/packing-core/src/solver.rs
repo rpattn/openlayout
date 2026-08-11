@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant as NativeInstant;
 
+const CONTINUATION_ANNEAL_SEED_SALTS: [u64; 2] = [6, 4];
+
 #[cfg(not(target_arch = "wasm32"))]
 type SolveInstant = NativeInstant;
 
@@ -417,6 +419,21 @@ fn solve_with_observer_internal(
     };
     let variants = portfolio_orders(prepared, options.seed, effective_restarts);
     let portfolio_count = variants.len();
+    let stop_stale_complex_portfolio = prepared.problem.items.len() == 1
+        && matches!(
+            prepared.problem.items[0].rotation_policy,
+            crate::RotationPolicy::Continuous { .. }
+        )
+        && prepared.variants.iter().any(|variant| {
+            variant
+                .geometry
+                .polygons
+                .iter()
+                .map(Vec::len)
+                .sum::<usize>()
+                > 16
+        });
+    let mut stale_portfolio_attempts = 0usize;
     for (strategy_index, (strategy, order, stagger, columns, alternating, cross_high)) in
         variants.into_iter().enumerate()
     {
@@ -549,6 +566,7 @@ fn solve_with_observer_internal(
                 counters.local_improvements_accepted += 1;
             }
         }
+        let incumbent_count = best.len();
         if placements.len() > best.len()
             || (placements.len() == best.len() && layout_key(&placements) < layout_key(&best))
         {
@@ -558,6 +576,11 @@ fn solve_with_observer_internal(
             } else {
                 format!("{strategy}+greedy+compact")
             };
+        }
+        if best.len() > incumbent_count {
+            stale_portfolio_attempts = 0;
+        } else {
+            stale_portfolio_attempts += 1;
         }
         let progress = SolveProgress {
             phase: if strategy_index == 0 {
@@ -583,6 +606,14 @@ fn solve_with_observer_internal(
             });
         }
         if strategy_index > 0 && Some(best.len()) == prepared.simple_upper_bound {
+            break;
+        }
+        // Dense learned layouts of polygonized curves make each broad continuous-angle attempt
+        // expensive. If two structurally different constructive probes cannot improve the
+        // contact-closed incumbent, later orders repeat the same candidate family at other
+        // angles; leave the remaining budget for repair/beam stages instead of presenting a long
+        // and usually fruitless angle-refinement phase.
+        if stop_stale_complex_portfolio && stale_portfolio_attempts >= 2 {
             break;
         }
         clear_local_limit(&mut counters, &run_options);
@@ -784,6 +815,7 @@ fn clearance_continuation(
     let mut repair_only_stages = 0;
     let mut search_stages = 0;
     let mut full_solve_stages = 0;
+    let mut stages = 0;
     let mut continuation_options = *options;
     continuation_options.quality = crate::SolveQuality::Thorough;
     continuation_options.max_iterations = (options.max_iterations / 2).max(2_000);
@@ -798,6 +830,7 @@ fn clearance_continuation(
     );
     let fractions = [0.0, 0.15, 0.3, 0.45, 0.6, 0.75, 0.9, 1.0];
     for (stage, fraction) in fractions.into_iter().enumerate() {
+        stages += 1;
         let mut relaxed_prepared = centered.clone();
         relaxed_prepared.problem.clearance.item_to_item = target_clearance * fraction;
         donor = if donor.is_empty() {
@@ -820,6 +853,42 @@ fn clearance_continuation(
             }
             outcome.placements
         };
+        let target_seed = donor
+            .iter()
+            .cloned()
+            .map(|mut placement| {
+                placement.x += origin_x;
+                placement.y += origin_y;
+                placement
+            })
+            .collect::<Vec<_>>();
+        let repaired_to_target = stage == 1
+            && donor.len() > preview_seed.len()
+            && CONTINUATION_ANNEAL_SEED_SALTS
+                .into_iter()
+                .find_map(|salt| {
+                    anneal_elongated_continuation(
+                        prepared,
+                        &target_seed,
+                        options.seed ^ salt,
+                        options
+                            .max_iterations
+                            .saturating_mul(5)
+                            .div_ceil(2)
+                            .clamp(100_000, 250_000),
+                    )
+                })
+                .is_some_and(|repaired| {
+                    donor = repaired
+                        .into_iter()
+                        .map(|mut placement| {
+                            placement.x -= origin_x;
+                            placement.y -= origin_y;
+                            placement
+                        })
+                        .collect();
+                    true
+                });
         let translated = donor
             .iter()
             .cloned()
@@ -832,18 +901,26 @@ fn clearance_continuation(
         // Relaxed-stage layouts are valid only for their temporary clearance and must never be
         // rendered against the requested problem. The final stage uses the requested clearance;
         // its solver path has already validated the translated-equivalent geometry.
-        if stage + 1 == fractions.len() {
+        if repaired_to_target || stage + 1 == fractions.len() {
             preview = translated;
         }
         observer.on_progress(&SolveProgress {
             phase: SolvePhase::ClearanceContinuation,
-            completed_fraction: (stage + 1) as f64 / fractions.len() as f64,
+            completed_fraction: if repaired_to_target {
+                1.0
+            } else {
+                (stage + 1) as f64 / fractions.len() as f64
+            },
             max_iterations: continuation_options.max_iterations,
             iterations: 0,
             packed_item_count: preview.len(),
             placements: preview.clone(),
             solver_strategy: "clearance_continuation".to_string(),
         });
+        if repaired_to_target {
+            repair_only_stages += 1;
+            break;
+        }
     }
     for placement in &mut donor {
         placement.x += origin_x;
@@ -851,7 +928,7 @@ fn clearance_continuation(
     }
     Ok(ContinuationOutcome {
         placements: donor,
-        stages: fractions.len() as u64,
+        stages,
         repair_only_stages,
         search_stages,
         full_solve_stages,
@@ -1279,7 +1356,16 @@ fn rectangle_region_clear(prepared: &PreparedProblem, candidate: Bounds) -> bool
     if candidate.width() <= EPSILON || candidate.height() <= EPSILON {
         return false;
     }
-    let rectangle = PolygonSet {
+    let rectangle = rectangle_polygon(candidate);
+    set_inside(&rectangle, &prepared.container, 0.0)
+        && prepared
+            .exclusions
+            .iter()
+            .all(|exclusion| !sets_overlap(&rectangle, exclusion))
+}
+
+fn rectangle_polygon(candidate: Bounds) -> PolygonSet {
+    PolygonSet {
         polygons: vec![vec![
             crate::Point {
                 x: candidate.min_x,
@@ -1298,12 +1384,54 @@ fn rectangle_region_clear(prepared: &PreparedProblem, candidate: Bounds) -> bool
                 y: candidate.max_y,
             },
         ]],
-    };
-    set_inside(&rectangle, &prepared.container, 0.0)
-        && prepared
-            .exclusions
-            .iter()
-            .all(|exclusion| !sets_overlap(&rectangle, exclusion))
+    }
+}
+
+fn rectangle_inside_container(prepared: &PreparedProblem, candidate: Bounds) -> bool {
+    candidate.width() > EPSILON
+        && candidate.height() > EPSILON
+        && set_inside(&rectangle_polygon(candidate), &prepared.container, 0.0)
+}
+
+fn largest_container_rectangle(prepared: &PreparedProblem) -> Option<Bounds> {
+    let mut xs = vec![
+        prepared.container_bounds.min_x,
+        prepared.container_bounds.max_x,
+    ];
+    let mut ys = vec![
+        prepared.container_bounds.min_y,
+        prepared.container_bounds.max_y,
+    ];
+    for point in prepared.container.polygons.iter().flatten() {
+        xs.push(point.x);
+        ys.push(point.y);
+    }
+    normalize_axis(&mut xs, 12);
+    normalize_axis(&mut ys, 12);
+    let mut best = None;
+    for left in 0..xs.len().saturating_sub(1) {
+        for right in (left + 1)..xs.len() {
+            for bottom in 0..ys.len().saturating_sub(1) {
+                for top in (bottom + 1)..ys.len() {
+                    let candidate = Bounds {
+                        min_x: xs[left],
+                        min_y: ys[bottom],
+                        max_x: xs[right],
+                        max_y: ys[top],
+                    };
+                    if rectangle_inside_container(prepared, candidate)
+                        && best.is_none_or(|current: Bounds| {
+                            candidate.width() * candidate.height()
+                                > current.width() * current.height() + EPSILON
+                        })
+                    {
+                        best = Some(candidate);
+                    }
+                }
+            }
+        }
+    }
+    best
 }
 
 fn bounds_interiors_overlap(first: Bounds, second: Bounds) -> bool {
@@ -2538,6 +2666,285 @@ fn candidate(
     }
 }
 
+fn anneal_elongated_continuation(
+    prepared: &PreparedProblem,
+    placements: &[Placement],
+    seed: u64,
+    iterations: u64,
+) -> Option<Vec<Placement>> {
+    if placements.is_empty()
+        || prepared.problem.items.len() != 1
+        || !matches!(
+            prepared.problem.items[0].rotation_policy,
+            crate::RotationPolicy::Continuous {
+                coupling: crate::RotationCoupling::Independent,
+                ..
+            }
+        )
+        || placements.len() > 28
+        || placements.iter().any(|placement| placement.fixed)
+    {
+        return None;
+    }
+    let initial_state = placements
+        .iter()
+        .map(|placement| {
+            let variant_id = prepared.variants.iter().position(|variant| {
+                variant.item_id == placement.item_id
+                    && same_rotation(variant.rotation_deg, placement.rotation_deg)
+            })?;
+            Some((
+                candidate(
+                    &prepared.variants[variant_id],
+                    placement.x,
+                    placement.y,
+                    placement.fixed,
+                ),
+                variant_id,
+            ))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let (mut state, mut state_variant_ids): (Vec<_>, Vec<_>) = initial_state.into_iter().unzip();
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let reference = &prepared.variants[prepared.variants_by_item[&placements[0].item_id][0]];
+    let minor_half_extent = reference.bounds.width().min(reference.bounds.height()) / 2.0;
+    // Slightly enlarge the cheap capsule surrogate so its zero-penalty states remain
+    // conservative around the rectangular shoulders of a compound capsule.
+    let radius = minor_half_extent * 1.005;
+    if reference.bounds.width().max(reference.bounds.height()) < radius * 4.0
+        || reference
+            .geometry
+            .polygons
+            .iter()
+            .map(Vec::len)
+            .sum::<usize>()
+            <= 16
+    {
+        return None;
+    }
+    let half_segment =
+        reference.bounds.width().max(reference.bounds.height()) / 2.0 - minor_half_extent;
+    let rectangular_core = largest_container_rectangle(prepared);
+    let mut penalty = capsule_layout_penalty(prepared, &state, radius, half_segment);
+    let mut best = state.clone();
+    let mut best_penalty = penalty;
+    for iteration in 0..iterations {
+        let progress = iteration as f64 / iterations.max(1) as f64;
+        let temperature = 1.5 * (1.0 - progress).powi(2) + 0.002;
+        let step = 4.0 * (1.0 - progress) + 0.02;
+        let index = rng.random_range(0..state.len());
+        if state[index].placement.fixed {
+            continue;
+        }
+        let original = state[index].clone();
+        let variants = &prepared.variants_by_item[&original.placement.item_id];
+        let variant_id = if rng.random::<f64>() < 0.05 {
+            variants[rng.random_range(0..variants.len())]
+        } else {
+            state_variant_ids[index]
+        };
+        let variant = &prepared.variants[variant_id];
+        let (x, y) = if rng.random::<f64>() < 0.02 {
+            (
+                rng.random_range(prepared.container_bounds.min_x..prepared.container_bounds.max_x),
+                rng.random_range(prepared.container_bounds.min_y..prepared.container_bounds.max_y),
+            )
+        } else {
+            (
+                original.placement.x + rng.random_range(-step..step),
+                original.placement.y + rng.random_range(-step..step),
+            )
+        };
+        let trial = candidate(variant, x, y, false);
+        if !anneal_hard_valid(prepared, rectangular_core, &trial) {
+            continue;
+        }
+        let old_local =
+            capsule_piece_penalty(prepared, &state, index, &original, radius, half_segment);
+        let new_local =
+            capsule_piece_penalty(prepared, &state, index, &trial, radius, half_segment);
+        let delta = new_local - old_local;
+        if delta <= 0.0 || rng.random::<f64>() < (-delta / temperature).exp() {
+            state[index] = trial;
+            state_variant_ids[index] = variant_id;
+            penalty = (penalty + delta).max(0.0);
+            if penalty <= EPSILON {
+                let placements = state
+                    .iter()
+                    .map(|entry| entry.placement.clone())
+                    .collect::<Vec<_>>();
+                if validate_placements(prepared, &placements).is_ok_and(|report| report.valid) {
+                    return Some(placements);
+                }
+            }
+            if penalty + EPSILON < best_penalty {
+                best = state.clone();
+                best_penalty = capsule_layout_penalty(prepared, &best, radius, half_segment);
+            }
+        }
+    }
+    let placements = best
+        .iter()
+        .map(|entry| entry.placement.clone())
+        .collect::<Vec<_>>();
+    (best_penalty <= EPSILON
+        && validate_placements(prepared, &placements).is_ok_and(|report| report.valid))
+    .then_some(placements)
+}
+
+fn anneal_hard_valid(
+    prepared: &PreparedProblem,
+    rectangular_core: Option<Bounds>,
+    candidate: &CandidatePlacement,
+) -> bool {
+    let boundary = prepared.problem.clearance.item_to_boundary;
+    if candidate.bounds.min_x < prepared.container_bounds.min_x + boundary - EPSILON
+        || candidate.bounds.max_x > prepared.container_bounds.max_x - boundary + EPSILON
+        || candidate.bounds.min_y < prepared.container_bounds.min_y + boundary - EPSILON
+        || candidate.bounds.max_y > prepared.container_bounds.max_y - boundary + EPSILON
+    {
+        return false;
+    }
+    // Most trials remain inside a large rectangular subset of the container. Pay for exact
+    // containment only outside that precomputed safe region; final acceptance always uses the
+    // independent validator.
+    let inside_rectangular_core = rectangular_core.is_some_and(|core| {
+        candidate.bounds.min_x >= core.min_x + boundary - EPSILON
+            && candidate.bounds.max_x <= core.max_x - boundary + EPSILON
+            && candidate.bounds.min_y >= core.min_y + boundary - EPSILON
+            && candidate.bounds.max_y <= core.max_y - boundary + EPSILON
+    });
+    if !inside_rectangular_core && !set_inside(&candidate.geometry, &prepared.container, boundary) {
+        return false;
+    }
+    prepared
+        .exclusions
+        .iter()
+        .enumerate()
+        .all(|(index, exclusion)| {
+            let required = prepared
+                .problem
+                .clearance
+                .item_to_exclusion
+                .max(prepared.problem.exclusions[index].clearance);
+            !candidate.bounds.overlaps(bounds(exclusion), required)
+                || (!sets_overlap(&candidate.geometry, exclusion)
+                    && set_distance(&candidate.geometry, exclusion) + EPSILON >= required)
+        })
+}
+
+fn capsule_layout_penalty(
+    prepared: &PreparedProblem,
+    state: &[CandidatePlacement],
+    radius: f64,
+    half_segment: f64,
+) -> f64 {
+    let mut penalty = 0.0;
+    for first in 0..state.len() {
+        for second in (first + 1)..state.len() {
+            penalty += capsule_pair_penalty(
+                prepared,
+                &state[first],
+                &state[second],
+                radius,
+                half_segment,
+            );
+        }
+    }
+    penalty
+}
+
+fn capsule_piece_penalty(
+    prepared: &PreparedProblem,
+    state: &[CandidatePlacement],
+    moving_index: usize,
+    candidate: &CandidatePlacement,
+    radius: f64,
+    half_segment: f64,
+) -> f64 {
+    state
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != moving_index)
+        .map(|(_, other)| capsule_pair_penalty(prepared, candidate, other, radius, half_segment))
+        .sum()
+}
+
+fn capsule_pair_penalty(
+    prepared: &PreparedProblem,
+    first: &CandidatePlacement,
+    second: &CandidatePlacement,
+    radius: f64,
+    half_segment: f64,
+) -> f64 {
+    let segment = |placement: &Placement| {
+        let radians = placement.rotation_deg.to_radians();
+        let dx = radians.cos() * half_segment;
+        let dy = radians.sin() * half_segment;
+        (
+            crate::Point {
+                x: placement.x - dx,
+                y: placement.y - dy,
+            },
+            crate::Point {
+                x: placement.x + dx,
+                y: placement.y + dy,
+            },
+        )
+    };
+    let (first_a, first_b) = segment(&first.placement);
+    let (second_a, second_b) = segment(&second.placement);
+    (radius * 2.0 + prepared.problem.clearance.item_to_item
+        - segment_distance(first_a, first_b, second_a, second_b))
+    .max(0.0)
+}
+
+fn segment_distance(
+    first_a: crate::Point,
+    first_b: crate::Point,
+    second_a: crate::Point,
+    second_b: crate::Point,
+) -> f64 {
+    if segments_intersect(first_a, first_b, second_a, second_b) {
+        return 0.0;
+    }
+    [
+        point_segment_distance(first_a, second_a, second_b),
+        point_segment_distance(first_b, second_a, second_b),
+        point_segment_distance(second_a, first_a, first_b),
+        point_segment_distance(second_b, first_a, first_b),
+    ]
+    .into_iter()
+    .fold(f64::INFINITY, f64::min)
+}
+
+fn segments_intersect(a: crate::Point, b: crate::Point, c: crate::Point, d: crate::Point) -> bool {
+    let orientation = |p: crate::Point, q: crate::Point, r: crate::Point| {
+        (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x)
+    };
+    let ab_c = orientation(a, b, c);
+    let ab_d = orientation(a, b, d);
+    let cd_a = orientation(c, d, a);
+    let cd_b = orientation(c, d, b);
+    let bounds_overlap = a.x.min(b.x) <= c.x.max(d.x) + EPSILON
+        && a.x.max(b.x) + EPSILON >= c.x.min(d.x)
+        && a.y.min(b.y) <= c.y.max(d.y) + EPSILON
+        && a.y.max(b.y) + EPSILON >= c.y.min(d.y);
+    bounds_overlap && ab_c * ab_d <= EPSILON && cd_a * cd_b <= EPSILON
+}
+
+fn point_segment_distance(point: crate::Point, start: crate::Point, end: crate::Point) -> f64 {
+    let dx = end.x - start.x;
+    let dy = end.y - start.y;
+    let length_squared = dx * dx + dy * dy;
+    if length_squared <= EPSILON * EPSILON {
+        return (point.x - start.x).hypot(point.y - start.y);
+    }
+    let projection =
+        (((point.x - start.x) * dx + (point.y - start.y) * dy) / length_squared).clamp(0.0, 1.0);
+    (point.x - (start.x + projection * dx)).hypot(point.y - (start.y + projection * dy))
+}
+
 fn stop_requested(
     options: &SolveOptions,
     started: SolveInstant,
@@ -2972,4 +3379,23 @@ fn locally_repair_candidate(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::segments_intersect;
+    use crate::Point;
+
+    #[test]
+    fn segment_intersection_distinguishes_disjoint_collinear_segments() {
+        let a = Point { x: 0.0, y: 0.0 };
+        let b = Point { x: 1.0, y: 0.0 };
+        let c = Point { x: 2.0, y: 0.0 };
+        let d = Point { x: 3.0, y: 0.0 };
+        assert!(!segments_intersect(a, b, c, d));
+
+        let c = Point { x: 0.5, y: -1.0 };
+        let d = Point { x: 0.5, y: 1.0 };
+        assert!(segments_intersect(a, b, c, d));
+    }
 }

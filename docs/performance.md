@@ -45,11 +45,15 @@ a cross-device benchmark:
 | Repeated full continuation solves | 20 | 45.9 s |
 | Prepared-state reuse, repair-first stages, and reduced fallbacks | 20 | 29.2 s |
 | Tuned two-worker direct/continuation portfolio in Chromium | 20 | 23.1–28.4 s |
+| Generated Wasm runtime with capsule-surrogate repair | 21 | 16.7 s |
 
-Four of the eight continuation stages preserve the incumbent using deterministic local repair in
-this case. The other stages try a 512-state target beam and fall back to a three-quarter-budget
-warm solve only when necessary. `SolveStatistics` reports repair-only, targeted-search, and full
-fallback stage counts. In the browser, `runtime_timing.total_ms` and `phase_ms` use
+The current studio continuation ends after two stages. Its first 21-item relaxed-clearance donor
+enters a two-seed deterministic annealing portfolio using a conservative capsule surrogate; the
+original compound geometry is independently validated at full clearance before acceptance. The
+16.7-second observation is the studio case within the generated Wasm runtime suite on 2026-08-10;
+the complete six-test process took 16.8 seconds. Earlier timings remain above as historical
+comparisons rather than same-revision speedup claims. `SolveStatistics` reports repair-only,
+targeted-search, and full fallback stage counts. In the browser, `runtime_timing.total_ms` and `phase_ms` use
 `performance.now()` in the worker; the Packing diagnostics show those measurements and the active
 worker count. Native core timers remain separate and operation counts remain the more reproducible
 way to compare machines.
@@ -78,8 +82,12 @@ A bounded contact-only closure now runs at those phase boundaries, prioritizes a
 orthogonal rotations, and immediately rescans a variant after a successful placement.
 
 The native authoritative fixture now reaches the independently validated 20-piece layout during
-`baseline` with the 40,000-iteration direct worker budget. Its deterministic ceilings are 450,000
-generated candidates and 80,000 exact geometry checks (the measured run used 407,537 and 70,060).
+`baseline` with the 40,000-iteration direct worker budget. A complexity-aware stagnation rule now
+ends the curved-shape portfolio after two non-improving constructive attempts. The measured run
+used 16,991 portfolio iterations, 384,528 generated candidates, and 30,784 exact checks, with
+deterministic regression ceilings of 20,000, 390,000, and 40,000 respectively. Before that rule,
+the same result exhausted all 40,000 iterations, generated 407,537 candidates, and used 70,060
+exact checks.
 For comparison, the pre-closure 80,000-iteration direct run stopped at 18 with 619,994 generated
 candidates and 143,730 exact checks. Thus the regression protects both the earlier solution phase
 and an operation-count improvement without relying on machine-dependent wall time. The generated
@@ -103,8 +111,8 @@ Pairwise motif learning is capped at 16 vertices per prepared variant. The defau
 capsule therefore remains on its existing lattice, contact-closure, and continuation paths rather
 than paying a continuous-rotation motif cross-product. After adding the gate, the combined release
 regression covering the 17-piece width-4.375 case and the 20-piece direct studio witness completed
-in 5.44 seconds locally; the direct witness still stays below its 450,000 generated-candidate and
-80,000 exact-check ceilings.
+in 5.44 seconds locally before the later stagnation cutoff; the current direct-operation ceilings
+are recorded in the contact-closure review above.
 
 ### Guided overlap repair (2026-08-10)
 

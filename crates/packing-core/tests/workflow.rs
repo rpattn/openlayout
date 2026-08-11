@@ -1098,7 +1098,7 @@ fn learned_decomposition_fills_offset_disconnected_regions() {
 }
 
 #[test]
-fn capsule_quality_and_studio_twenty_item_witness_are_validated() {
+fn capsule_quality_and_studio_twenty_one_item_witness_are_validated() {
     let exclusion_vertices = (0..32)
         .map(|index| {
             let angle = std::f64::consts::TAU * index as f64 / 32.0;
@@ -1267,13 +1267,25 @@ fn capsule_quality_and_studio_twenty_item_witness_are_validated() {
         "the direct lane should complete the lattice before angle refinement"
     );
     assert!(
-        direct.statistics.generated_candidates <= 450_000,
+        direct.statistics.iterations <= 20_000,
+        "direct completion regressed to {} portfolio iterations",
+        direct.statistics.iterations
+    );
+    assert!(
+        direct.statistics.generated_candidates <= 390_000,
         "direct completion regressed to {} generated candidates",
         direct.statistics.generated_candidates
     );
     assert!(
-        direct.statistics.exact_geometry_checks <= 80_000,
+        direct.statistics.exact_geometry_checks <= 40_000,
         "direct completion regressed to {} exact checks",
         direct.statistics.exact_geometry_checks
     );
+    let mut continuation_options = direct_options;
+    continuation_options.max_iterations = 80_000;
+    let continuation =
+        solve_prepared_clearance_continuation(&prepared, &continuation_options).unwrap();
+    assert_eq!(continuation.packed_item_count, 21);
+    assert!(continuation.validation.valid);
+    assert!(continuation.statistics.continuation_stages <= 2);
 }
