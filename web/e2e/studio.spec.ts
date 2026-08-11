@@ -430,6 +430,97 @@ test("multi-selects, applies bulk actions, and duplicates item definitions", asy
   await expect(page.locator(".cad-item-sample.selected")).toHaveCount(0);
 });
 
+test("multi-selects individual construction parts and edits them precisely", async ({ page }) => {
+  await page.goto("/");
+  const parts = page.locator('[data-cad-kind="item"][data-cad-index="0"]');
+  await expect(parts).toHaveCount(3);
+  const whole = await page.locator('[data-unified-geometry="item:0"]').boundingBox();
+  if (!whole) throw new Error("Base construction is unavailable");
+  await page.keyboard.down("Control"); await page.mouse.move(whole.x - 5, whole.y - 5); await page.mouse.down();
+  await page.mouse.move(whole.x + whole.width + 5, whole.y + whole.height + 5, { steps: 4 }); await page.mouse.up(); await page.keyboard.up("Control");
+  await expect(page.locator("#selection-inspector")).toContainText("3 parts selected");
+  await page.locator('[data-cad-select="item:0"]').click();
+  const x = await page.locator('[data-primitive-field="x"]').inputValue(), y = await page.locator('[data-primitive-field="y"]').inputValue();
+  await page.locator("[data-primitive-kind]").selectOption("circle");
+  await expect(page.locator('[data-primitive-field="x"]')).toHaveValue(x); await expect(page.locator('[data-primitive-field="y"]')).toHaveValue(y);
+  await parts.nth(1).evaluate((node) => {
+    const box = node.getBoundingClientRect(), init = { bubbles: true, pointerId: 41, clientX: box.left + box.width / 2, clientY: box.top + box.height / 2 };
+    node.dispatchEvent(new PointerEvent("pointerdown", init)); node.dispatchEvent(new PointerEvent("pointerup", init));
+  });
+  await parts.nth(2).evaluate((node) => {
+    const box = node.getBoundingClientRect(), init = { bubbles: true, ctrlKey: true, pointerId: 42, clientX: box.left + box.width / 2, clientY: box.top + box.height / 2 };
+    node.dispatchEvent(new PointerEvent("pointerdown", init)); node.dispatchEvent(new PointerEvent("pointerup", init));
+  });
+  await expect(page.locator("#selection-inspector")).toContainText("2 parts selected");
+  await expect(page.locator(".cad-group-selection")).toContainText("2 selected");
+  await expect(page.locator(".cad-selection-handles")).toHaveCount(0);
+  await expect(page.locator(".cad-group-rotate")).toHaveCount(1); await expect(page.locator(".cad-group-scale")).toHaveCount(1);
+  const groupBefore = await page.locator(".cad-group-selection rect").boundingBox();
+  if (!groupBefore) throw new Error("Group transform cage is unavailable");
+  const selectedCircle = await parts.nth(1).boundingBox(); if (!selectedCircle) throw new Error("Selected circle is unavailable for group dragging");
+  await page.mouse.move(selectedCircle.x + selectedCircle.width / 2, selectedCircle.y + selectedCircle.height / 2); await page.mouse.down();
+  await page.mouse.move(selectedCircle.x + selectedCircle.width / 2 + 30, selectedCircle.y + selectedCircle.height / 2 + 12); await page.mouse.up();
+  const groupMoved = await page.locator(".cad-group-selection rect").boundingBox();
+  expect(groupMoved?.x).not.toBeCloseTo(groupBefore.x, 0);
+  const scaleHandle = await page.locator(".cad-group-scale").boundingBox();
+  if (!scaleHandle || !groupMoved) throw new Error("Group scale handle is unavailable");
+  await page.mouse.move(scaleHandle.x + scaleHandle.width / 2, scaleHandle.y + scaleHandle.height / 2); await page.mouse.down();
+  await page.mouse.move(scaleHandle.x + scaleHandle.width / 2 + 20, scaleHandle.y + scaleHandle.height / 2 + 12); await page.mouse.up();
+  const groupScaled = await page.locator(".cad-group-selection rect").boundingBox();
+  expect(groupScaled?.width).not.toBeCloseTo(groupMoved.width, 0);
+  await page.locator("#toolbar-part-color").evaluate((input: HTMLInputElement) => { input.value = "#ff00aa"; input.dispatchEvent(new Event("input", { bubbles: true })); });
+  await expect(page.locator('.cad-library .cad-part-color[style*="#ff00aa"]')).toHaveCount(2);
+  await page.getByRole("button", { name: "Delete selection" }).click();
+  await expect(page.locator('[data-cad-kind="item"][data-cad-index="0"]')).toHaveCount(1);
+});
+
+test("uses a restrained CAD palette in dark mode", async ({ page }) => {
+  await page.goto("/");
+  const containerFill = await page.locator(".cad-part-color.container").first().evaluate((node) => getComputedStyle(node).fill);
+  expect(containerFill).not.toBe("rgb(231, 235, 239)");
+  await page.getByRole("button", { name: "Constraints", exact: true }).click();
+  const clearanceStroke = await page.locator(".cad-clearance").first().evaluate((node) => getComputedStyle(node).stroke);
+  const fixedAccent = await page.locator("#respect-manual-constraints").evaluate((node) => getComputedStyle(node).color);
+  expect(clearanceStroke).not.toBe(fixedAccent);
+});
+
+test("retains solved layouts for stale edits and copies solved placements", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Run packing" }).click();
+  await expect(page.getByRole("button", { name: "Run packing" })).toBeEnabled({ timeout: 30_000 });
+  await expect(page.locator(".cad-placement").first()).toBeVisible();
+  const before = await page.locator(".cad-placement").count();
+  await page.locator(".cad-placement").first().click();
+  await page.keyboard.press("Control+c"); await page.keyboard.press("Control+v");
+  await expect(page.locator(".cad-placement")).toHaveCount(before + 1);
+  await page.locator('[data-cad-select="item:0"]').click();
+  await page.locator('[data-object-field="quantity"]').fill("81"); await page.locator('[data-object-field="quantity"]').blur();
+  await expect(page.locator(".cad-placement")).toHaveCount(before + 1);
+  await expect(page.locator("#workspace-summary")).toContainText("stale");
+});
+
+test("creates an empty project and previews fixed placements", async ({ page }) => {
+  await page.goto("/");
+  await page.getByText("Fixed placements", { exact: false }).click();
+  await page.getByRole("button", { name: "+ Add fixed placement" }).click();
+  await expect(page.locator(".cad-placement.fixed")).toHaveCount(1);
+  const initialX = await page.locator('[data-fixed-field="x"]').inputValue();
+  const fixed = await page.locator(".cad-placement.fixed").boundingBox();
+  if (!fixed) throw new Error("Fixed placement preview is unavailable");
+  await page.mouse.move(fixed.x + fixed.width / 2, fixed.y + fixed.height / 2); await page.mouse.down(); await page.mouse.move(fixed.x + fixed.width / 2 + 500, fixed.y + fixed.height / 2); await page.mouse.up();
+  await expect(page.locator('[data-fixed-field="x"]')).not.toHaveValue(initialX);
+  await expect(page.locator("#status")).toContainText("closest feasible");
+  await page.getByRole("button", { name: "Edit projects" }).click();
+  await page.getByRole("button", { name: "New empty" }).click();
+  await expect(page.locator('[data-cad-select="container:0"]')).toHaveCount(0);
+  await page.locator("#project-dialog").getByRole("button", { name: "Close projects" }).click();
+  await page.getByRole("button", { name: "+ Item" }).click();
+  await page.getByText("Fixed placements", { exact: false }).click();
+  await page.getByRole("button", { name: "+ Add fixed placement" }).click();
+  await expect(page.locator(".cad-placement.fixed")).toHaveCount(1);
+  await expect(page.locator(".cad-fixed-badge")).toHaveCount(1);
+});
+
 async function configureFastSolve(page: import("@playwright/test").Page): Promise<void> {
   await openSolverSettings(page);
   await setPackingNumber(page, "max_iterations", "2000");

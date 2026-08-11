@@ -1,4 +1,4 @@
-import { defaultState } from "./problem";
+import { defaultState, emptyState } from "./problem";
 import type { EditorState } from "./types";
 
 export type ThemePreference = "light" | "dark";
@@ -42,10 +42,10 @@ export class WorkspaceStore {
     this.persist();
   }
 
-  create(name = this.nextName()): LocalProject {
+  create(name = this.nextName(), empty = false): LocalProject {
     const now = new Date().toISOString();
     const project: LocalProject = {
-      id: crypto.randomUUID(), name, state: defaultState(), createdAt: now, updatedAt: now,
+      id: crypto.randomUUID(), name, state: empty ? emptyState() : defaultState(), createdAt: now, updatedAt: now,
     };
     this.workspace.projects.push(project);
     this.workspace.activeProjectId = project.id;

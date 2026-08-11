@@ -11,7 +11,7 @@ import type {
 } from "./types";
 
 export const defaultState = (): EditorState => ({
-  containerParts: [{ id: "stock", operation: "add", primitive: { id: "container-boundary", kind: "polygon", color: "#526b82", vertices: [
+  containerParts: [{ id: "stock", operation: "add", primitive: { id: "container-boundary", kind: "polygon", color: "#e7ebef", vertices: [
     { x: -15, y: -9 }, { x: 15, y: -9 }, { x: 15, y: 9 },
     { x: 6, y: 9 }, { x: 6, y: 6 }, { x: -15, y: 6 },
   ], x: 15, y: 9, rotation: 0 } }],
@@ -57,6 +57,15 @@ export const defaultState = (): EditorState => ({
     increasing_is_harder: true,
   },
 });
+
+export const emptyState = (): EditorState => {
+  const state = defaultState();
+  state.containerParts = [];
+  state.items = [];
+  state.exclusions = [];
+  state.fixedPlacements = [];
+  return state;
+};
 
 export function toProblem(state: EditorState): PackingProblem {
   const containerTranslations = resolveEditorTranslations(state.containerParts.map((entry) => entry.primitive));
