@@ -15,6 +15,8 @@ pub(crate) struct OverlapRepairMetrics {
     pub weight_updates: u64,
     pub exact_geometry_checks: u64,
     pub successful_repairs: u64,
+    pub component_reinsert_attempts: u64,
+    pub component_reinsert_successes: u64,
     pub best_penalty: Option<f64>,
     pub cancelled: bool,
     pub limit_reached: bool,
@@ -412,6 +414,25 @@ fn minimize_overlap(
                 break;
             }
             if !moved {
+                if options.quality == SolveQuality::Thorough
+                    && destroy_reinsert_conflict_component(
+                        prepared,
+                        options,
+                        state,
+                        evaluation_limit,
+                        metrics,
+                    )
+                {
+                    active.fill(true);
+                    if state.original_penalty + EPSILON < best.original_penalty {
+                        best = state.clone();
+                        update_best_penalty(metrics, best.original_penalty);
+                    }
+                    if state.original_penalty <= EPSILON {
+                        return;
+                    }
+                    continue;
+                }
                 break;
             }
         }
@@ -442,6 +463,112 @@ fn minimize_overlap(
     if best.original_penalty + EPSILON < state.original_penalty {
         *state = best;
     }
+}
+
+fn destroy_reinsert_conflict_component(
+    prepared: &PreparedProblem,
+    options: &SolveOptions,
+    state: &mut RepairState,
+    evaluation_limit: u64,
+    metrics: &mut OverlapRepairMetrics,
+) -> bool {
+    let mut conflicts = conflict_penalties(prepared, state, metrics);
+    conflicts.sort_by(|left, right| {
+        right
+            .2
+            .total_cmp(&left.2)
+            .then_with(|| left.0.cmp(&right.0))
+            .then_with(|| left.1.cmp(&right.1))
+    });
+    let Some(&(first, second, _)) = conflicts.iter().find(|(first, second, _)| {
+        !state.pieces[*first].placement.fixed && !state.pieces[*second].placement.fixed
+    }) else {
+        return false;
+    };
+    metrics.component_reinsert_attempts += 1;
+    let component_limit = if state.pieces.len() <= 16 { 4 } else { 2 };
+    let mut component = vec![first, second];
+    let mut cursor = 0;
+    while cursor < component.len() && component.len() < component_limit {
+        let current = component[cursor];
+        for &(left, right, _) in &conflicts {
+            let neighbour = if left == current {
+                Some(right)
+            } else if right == current {
+                Some(left)
+            } else {
+                None
+            };
+            if let Some(neighbour) = neighbour
+                && !state.pieces[neighbour].placement.fixed
+                && !component.contains(&neighbour)
+            {
+                component.push(neighbour);
+                if component.len() == component_limit {
+                    break;
+                }
+            }
+        }
+        cursor += 1;
+    }
+    component.sort_unstable();
+    let removed = component
+        .iter()
+        .map(|index| state.pieces[*index].clone())
+        .collect::<Vec<_>>();
+    let mut rebuilt = RepairState {
+        pieces: state
+            .pieces
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| component.binary_search(index).is_err())
+            .map(|(_, piece)| piece.clone())
+            .collect(),
+        weights: Vec::new(),
+        original_penalty: 0.0,
+        weighted_penalty: 0.0,
+    };
+    reset_repair_state(prepared, &mut rebuilt, metrics);
+    for original in removed {
+        if metrics.evaluated_moves >= evaluation_limit {
+            return false;
+        }
+        rebuilt.pieces.push(original);
+        reset_repair_state(prepared, &mut rebuilt, metrics);
+        let moving_index = rebuilt.pieces.len() - 1;
+        let Some((replacement, _)) = best_piece_move(
+            prepared,
+            options,
+            &rebuilt,
+            moving_index,
+            evaluation_limit,
+            metrics,
+        ) else {
+            return false;
+        };
+        rebuilt.pieces[moving_index] = replacement;
+        reset_repair_state(prepared, &mut rebuilt, metrics);
+    }
+    if rebuilt.original_penalty + EPSILON < state.original_penalty {
+        *state = rebuilt;
+        metrics.component_reinsert_successes += 1;
+        metrics.accepted_moves += 1;
+        true
+    } else {
+        false
+    }
+}
+
+fn reset_repair_state(
+    prepared: &PreparedProblem,
+    state: &mut RepairState,
+    metrics: &mut OverlapRepairMetrics,
+) {
+    let count = state.pieces.len();
+    state.weights = vec![1.0; count * count];
+    let (original, weighted) = state_penalties(prepared, state, metrics);
+    state.original_penalty = original;
+    state.weighted_penalty = weighted;
 }
 
 fn best_piece_move(
@@ -893,5 +1020,37 @@ mod tests {
         assert_eq!(result.placements.as_ref().map(Vec::len), Some(4));
         assert_eq!(result.metrics.successful_repairs, 3);
         assert!(result.metrics.evaluated_moves <= 512);
+    }
+
+    #[test]
+    fn conflict_component_reinsert_crosses_a_joint_overlap() {
+        let prepared = rectangle_problem();
+        let variant = &prepared.variants[0];
+        let mut state = RepairState {
+            pieces: (0..4).map(|_| piece(variant, 0.0, 0.0, false)).collect(),
+            weights: Vec::new(),
+            original_penalty: 0.0,
+            weighted_penalty: 0.0,
+        };
+        let mut metrics = OverlapRepairMetrics::default();
+        reset_repair_state(&prepared, &mut state, &mut metrics);
+        let before = state.original_penalty;
+        let options = SolveOptions {
+            quality: SolveQuality::Thorough,
+            max_iterations: 2_000,
+            ..SolveOptions::default()
+        };
+
+        assert!(destroy_reinsert_conflict_component(
+            &prepared,
+            &options,
+            &mut state,
+            512,
+            &mut metrics,
+        ));
+        assert!(state.original_penalty + EPSILON < before);
+        assert_eq!(metrics.component_reinsert_attempts, 1);
+        assert_eq!(metrics.component_reinsert_successes, 1);
+        assert!(metrics.evaluated_moves <= 512);
     }
 }

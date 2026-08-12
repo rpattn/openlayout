@@ -115,6 +115,11 @@ function bindShell(): void {
   element("delete-selection").addEventListener("click", deleteToolbarSelection);
   element("toggle-dimensions").addEventListener("click", () => toggleOverlay("dimensions"));
   element("toggle-clearance").addEventListener("click", () => toggleOverlay("clearance"));
+  element("toggle-grid-snap").addEventListener("click", () => {
+    mutate(() => { state.drafting.snapToGrid = !state.drafting.snapToGrid; });
+    renderDraftingPanel();
+    setStatus("neutral", state.drafting.snapToGrid ? "Grid snapping enabled · hold Alt to bypass" : "Grid snapping disabled");
+  });
   element("draw-dimension").addEventListener("click", () => toggleDimensionTool());
   element("open-view-settings").addEventListener("click", () => {
     const panel = element<HTMLElement>("view-settings-panel"), opening = panel.hidden;
@@ -976,6 +981,10 @@ function updateToolbarState(): void {
   color.disabled = parts.length === 0 && texts.length === 0; color.value = texts[0]?.color ?? editorColor(parts[0]);
   const trace = element<HTMLButtonElement>("add-trace-image"); trace.classList.toggle("has-content", state.drafting.traceImages.length > 0);
   trace.title = state.drafting.traceImages.length ? "Add another tracing image" : "Add a transparent tracing image";
+  const snap = element<HTMLButtonElement>("toggle-grid-snap");
+  snap.classList.toggle("active", state.drafting.snapToGrid); snap.setAttribute("aria-pressed", String(state.drafting.snapToGrid));
+  snap.setAttribute("aria-label", state.drafting.snapToGrid ? "Disable grid snapping" : "Enable grid snapping");
+  snap.title = state.drafting.snapToGrid ? "Grid snapping on · hold Alt to bypass" : "Grid snapping off";
 }
 
 function deleteSelectedObject(): void {

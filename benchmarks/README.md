@@ -24,3 +24,10 @@ Use `research-fast-options.json` for the stable 1,250-candidate smoke/regression
 `research-balanced-options.json` for a bounded search-and-repair comparison. The retained fast
 floor is 10 valid pieces with 228 exact-geometry checks. Sparrow's record fits all 50 demanded
 pieces; that is a research target, not a claim that the target strip length is globally optimal.
+
+`gardeyn0-continuous.json` is the corresponding official `gardeyn0_c.json` conversion: omitted
+orientation restrictions become OpenLayout's continuous 0–360-degree policy. It deliberately uses
+the same 48,681.08 container, which is feasible as a target because continuous rotation includes
+the discrete record's orientations. `gardeyn0-clearance.json` is a documented stress derivative of
+the discrete fixture with 25 units of item/item and item/boundary clearance; it is a performance and
+correctness regression, not a published best-known target.

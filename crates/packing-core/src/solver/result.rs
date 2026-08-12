@@ -51,9 +51,10 @@ pub(super) fn build_result(
                 .or_insert(placement.rotation_deg);
         }
     }
-    let bound_gap = prepared
-        .simple_upper_bound
-        .map(|upper| upper.saturating_sub(placements.len()));
+    let final_upper_bound = counters
+        .certified_upper_bound
+        .or(prepared.simple_upper_bound);
+    let bound_gap = final_upper_bound.map(|upper| upper.saturating_sub(placements.len()));
     let accepted_placements = placements.len() as u64;
     let mut strategies_used = vec!["greedy_baseline".to_string()];
     let add_strategy = |strategies: &mut Vec<String>, value: &str| {
@@ -77,10 +78,7 @@ pub(super) fn build_result(
         add_strategy(&mut strategies_used, "conflict_graph");
     }
     let mut warnings = Vec::new();
-    if let Some(upper) = prepared
-        .simple_upper_bound
-        .filter(|upper| *upper > placements.len())
-    {
+    if let Some(upper) = final_upper_bound.filter(|upper| *upper > placements.len()) {
         warnings.push(format!(
             "the {}-item layout is independently valid, but optimality is not proven; the safe upper bound is {upper}",
             placements.len()
@@ -128,7 +126,7 @@ pub(super) fn build_result(
             region_bound_prunes: counters.search.region_bound_prunes,
             projection_bound_prunes: counters.search.projection_bound_prunes,
             greedy_lower_bound: counters.greedy_lower_bound,
-            final_upper_bound: prepared.simple_upper_bound,
+            final_upper_bound,
             bound_gap,
             local_improvement_attempts: counters.local_improvement_attempts,
             local_improvements_accepted: counters.local_improvements_accepted,
@@ -137,6 +135,10 @@ pub(super) fn build_result(
             overlap_repair_accepted_moves: counters.overlap_repair_accepted_moves,
             overlap_repair_weight_updates: counters.overlap_repair_weight_updates,
             overlap_repair_successes: counters.overlap_repair_successes,
+            overlap_repair_component_reinsert_attempts: counters
+                .overlap_repair_component_reinsert_attempts,
+            overlap_repair_component_reinsert_successes: counters
+                .overlap_repair_component_reinsert_successes,
             overlap_repair_best_penalty: counters.overlap_repair_best_penalty,
             continuation_stages: counters.continuation_stages,
             continuation_repair_only_stages: counters.continuation_repair_only_stages,

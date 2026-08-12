@@ -2,12 +2,30 @@ use crate::{
     NamedResolvedGeometry, PackingError, PackingProblem, Point, RegionOperation, RegionPart,
     ResolvedProblemGeometry, Shape, ShapeAnchor, ShapePart,
 };
+use std::sync::Arc;
 pub(crate) const EPSILON: f64 = 1e-7;
 
 #[derive(Debug, Clone)]
 pub(crate) struct PolygonSet {
     // Normalized contours. Outer contours are counter-clockwise and holes clockwise.
     pub polygons: Vec<Vec<Point>>,
+    edge_index: Option<Arc<EdgeIndex>>,
+    edge_index_offset: Point,
+}
+
+impl PolygonSet {
+    pub(crate) fn new(polygons: Vec<Vec<Point>>) -> Self {
+        Self {
+            polygons,
+            edge_index: None,
+            edge_index_offset: Point { x: 0.0, y: 0.0 },
+        }
+    }
+
+    pub(crate) fn enable_edge_index(&mut self) {
+        self.edge_index = Some(Arc::new(EdgeIndex::new(self)));
+        self.edge_index_offset = Point { x: 0.0, y: 0.0 };
+    }
 }
 
 mod region;
@@ -42,6 +60,121 @@ impl Bounds {
             && self.max_x + gap >= other.min_x
             && self.min_y <= other.max_y + gap
             && self.max_y + gap >= other.min_y
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EdgeRef {
+    polygon: usize,
+    edge: usize,
+    bounds: Bounds,
+    overlap_padding: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EdgeNode {
+    bounds: Bounds,
+    children: Option<(usize, usize)>,
+    start: usize,
+    end: usize,
+    overlap_padding: f64,
+}
+
+#[derive(Debug)]
+struct EdgeIndex {
+    edges: Vec<EdgeRef>,
+    nodes: Vec<EdgeNode>,
+    root: usize,
+}
+
+impl EdgeIndex {
+    fn new(set: &PolygonSet) -> Self {
+        let mut edges = set
+            .polygons
+            .iter()
+            .enumerate()
+            .flat_map(|(polygon_index, polygon)| {
+                (0..polygon.len()).map(move |edge| {
+                    let a = polygon[edge];
+                    let b = polygon[(edge + 1) % polygon.len()];
+                    EdgeRef {
+                        polygon: polygon_index,
+                        edge,
+                        bounds: Bounds {
+                            min_x: a.x.min(b.x),
+                            min_y: a.y.min(b.y),
+                            max_x: a.x.max(b.x),
+                            max_y: a.y.max(b.y),
+                        },
+                        overlap_padding: EPSILON / ((b.x - a.x).hypot(b.y - a.y)).max(EPSILON),
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        debug_assert!(!edges.is_empty());
+        let mut nodes = Vec::new();
+        let edge_count = edges.len();
+        let root = Self::build_node(&mut edges, &mut nodes, 0, edge_count);
+        Self { edges, nodes, root }
+    }
+
+    fn build_node(
+        edges: &mut [EdgeRef],
+        nodes: &mut Vec<EdgeNode>,
+        start: usize,
+        end: usize,
+    ) -> usize {
+        let node_index = nodes.len();
+        let node_bounds = edges[start..end]
+            .iter()
+            .map(|edge| edge.bounds)
+            .reduce(merge_bounds)
+            .expect("edge nodes are non-empty");
+        nodes.push(EdgeNode {
+            bounds: node_bounds,
+            children: None,
+            start,
+            end,
+            overlap_padding: edges[start..end]
+                .iter()
+                .map(|edge| edge.overlap_padding)
+                .fold(0.0, f64::max),
+        });
+        if end - start <= 8 {
+            return node_index;
+        }
+        let split_x = node_bounds.width() >= node_bounds.height();
+        edges[start..end].sort_by(|left, right| {
+            let left_center = if split_x {
+                left.bounds.min_x + left.bounds.max_x
+            } else {
+                left.bounds.min_y + left.bounds.max_y
+            };
+            let right_center = if split_x {
+                right.bounds.min_x + right.bounds.max_x
+            } else {
+                right.bounds.min_y + right.bounds.max_y
+            };
+            left_center.total_cmp(&right_center).then_with(|| {
+                left.polygon
+                    .cmp(&right.polygon)
+                    .then_with(|| left.edge.cmp(&right.edge))
+            })
+        });
+        let middle = start + (end - start) / 2;
+        let left = Self::build_node(edges, nodes, start, middle);
+        let right = Self::build_node(edges, nodes, middle, end);
+        nodes[node_index].children = Some((left, right));
+        node_index
+    }
+}
+
+fn merge_bounds(left: Bounds, right: Bounds) -> Bounds {
+    Bounds {
+        min_x: left.min_x.min(right.min_x),
+        min_y: left.min_y.min(right.min_y),
+        max_x: left.max_x.max(right.max_x),
+        max_y: left.max_y.max(right.max_y),
     }
 }
 
@@ -142,7 +275,7 @@ pub(crate) fn shape_to_polygons(shape: &Shape) -> Result<PolygonSet, PackingErro
             compound_polygons(parts)?
         }
     };
-    Ok(PolygonSet { polygons })
+    Ok(PolygonSet::new(polygons))
 }
 
 fn cubic_bezier(p0: Point, p1: Point, p2: Point, p3: Point, t: f64) -> Point {
@@ -336,12 +469,22 @@ fn normalise_polygon(vertices: &[Point]) -> Result<Vec<Point>, PackingError> {
 }
 
 pub(crate) fn transform(set: &PolygonSet, angle: f64, x: f64, y: f64) -> PolygonSet {
-    PolygonSet {
-        polygons: set
-            .polygons
-            .iter()
-            .map(|polygon| transform_polygon(polygon, angle, x, y))
-            .collect(),
+    let polygons = set
+        .polygons
+        .iter()
+        .map(|polygon| transform_polygon(polygon, angle, x, y))
+        .collect();
+    if angle.abs() <= EPSILON {
+        PolygonSet {
+            polygons,
+            edge_index: set.edge_index.clone(),
+            edge_index_offset: Point {
+                x: set.edge_index_offset.x + x,
+                y: set.edge_index_offset.y + y,
+            },
+        }
+    } else {
+        PolygonSet::new(polygons)
     }
 }
 
@@ -405,26 +548,37 @@ fn equivalent_polygon(a: &[Point], b: &[Point]) -> bool {
 }
 
 pub(crate) fn sets_overlap(a: &PolygonSet, b: &PolygonSet) -> bool {
-    for left in &a.polygons {
-        for right in &b.polygons {
-            for first in 0..left.len() {
-                for second in 0..right.len() {
-                    if segments_cross(
-                        left[first],
-                        left[(first + 1) % left.len()],
-                        right[second],
-                        right[(second + 1) % right.len()],
-                    ) || collinear_interior_overlap(
-                        left[first],
-                        left[(first + 1) % left.len()],
-                        right[second],
-                        right[(second + 1) % right.len()],
-                    ) {
-                        return true;
+    let indexed_overlap = match (&a.edge_index, &b.edge_index) {
+        (Some(left), Some(right)) if left.edges.len().saturating_mul(right.edges.len()) >= 256 => {
+            indexed_nodes_overlap(a, left, left.root, b, right, right.root)
+        }
+        _ => {
+            for left in &a.polygons {
+                for right in &b.polygons {
+                    for first in 0..left.len() {
+                        for second in 0..right.len() {
+                            if segments_cross(
+                                left[first],
+                                left[(first + 1) % left.len()],
+                                right[second],
+                                right[(second + 1) % right.len()],
+                            ) || collinear_interior_overlap(
+                                left[first],
+                                left[(first + 1) % left.len()],
+                                right[second],
+                                right[(second + 1) % right.len()],
+                            ) {
+                                return true;
+                            }
+                        }
                     }
                 }
             }
+            false
         }
+    };
+    if indexed_overlap {
+        return true;
     }
     a.polygons
         .iter()
@@ -442,8 +596,249 @@ pub(crate) fn sets_overlap(a: &PolygonSet, b: &PolygonSet) -> bool {
 /// `required <= EPSILON`. Avoiding it matters for detailed polygons because exact distance
 /// compares every pair of potentially competitive edges.
 pub(crate) fn sets_conflict(a: &PolygonSet, b: &PolygonSet, required: f64) -> bool {
-    sets_overlap(a, b)
-        || (required > EPSILON && set_distance_between_disjoint_sets(a, b) + EPSILON < required)
+    if sets_overlap(a, b) {
+        return true;
+    }
+    if required <= EPSILON {
+        return false;
+    }
+    match (&a.edge_index, &b.edge_index) {
+        (Some(left), Some(right)) if left.edges.len().saturating_mul(right.edges.len()) >= 256 => {
+            indexed_nodes_closer_than(a, left, left.root, b, right, right.root, required)
+        }
+        _ => set_distance_between_disjoint_sets(a, b) + EPSILON < required,
+    }
+}
+
+fn indexed_nodes_overlap(
+    left_set: &PolygonSet,
+    left_index: &EdgeIndex,
+    left_node_index: usize,
+    right_set: &PolygonSet,
+    right_index: &EdgeIndex,
+    right_node_index: usize,
+) -> bool {
+    let left_node = left_index.nodes[left_node_index];
+    let right_node = right_index.nodes[right_node_index];
+    if !left_node
+        .bounds
+        .translated(left_set.edge_index_offset.x, left_set.edge_index_offset.y)
+        .overlaps(
+            right_node
+                .bounds
+                .translated(right_set.edge_index_offset.x, right_set.edge_index_offset.y),
+            left_node.overlap_padding.max(right_node.overlap_padding),
+        )
+    {
+        return false;
+    }
+    match (left_node.children, right_node.children) {
+        (None, None) => {
+            for left_edge in &left_index.edges[left_node.start..left_node.end] {
+                let (left_a, left_b) = indexed_edge_points(left_set, *left_edge);
+                let left_bounds = left_edge
+                    .bounds
+                    .translated(left_set.edge_index_offset.x, left_set.edge_index_offset.y);
+                for right_edge in &right_index.edges[right_node.start..right_node.end] {
+                    if !left_bounds.overlaps(
+                        right_edge.bounds.translated(
+                            right_set.edge_index_offset.x,
+                            right_set.edge_index_offset.y,
+                        ),
+                        left_edge.overlap_padding.max(right_edge.overlap_padding),
+                    ) {
+                        continue;
+                    }
+                    let (right_a, right_b) = indexed_edge_points(right_set, *right_edge);
+                    if segments_cross(left_a, left_b, right_a, right_b)
+                        || collinear_interior_overlap(left_a, left_b, right_a, right_b)
+                    {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        (Some((left, right)), None) => {
+            indexed_nodes_overlap(
+                left_set,
+                left_index,
+                left,
+                right_set,
+                right_index,
+                right_node_index,
+            ) || indexed_nodes_overlap(
+                left_set,
+                left_index,
+                right,
+                right_set,
+                right_index,
+                right_node_index,
+            )
+        }
+        (None, Some((left, right))) => {
+            indexed_nodes_overlap(
+                left_set,
+                left_index,
+                left_node_index,
+                right_set,
+                right_index,
+                left,
+            ) || indexed_nodes_overlap(
+                left_set,
+                left_index,
+                left_node_index,
+                right_set,
+                right_index,
+                right,
+            )
+        }
+        (Some((left_child, right_child)), Some(_)) => {
+            indexed_nodes_overlap(
+                left_set,
+                left_index,
+                left_child,
+                right_set,
+                right_index,
+                right_node_index,
+            ) || indexed_nodes_overlap(
+                left_set,
+                left_index,
+                right_child,
+                right_set,
+                right_index,
+                right_node_index,
+            )
+        }
+    }
+}
+
+fn indexed_nodes_closer_than(
+    left_set: &PolygonSet,
+    left_index: &EdgeIndex,
+    left_node_index: usize,
+    right_set: &PolygonSet,
+    right_index: &EdgeIndex,
+    right_node_index: usize,
+    required: f64,
+) -> bool {
+    let left_node = left_index.nodes[left_node_index];
+    let right_node = right_index.nodes[right_node_index];
+    let left_bounds = left_node
+        .bounds
+        .translated(left_set.edge_index_offset.x, left_set.edge_index_offset.y);
+    let right_bounds = right_node
+        .bounds
+        .translated(right_set.edge_index_offset.x, right_set.edge_index_offset.y);
+    let threshold = required - EPSILON;
+    if bounds_distance_squared(left_bounds, right_bounds) >= threshold * threshold {
+        return false;
+    }
+    match (left_node.children, right_node.children) {
+        (None, None) => left_index.edges[left_node.start..left_node.end]
+            .iter()
+            .any(|left_edge| {
+                let (left_a, left_b) = indexed_edge_points(left_set, *left_edge);
+                right_index.edges[right_node.start..right_node.end]
+                    .iter()
+                    .any(|right_edge| {
+                        let left_bounds = left_edge
+                            .bounds
+                            .translated(left_set.edge_index_offset.x, left_set.edge_index_offset.y);
+                        let right_bounds = right_edge.bounds.translated(
+                            right_set.edge_index_offset.x,
+                            right_set.edge_index_offset.y,
+                        );
+                        if bounds_distance_squared(left_bounds, right_bounds)
+                            >= threshold * threshold
+                        {
+                            return false;
+                        }
+                        let (right_a, right_b) = indexed_edge_points(right_set, *right_edge);
+                        segment_distance(left_a, left_b, right_a, right_b) + EPSILON < required
+                    })
+            }),
+        (Some((left, right)), None) => {
+            indexed_nodes_closer_than(
+                left_set,
+                left_index,
+                left,
+                right_set,
+                right_index,
+                right_node_index,
+                required,
+            ) || indexed_nodes_closer_than(
+                left_set,
+                left_index,
+                right,
+                right_set,
+                right_index,
+                right_node_index,
+                required,
+            )
+        }
+        (None, Some((left, right))) => {
+            indexed_nodes_closer_than(
+                left_set,
+                left_index,
+                left_node_index,
+                right_set,
+                right_index,
+                left,
+                required,
+            ) || indexed_nodes_closer_than(
+                left_set,
+                left_index,
+                left_node_index,
+                right_set,
+                right_index,
+                right,
+                required,
+            )
+        }
+        (Some((left_child, right_child)), Some(_)) => {
+            indexed_nodes_closer_than(
+                left_set,
+                left_index,
+                left_child,
+                right_set,
+                right_index,
+                right_node_index,
+                required,
+            ) || indexed_nodes_closer_than(
+                left_set,
+                left_index,
+                right_child,
+                right_set,
+                right_index,
+                right_node_index,
+                required,
+            )
+        }
+    }
+}
+
+fn indexed_edge_points(set: &PolygonSet, edge: EdgeRef) -> (Point, Point) {
+    let polygon = &set.polygons[edge.polygon];
+    (polygon[edge.edge], polygon[(edge.edge + 1) % polygon.len()])
+}
+
+fn bounds_distance_squared(left: Bounds, right: Bounds) -> f64 {
+    let gap_x = if left.max_x < right.min_x {
+        right.min_x - left.max_x
+    } else if right.max_x < left.min_x {
+        left.min_x - right.max_x
+    } else {
+        0.0
+    };
+    let gap_y = if left.max_y < right.min_y {
+        right.min_y - left.max_y
+    } else if right.max_y < left.min_y {
+        left.min_y - right.max_y
+    } else {
+        0.0
+    };
+    gap_x * gap_x + gap_y * gap_y
 }
 
 fn set_distance_between_disjoint_sets(a: &PolygonSet, b: &PolygonSet) -> f64 {
@@ -695,5 +1090,38 @@ mod tests {
         assert!(!sets_conflict(&square, &separated, 0.4));
         assert!(sets_conflict(&square, &separated, 0.6));
         assert!(sets_conflict(&square, &overlapping, 0.0));
+    }
+
+    #[test]
+    fn indexed_predicates_match_fallback_across_overlap_and_clearance_cases() {
+        let vertices = (0..32)
+            .map(|index| {
+                let angle = f64::from(index) * std::f64::consts::TAU / 32.0;
+                Point {
+                    x: angle.cos() * (2.0 + f64::from(index % 3) * 0.05),
+                    y: angle.sin() * (2.0 + f64::from(index % 3) * 0.05),
+                }
+            })
+            .collect::<Vec<_>>();
+        let fallback = shape_to_polygons(&Shape::Polygon { vertices }).unwrap();
+        let mut indexed = fallback.clone();
+        indexed.enable_edge_index();
+
+        for (x, y) in [(0.0, 0.0), (0.1, 0.2), (3.9, 0.0), (4.2, 0.3), (8.0, -2.0)] {
+            let fallback_moved = transform(&fallback, 0.0, x, y);
+            let indexed_moved = transform(&indexed, 0.0, x, y);
+            assert_eq!(
+                sets_overlap(&fallback, &fallback_moved),
+                sets_overlap(&indexed, &indexed_moved),
+                "overlap mismatch at ({x}, {y})"
+            );
+            for clearance in [0.0, 0.1, 0.5, 2.0] {
+                assert_eq!(
+                    sets_conflict(&fallback, &fallback_moved, clearance),
+                    sets_conflict(&indexed, &indexed_moved, clearance),
+                    "clearance mismatch at ({x}, {y}) with {clearance}"
+                );
+            }
+        }
     }
 }

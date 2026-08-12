@@ -3,21 +3,26 @@ import init, { PackingEngine } from "./wasm/packing_wasm.js";
 import type { WorkerRequest, WorkerResponse } from "./worker-protocol";
 
 const scope = self as DedicatedWorkerGlobalScope;
-await init();
+const bootStarted = performance.now();
+const wasm = await init();
+const coldStartMs = performance.now() - bootStarted;
 const engine = new PackingEngine();
 
 scope.onmessage = ({ data }: MessageEvent<WorkerRequest>) => {
   try {
-    const problem = JSON.stringify(data.problem);
     if (data.type === "validate") {
-      engine.validate(problem);
+      engine.validate(JSON.stringify(data.problem));
       post({ id: data.id, type: "validated" });
     } else if (data.type === "solve") {
       const started = performance.now();
       let phaseStarted = started;
       let activePhase: string | null = null;
       const phaseMs: Record<string, number> = {};
+      let callbackCount = 0;
+      let callbackBytes = 0;
       const reportProgress = (progressJson: string) => {
+        callbackCount += 1;
+        callbackBytes += progressJson.length;
         const progress = JSON.parse(progressJson);
         const now = performance.now();
         if (activePhase !== null && progress.phase !== activePhase) {
@@ -27,7 +32,8 @@ scope.onmessage = ({ data }: MessageEvent<WorkerRequest>) => {
         activePhase = progress.phase;
         post({ id: data.id, type: "progress", progress });
       };
-      const options = JSON.stringify(data.options);
+      const problem = data.problemJson;
+      const options = data.optionsJson;
       const encoded = data.reportProgress === false
         ? data.lane === "direct"
           ? engine.solve_direct(problem, options)
@@ -42,9 +48,20 @@ scope.onmessage = ({ data }: MessageEvent<WorkerRequest>) => {
       const finished = performance.now();
       if (activePhase !== null) phaseMs[activePhase] = (phaseMs[activePhase] ?? 0) + finished - phaseStarted;
       const result = JSON.parse(encoded);
-      result.runtime_timing = { total_ms: finished - started, phase_ms: phaseMs, worker_count: 1 };
+      result.runtime_timing = {
+        total_ms: finished - started,
+        phase_ms: phaseMs,
+        worker_count: 1,
+        lane: data.lane ?? "full",
+        cold_start_ms: coldStartMs,
+        callback_count: callbackCount,
+        callback_bytes: callbackBytes,
+        request_bytes: problem.length + options.length,
+        wasm_memory_bytes: wasm.memory.buffer.byteLength,
+      };
       post({ id: data.id, type: "solved", result });
     } else {
+      const problem = JSON.stringify(data.problem);
       const encoded = engine.sensitivity_with_progress(problem, JSON.stringify(data.study), (progressJson: string) => {
         post({ id: data.id, type: "sensitivity-progress", progress: JSON.parse(progressJson) });
       });

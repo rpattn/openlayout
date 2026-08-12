@@ -38,13 +38,17 @@ pub struct PreparedProblem {
 pub fn prepare_problem(problem: &PackingProblem) -> Result<PreparedProblem, PackingError> {
     let started = Clock::start();
     validate_problem(problem)?;
-    let container = container_region(&problem.container.parts)?;
+    let mut container = container_region(&problem.container.parts)?;
+    container.enable_edge_index();
     let container_bounds = bounds(&container);
-    let exclusions = problem
+    let mut exclusions = problem
         .exclusions
         .iter()
         .map(|entry| shape_to_polygons(&entry.shape).map(|geometry| union_set(&geometry)))
         .collect::<Result<Vec<_>, _>>()?;
+    exclusions
+        .iter_mut()
+        .for_each(PolygonSet::enable_edge_index);
     let container_contacts = boundary_contacts(&container);
     let exclusion_contacts = exclusions.iter().flat_map(boundary_contacts).collect();
     let mut variants = Vec::new();
@@ -89,9 +93,7 @@ pub fn prepare_problem(problem: &PackingProblem) -> Result<PreparedProblem, Pack
                 .polygons
                 .iter()
                 .map(|polygon| {
-                    let region = PolygonSet {
-                        polygons: vec![polygon.clone()],
-                    };
+                    let region = PolygonSet::new(vec![polygon.clone()]);
                     (area(&region) / minimum_item_area).floor().max(0.0) as usize
                 })
                 .sum::<usize>()
@@ -195,7 +197,8 @@ fn prepare_item(
     rotations.dedup_by(|a, b| normalised_rotation(*a) == normalised_rotation(*b));
     for rotation in rotations {
         let rotation_deg = normalised_rotation(rotation);
-        let geometry = transform(&base, rotation_deg, 0.0, 0.0);
+        let mut geometry = transform(&base, rotation_deg, 0.0, 0.0);
+        geometry.enable_edge_index();
         let geometry_bounds = bounds(&geometry);
         if variants.iter().any(|existing| {
             existing.item_index == item_index && equivalent_geometry(&existing.geometry, &geometry)

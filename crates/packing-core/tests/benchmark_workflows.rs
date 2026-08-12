@@ -22,6 +22,77 @@ fn converted_gardeyn0_retains_the_high_vertex_baseline() {
 }
 
 #[test]
+fn gardeyn_derivatives_cover_continuous_rotation_clearance_and_complex_topology() {
+    for fixture in [
+        include_str!("../../../benchmarks/gardeyn0-continuous.json"),
+        include_str!("../../../benchmarks/gardeyn0-clearance.json"),
+    ] {
+        let problem: PackingProblem = serde_json::from_str(fixture).unwrap();
+        let mut solve_options = options();
+        solve_options.quality = SolveQuality::Fast;
+        solve_options.baseline_only = true;
+        solve_options.max_iterations = 5_000;
+        solve_options.grid_step = 250.0;
+        solve_options.restarts = 1;
+        let result = solve(&problem, &solve_options).unwrap();
+        assert_eq!(result.packed_item_count, 10);
+        assert_eq!(result.statistics.generated_candidates, 1_250);
+        assert_eq!(result.statistics.exact_geometry_checks, 228);
+        assert!(result.validation.valid);
+    }
+
+    let mut topology: PackingProblem =
+        serde_json::from_str(include_str!("../../../benchmarks/gardeyn0-90.json")).unwrap();
+    let hole = topology.items.remove(0).shape;
+    topology.container.parts.push(RegionPart {
+        id: "high-vertex-hole".into(),
+        operation: RegionOperation::Subtract,
+        shape: hole,
+        translation: Point::default(),
+        rotation_deg: 0.0,
+        snap: None,
+    });
+    topology.exclusions.push(Exclusion {
+        id: "high-vertex-exclusion".into(),
+        shape: Shape::Polygon {
+            vertices: vec![
+                Point {
+                    x: 40_000.0,
+                    y: 9_000.0,
+                },
+                Point {
+                    x: 41_000.0,
+                    y: 9_000.0,
+                },
+                Point {
+                    x: 41_000.0,
+                    y: 10_000.0,
+                },
+                Point {
+                    x: 40_000.0,
+                    y: 10_000.0,
+                },
+            ],
+        },
+        clearance: 10.0,
+    });
+    topology.items.truncate(3);
+    topology.items.iter_mut().for_each(|item| item.quantity = 2);
+    topology.clearance.item_to_item = 10.0;
+    topology.clearance.item_to_boundary = 10.0;
+    topology.clearance.item_to_exclusion = 10.0;
+    let mut solve_options = options();
+    solve_options.quality = SolveQuality::Fast;
+    solve_options.baseline_only = true;
+    solve_options.max_iterations = 2_000;
+    solve_options.grid_step = 500.0;
+    solve_options.restarts = 1;
+    let result = solve(&topology, &solve_options).unwrap();
+    assert!(result.packed_item_count >= 1);
+    assert!(result.validation.valid);
+}
+
+#[test]
 fn published_dighe2_target_bounds_and_validates_the_current_result() {
     // Dighe2 from the ESICUP irregular strip-packing corpus has ten fixed-orientation polygons
     // whose total area exactly tiles a 100 by 100 field.
@@ -228,5 +299,47 @@ fn thorough_mode_can_certify_a_finite_candidate_set() {
         ConflictGraphStatus::CandidateSetOptimal
     );
     assert!(result.statistics.conflict_graph_candidates > 0);
+    assert!(result.validation.valid);
+}
+
+#[test]
+fn vertical_slice_backend_proves_a_tighter_full_height_optimum() {
+    let problem = PackingProblem {
+        schema_version: 2,
+        container: container(Shape::Rectangle {
+            width: 10.0,
+            height: 4.0,
+        }),
+        exclusions: Vec::new(),
+        items: vec![
+            Item {
+                id: "narrow".into(),
+                shape: Shape::Rectangle {
+                    width: 2.0,
+                    height: 4.0,
+                },
+                quantity: 1,
+                rotation_policy: discrete(vec![0.0]),
+            },
+            Item {
+                id: "wide".into(),
+                shape: Shape::Rectangle {
+                    width: 6.0,
+                    height: 4.0,
+                },
+                quantity: 5,
+                rotation_policy: discrete(vec![0.0]),
+            },
+        ],
+        fixed_placements: Vec::new(),
+        clearance: Clearance::default(),
+    };
+    let result = solve(&problem, &options()).unwrap();
+
+    assert_eq!(result.simple_upper_bound, Some(5));
+    assert_eq!(result.statistics.final_upper_bound, Some(2));
+    assert_eq!(result.packed_item_count, 2);
+    assert_eq!(result.status, SolveStatus::ProvenOptimal);
+    assert_eq!(result.solver_strategy, "vertical_slice_exact");
     assert!(result.validation.valid);
 }

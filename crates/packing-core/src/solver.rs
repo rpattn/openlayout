@@ -40,6 +40,9 @@ struct Counters {
     overlap_repair_accepted_moves: u64,
     overlap_repair_weight_updates: u64,
     overlap_repair_successes: u64,
+    overlap_repair_component_reinsert_attempts: u64,
+    overlap_repair_component_reinsert_successes: u64,
+    certified_upper_bound: Option<usize>,
     overlap_repair_best_penalty: Option<f64>,
     failed_constructive_candidates: Vec<Placement>,
     continuation_stages: u64,
@@ -408,6 +411,29 @@ fn solve_with_observer_internal(
             observer,
         );
     }
+    if warm_start.is_none()
+        && let Some(exact) = exact_slices::solve_full_height_rectangles(prepared)
+    {
+        counters.certified_upper_bound = Some(exact.placements.len());
+        let exact_entries = candidate_entries_from_placements(prepared, &exact.placements)?;
+        if exact_entries.len() > best.len()
+            || (exact_entries.len() == best.len() && layout_key(&exact_entries) < layout_key(&best))
+        {
+            best = exact_entries;
+            best_strategy = "vertical_slice_exact".to_string();
+        }
+        counters.greedy_lower_bound = best.len();
+        return finalize_solve(
+            prepared,
+            options,
+            &run_options,
+            best,
+            best_strategy,
+            counters,
+            started,
+            observer,
+        );
+    }
     let effective_restarts = match options.quality {
         crate::SolveQuality::Fast => options.restarts.min(2),
         crate::SolveQuality::Balanced => options.restarts,
@@ -655,6 +681,10 @@ fn solve_with_observer_internal(
         counters.overlap_repair_accepted_moves += repair.metrics.accepted_moves;
         counters.overlap_repair_weight_updates += repair.metrics.weight_updates;
         counters.overlap_repair_successes += repair.metrics.successful_repairs;
+        counters.overlap_repair_component_reinsert_attempts +=
+            repair.metrics.component_reinsert_attempts;
+        counters.overlap_repair_component_reinsert_successes +=
+            repair.metrics.component_reinsert_successes;
         counters.overlap_repair_best_penalty = match (
             counters.overlap_repair_best_penalty,
             repair.metrics.best_penalty,
@@ -775,7 +805,11 @@ fn finalize_solve(
     }
     let status = if counters.cancelled {
         SolveStatus::Cancelled
-    } else if Some(best.len()) == prepared.simple_upper_bound {
+    } else if Some(best.len())
+        == counters
+            .certified_upper_bound
+            .or(prepared.simple_upper_bound)
+    {
         SolveStatus::ProvenOptimal
     } else if counters.limit {
         SolveStatus::LimitReached
@@ -799,6 +833,7 @@ fn finalize_solve(
 }
 
 mod continuation;
+mod exact_slices;
 use continuation::clearance_continuation;
 
 fn effective_iteration_budget(options: &SolveOptions) -> u64 {

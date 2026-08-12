@@ -124,6 +124,7 @@
 .tool-button { min-width: 32px; height: 30px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--text-soft); padding: 0 8px; cursor: pointer; font-size: 10px; white-space: nowrap; }
 .tool-button.icon-tool { width: 32px; padding: 0; font-size: 14px; }
 .tool-button:hover:not(:disabled), .tool-button.active { border-color: var(--line-strong); background: var(--surface-raised); color: var(--accent); }
+.tool-button.snap-toggle { min-width: 52px; font-size: 12px; }
 .tool-button.has-content { color: var(--accent); }
 .toolbar-color { width: 32px; height: 30px; display: grid; place-items: center; padding: 0; color: var(--muted); }
 .toolbar-color input, .primitive-editor input[type="color"] { width: 28px; min-height: 22px; height: 22px; padding: 1px; border-radius: 4px; cursor: pointer; }
@@ -164,4 +165,3 @@
 @keyframes pulse { 50% { opacity: .3; } }
 
 @media (max-width: 1180px) { .tool-select { width: 56px; } }
-

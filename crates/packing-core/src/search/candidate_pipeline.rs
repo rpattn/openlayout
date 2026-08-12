@@ -7,20 +7,28 @@ pub(super) fn generate_candidates(
     metrics: &mut SearchMetrics,
     observer: &mut dyn SolveObserver,
     cached_static: Option<&[Candidate]>,
-) -> Option<Vec<Candidate>> {
+) -> Option<CandidateBatch> {
     let started = Clock::start();
-    let mut raw = cached_static
+    let mut references = cached_static
         .map(|candidates| {
             candidates
                 .iter()
-                .filter(|candidate| {
+                .enumerate()
+                .filter(|(_, candidate)| {
                     let item_index = prepared.variants[candidate.variant_id].item_index;
                     state.counts[item_index] < prepared.problem.items[item_index].quantity
                 })
-                .cloned()
+                .map(|(index, candidate)| CandidateRef {
+                    origin: CandidateOrigin::Static(index),
+                    source: candidate.source,
+                    contact_support: candidate.contact_support,
+                    score: 0.0,
+                    id: candidate.id,
+                })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let mut dynamic = Vec::new();
     let boundary_points = prepared.container_contacts.iter().take(32);
     let exclusion_points = prepared.exclusion_contacts.iter().take(24);
     for variant in &prepared.variants {
@@ -29,17 +37,24 @@ pub(super) fn generate_candidates(
             return None;
         }
         let item_index = variant.item_index;
+        let item = &prepared.problem.items[item_index];
         if state.counts[item_index] >= prepared.problem.items[item_index].quantity {
             continue;
         }
         let boundary_gap = prepared.problem.clearance.item_to_boundary + EPSILON * 10.0;
         let mut positions = Vec::new();
         let quantum = (EPSILON * 100.0).max(1e-7);
-        let mut seen = raw
+        let mut seen = references
             .iter()
             .enumerate()
-            .filter(|(_, candidate)| candidate.variant_id == variant.id)
-            .map(|(index, candidate)| {
+            .filter(|(_, reference)| {
+                reference
+                    .candidate(cached_static.unwrap_or(&[]), &dynamic)
+                    .variant_id
+                    == variant.id
+            })
+            .map(|(index, reference)| {
+                let candidate = reference.candidate(cached_static.unwrap_or(&[]), &dynamic);
                 (
                     (
                         (candidate.x / quantum).round() as i64,
@@ -146,6 +161,16 @@ pub(super) fn generate_candidates(
                     ));
                 }
             }
+            if config.use_nfp_events
+                && matches!(item.rotation_policy, crate::RotationPolicy::Discrete { .. })
+            {
+                positions.extend(
+                    fixed_rotation_nfp_events(&existing.geometry, &variant.geometry)
+                        .into_iter()
+                        .take(24)
+                        .map(|point| (point.x, point.y, CandidateSource::ItemContact)),
+                );
+            }
         }
         // Combining an x-contact from one obstacle with a y-contact from another produces the
         // finite two-constraint intersections that often close a corner-shaped gap.
@@ -187,15 +212,18 @@ pub(super) fn generate_candidates(
             let key = ((x / quantum).round() as i64, (y / quantum).round() as i64);
             if let Some(index) = seen.get(&key).copied() {
                 if prioritize_exact_fits && is_contact_source(source) {
-                    raw[index].contact_support = raw[index].contact_support.saturating_add(1);
-                    if candidate_source_bonus(source) > candidate_source_bonus(raw[index].source) {
-                        raw[index].source = source;
+                    references[index].contact_support =
+                        references[index].contact_support.saturating_add(1);
+                    if candidate_source_bonus(source)
+                        > candidate_source_bonus(references[index].source)
+                    {
+                        references[index].source = source;
                     }
                 }
                 continue;
             }
-            let index = raw.len();
-            raw.push(Candidate {
+            let dynamic_index = dynamic.len();
+            dynamic.push(Candidate {
                 id: 0,
                 variant_id: variant.id,
                 x,
@@ -205,57 +233,162 @@ pub(super) fn generate_candidates(
                 contact_support: u16::from(is_contact_source(source)),
                 score: 0.0,
             });
+            let index = references.len();
+            references.push(CandidateRef {
+                origin: CandidateOrigin::Dynamic(dynamic_index),
+                source,
+                contact_support: u16::from(is_contact_source(source)),
+                score: 0.0,
+                id: cached_static.map_or(0, |candidates| {
+                    candidates.len() as u64 + dynamic_index as u64
+                }),
+            });
             seen.insert(key, index);
         }
     }
-    raw.sort_by(|a, b| {
-        a.variant_id
-            .cmp(&b.variant_id)
-            .then_with(|| a.source.cmp(&b.source))
-            .then_with(|| a.y.total_cmp(&b.y))
-            .then_with(|| a.x.total_cmp(&b.x))
-    });
-    for (id, candidate) in raw.iter_mut().enumerate() {
-        candidate.id = id as u64;
+    if cached_static.is_none() {
+        references.sort_by(|left, right| {
+            let a = left.candidate(&[], &dynamic);
+            let b = right.candidate(&[], &dynamic);
+            a.variant_id
+                .cmp(&b.variant_id)
+                .then_with(|| left.source.cmp(&right.source))
+                .then_with(|| a.y.total_cmp(&b.y))
+                .then_with(|| a.x.total_cmp(&b.x))
+        });
+        for (id, reference) in references.iter_mut().enumerate() {
+            reference.id = id as u64;
+        }
     }
-    metrics.generated_candidates += raw.len() as u64;
+    metrics.generated_candidates += references.len() as u64;
     metrics.candidate_generation_ms += started.elapsed_ms();
-    Some(raw)
+    Some(CandidateBatch {
+        references,
+        dynamic,
+    })
 }
 
 pub(super) fn score_candidates(
     prepared: &PreparedProblem,
     state: &SearchState,
-    candidates: &mut [Candidate],
+    static_candidates: &[Candidate],
+    batch: &mut CandidateBatch,
     metrics: &mut SearchMetrics,
 ) {
     let started = Clock::start();
-    for candidate in candidates.iter_mut() {
-        let contact_bonus = candidate_source_bonus(candidate.source);
+    let alignment_index = (state.placed.len() > 24).then(|| AlignmentIndex::new(state));
+    for reference in &mut batch.references {
+        let candidate = reference.candidate(static_candidates, &batch.dynamic);
+        let contact_bonus = candidate_source_bonus(reference.source);
         // Complex variants never accumulate support, so this stays a constant-time hot-path
         // operation without recounting their vertices for every candidate.
-        let exact_fit_bonus = f64::from(candidate.contact_support.saturating_sub(1).min(8)) * 3.0;
+        let exact_fit_bonus = f64::from(reference.contact_support.saturating_sub(1).min(8)) * 3.0;
         let x = candidate.bounds.min_x - prepared.container_bounds.min_x;
         let y = candidate.bounds.min_y - prepared.container_bounds.min_y;
-        let alignment = state
-            .placed
-            .iter()
-            .filter(|placed| {
-                (placed.bounds.min_x - candidate.bounds.min_x).abs() <= EPSILON * 10.0
-                    || (placed.bounds.min_y - candidate.bounds.min_y).abs() <= EPSILON * 10.0
-            })
-            .count() as f64;
-        candidate.score = contact_bonus + exact_fit_bonus + alignment * 0.25 - y * 1e-3 - x * 1e-6;
+        let alignment = alignment_index.as_ref().map_or_else(
+            || {
+                state
+                    .placed
+                    .iter()
+                    .filter(|placed| {
+                        (placed.bounds.min_x - candidate.bounds.min_x).abs() <= EPSILON * 10.0
+                            || (placed.bounds.min_y - candidate.bounds.min_y).abs()
+                                <= EPSILON * 10.0
+                    })
+                    .count()
+            },
+            |index| index.count(candidate.bounds),
+        ) as f64;
+        reference.score = contact_bonus + exact_fit_bonus + alignment * 0.25 - y * 1e-3 - x * 1e-6;
     }
-    candidates.sort_by(|a, b| {
-        b.score
-            .total_cmp(&a.score)
+    batch.references.sort_by(|left, right| {
+        let a = left.candidate(static_candidates, &batch.dynamic);
+        let b = right.candidate(static_candidates, &batch.dynamic);
+        right
+            .score
+            .total_cmp(&left.score)
             .then_with(|| a.y.total_cmp(&b.y))
             .then_with(|| a.x.total_cmp(&b.x))
             .then_with(|| a.variant_id.cmp(&b.variant_id))
-            .then_with(|| a.id.cmp(&b.id))
+            .then_with(|| left.id.cmp(&right.id))
     });
     metrics.candidate_scoring_ms += started.elapsed_ms();
+}
+
+struct AlignmentIndex {
+    by_x: Vec<(f64, usize)>,
+    by_y: Vec<(f64, usize)>,
+    coordinates: Vec<(f64, f64)>,
+}
+
+impl AlignmentIndex {
+    fn new(state: &SearchState) -> Self {
+        let coordinates = state
+            .placed
+            .iter()
+            .map(|placed| (placed.bounds.min_x, placed.bounds.min_y))
+            .collect::<Vec<_>>();
+        let mut by_x = coordinates
+            .iter()
+            .enumerate()
+            .map(|(index, (x, _))| (*x, index))
+            .collect::<Vec<_>>();
+        let mut by_y = coordinates
+            .iter()
+            .enumerate()
+            .map(|(index, (_, y))| (*y, index))
+            .collect::<Vec<_>>();
+        by_x.sort_by(|left, right| {
+            left.0
+                .total_cmp(&right.0)
+                .then_with(|| left.1.cmp(&right.1))
+        });
+        by_y.sort_by(|left, right| {
+            left.0
+                .total_cmp(&right.0)
+                .then_with(|| left.1.cmp(&right.1))
+        });
+        Self {
+            by_x,
+            by_y,
+            coordinates,
+        }
+    }
+
+    fn count(&self, candidate: Bounds) -> usize {
+        let tolerance = EPSILON * 10.0;
+        let x_matches = matching_range(&self.by_x, candidate.min_x, tolerance);
+        let y_matches = matching_range(&self.by_y, candidate.min_y, tolerance);
+        let intersection = if x_matches.len() <= y_matches.len() {
+            self.by_x[x_matches.clone()]
+                .iter()
+                .filter(|(_, index)| {
+                    (self.coordinates[*index].1 - candidate.min_y).abs() <= tolerance
+                })
+                .count()
+        } else {
+            self.by_y[y_matches.clone()]
+                .iter()
+                .filter(|(_, index)| {
+                    (self.coordinates[*index].0 - candidate.min_x).abs() <= tolerance
+                })
+                .count()
+        };
+        x_matches.len() + y_matches.len() - intersection
+    }
+}
+
+fn matching_range(values: &[(f64, usize)], target: f64, tolerance: f64) -> std::ops::Range<usize> {
+    let pivot = values.partition_point(|(value, _)| *value < target);
+    let mut start = pivot;
+    while start > 0 && (values[start - 1].0 - target).abs() <= tolerance {
+        start -= 1;
+    }
+    let mut end = pivot;
+    while end < values.len() && (values[end].0 - target).abs() <= tolerance {
+        end += 1;
+    }
+    start..end
 }
 
 fn is_contact_source(source: CandidateSource) -> bool {
@@ -275,6 +408,95 @@ fn candidate_source_bonus(source: CandidateSource) -> f64 {
         CandidateSource::BoundaryContact => 3.0,
         CandidateSource::ExclusionContact => 2.0,
     }
+}
+
+fn fixed_rotation_nfp_events(existing: &PolygonSet, moving: &PolygonSet) -> Vec<crate::Point> {
+    if existing.polygons.len() != 1
+        || moving.polygons.len() != 1
+        || existing.polygons[0].len() > 12
+        || moving.polygons[0].len() > 12
+        || !is_convex_polygon(&existing.polygons[0])
+        || !is_convex_polygon(&moving.polygons[0])
+    {
+        return Vec::new();
+    }
+    let mut sums = existing.polygons[0]
+        .iter()
+        .flat_map(|fixed| {
+            moving.polygons[0].iter().map(move |moving| crate::Point {
+                x: fixed.x - moving.x,
+                y: fixed.y - moving.y,
+            })
+        })
+        .collect::<Vec<_>>();
+    convex_hull(&mut sums)
+}
+
+fn is_convex_polygon(polygon: &[crate::Point]) -> bool {
+    if polygon.len() < 3 {
+        return false;
+    }
+    let mut direction = 0.0_f64;
+    for index in 0..polygon.len() {
+        let turn = point_cross(
+            polygon[index],
+            polygon[(index + 1) % polygon.len()],
+            polygon[(index + 2) % polygon.len()],
+        );
+        if turn.abs() <= EPSILON {
+            continue;
+        }
+        if direction != 0.0 && turn.is_sign_positive() != direction.is_sign_positive() {
+            return false;
+        }
+        direction = turn;
+    }
+    direction != 0.0
+}
+
+fn convex_hull(points: &mut Vec<crate::Point>) -> Vec<crate::Point> {
+    points.sort_by(|left, right| {
+        left.x
+            .total_cmp(&right.x)
+            .then_with(|| left.y.total_cmp(&right.y))
+    });
+    points.dedup_by(|left, right| {
+        (left.x - right.x).abs() <= EPSILON && (left.y - right.y).abs() <= EPSILON
+    });
+    if points.len() <= 2 {
+        return points.clone();
+    }
+    let mut lower = Vec::new();
+    for point in points.iter().copied() {
+        while lower.len() >= 2
+            && point_cross(lower[lower.len() - 2], lower[lower.len() - 1], point) <= EPSILON
+        {
+            lower.pop();
+        }
+        lower.push(point);
+    }
+    let mut upper = Vec::new();
+    for point in points.iter().rev().copied() {
+        while upper.len() >= 2
+            && point_cross(upper[upper.len() - 2], upper[upper.len() - 1], point) <= EPSILON
+        {
+            upper.pop();
+        }
+        upper.push(point);
+    }
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    lower.sort_by(|left, right| {
+        left.y
+            .total_cmp(&right.y)
+            .then_with(|| left.x.total_cmp(&right.x))
+    });
+    lower
+}
+
+fn point_cross(a: crate::Point, b: crate::Point, c: crate::Point) -> f64 {
+    (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
 }
 
 pub(super) fn feasible_candidate(
@@ -450,4 +672,93 @@ fn cell_keys(bounds: Bounds, gap: f64, cell_size: f64) -> impl Iterator<Item = (
     let min_y = ((bounds.min_y - gap) / cell_size).floor() as i64;
     let max_y = ((bounds.max_y + gap) / cell_size).floor() as i64;
     (min_y..=max_y).flat_map(move |y| (min_x..=max_x).map(move |x| (x, y)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Shape;
+    use crate::geometry::shape_to_polygons;
+
+    #[test]
+    fn convex_nfp_events_are_the_exact_rectangle_forbidden_region_corners() {
+        let fixed = shape_to_polygons(&Shape::Rectangle {
+            width: 2.0,
+            height: 2.0,
+        })
+        .unwrap();
+        let moving = shape_to_polygons(&Shape::Rectangle {
+            width: 1.0,
+            height: 1.0,
+        })
+        .unwrap();
+        let events = fixed_rotation_nfp_events(&fixed, &moving);
+
+        assert_eq!(events.len(), 4);
+        for (x, y) in [(-1.5, -1.5), (1.5, -1.5), (-1.5, 1.5), (1.5, 1.5)] {
+            assert!(
+                events.iter().any(|point| {
+                    (point.x - x).abs() <= EPSILON && (point.y - y).abs() <= EPSILON
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn indexed_alignment_count_matches_the_direct_or_predicate() {
+        let geometry = Arc::new(
+            shape_to_polygons(&Shape::Rectangle {
+                width: 1.0,
+                height: 1.0,
+            })
+            .unwrap(),
+        );
+        let placed = (0..32)
+            .map(|index| {
+                let x = f64::from(index % 7);
+                let y = f64::from(index % 5);
+                Placed {
+                    placement: Placement {
+                        item_id: "fixture".into(),
+                        x,
+                        y,
+                        rotation_deg: 0.0,
+                        fixed: false,
+                    },
+                    variant_id: 0,
+                    geometry: geometry.clone(),
+                    bounds: Bounds {
+                        min_x: x,
+                        min_y: y,
+                        max_x: x + 1.0,
+                        max_y: y + 1.0,
+                    },
+                }
+            })
+            .collect::<Vec<_>>();
+        let state = SearchState {
+            placed,
+            counts: Vec::new(),
+            upper_bound: 0,
+            secondary_score: 0.0,
+        };
+        let index = AlignmentIndex::new(&state);
+        for (x, y) in [(0.0, 0.0), (3.0, 4.0), (6.0, 2.0), (20.0, 20.0)] {
+            let candidate = Bounds {
+                min_x: x,
+                min_y: y,
+                max_x: x + 1.0,
+                max_y: y + 1.0,
+            };
+            let direct = state
+                .placed
+                .iter()
+                .filter(|placed| {
+                    (placed.bounds.min_x - x).abs() <= EPSILON * 10.0
+                        || (placed.bounds.min_y - y).abs() <= EPSILON * 10.0
+                })
+                .count();
+            assert_eq!(index.count(candidate), direct);
+        }
+    }
 }

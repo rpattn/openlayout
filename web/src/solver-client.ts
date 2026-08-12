@@ -15,6 +15,8 @@ export class SolverClient {
   private readyPromises: Promise<void>[] = [];
   private readyResolves: Array<() => void> = [];
   private readyRejects: Array<(error: Error) => void> = [];
+  private portfolioRuns = 0;
+  private readonly portfolioWins: Partial<Record<SolveLane, number>> = {};
 
   constructor() { this.start(); }
 
@@ -23,8 +25,13 @@ export class SolverClient {
   }
 
   async solve(problem: PackingProblem, options: SolveOptions, progress: (value: SolveProgress) => void): Promise<SolveResult> {
+    const problemJson = JSON.stringify(problem);
     if (!this.canRunClearancePortfolio(problem, options) || this.workers.length < 2) {
-      return this.requestOn(0, { type: "solve", problem, options }, (value) => progress(value as SolveProgress));
+      return this.requestOn(0, {
+        type: "solve",
+        problemJson,
+        optionsJson: JSON.stringify(options),
+      }, (value) => progress(value as SolveProgress));
     }
     const started = performance.now();
     let bestProgress: SolveProgress | null = null;
@@ -47,8 +54,8 @@ export class SolverClient {
       };
       return this.requestOn<SolveResult>(workerIndex, {
         type: "solve",
-        problem,
-        options: workerOptions,
+        problemJson,
+        optionsJson: JSON.stringify(workerOptions),
         lane,
         reportProgress: workerIndex <= 1,
       }, report);
@@ -63,10 +70,25 @@ export class SolverClient {
     }
     results.sort((a, b) => this.compareResults(a, b));
     const best = results[0];
+    const winningLane = best.runtime_timing?.lane ?? "direct";
+    this.portfolioRuns += 1;
+    this.portfolioWins[winningLane] = (this.portfolioWins[winningLane] ?? 0) + 1;
     best.runtime_timing = {
       total_ms: performance.now() - started,
       phase_ms: best.runtime_timing?.phase_ms ?? {},
       worker_count: this.workers.length,
+      winning_lane: winningLane,
+      lanes: results.map((result) => ({
+        lane: result.runtime_timing?.lane ?? "direct",
+        total_ms: result.runtime_timing?.total_ms ?? result.statistics.elapsed_ms,
+        cold_start_ms: result.runtime_timing?.cold_start_ms ?? 0,
+        callback_count: result.runtime_timing?.callback_count ?? 0,
+        callback_bytes: result.runtime_timing?.callback_bytes ?? 0,
+        request_bytes: result.runtime_timing?.request_bytes ?? 0,
+        wasm_memory_bytes: result.runtime_timing?.wasm_memory_bytes ?? 0,
+      })),
+      portfolio_wins: { ...this.portfolioWins },
+      portfolio_runs: this.portfolioRuns,
     };
     return best;
   }

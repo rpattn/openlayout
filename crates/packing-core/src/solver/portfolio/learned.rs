@@ -193,26 +193,24 @@ fn rectangle_region_clear(prepared: &PreparedProblem, candidate: Bounds) -> bool
 }
 
 fn rectangle_polygon(candidate: Bounds) -> PolygonSet {
-    PolygonSet {
-        polygons: vec![vec![
-            crate::Point {
-                x: candidate.min_x,
-                y: candidate.min_y,
-            },
-            crate::Point {
-                x: candidate.max_x,
-                y: candidate.min_y,
-            },
-            crate::Point {
-                x: candidate.max_x,
-                y: candidate.max_y,
-            },
-            crate::Point {
-                x: candidate.min_x,
-                y: candidate.max_y,
-            },
-        ]],
-    }
+    PolygonSet::new(vec![vec![
+        crate::Point {
+            x: candidate.min_x,
+            y: candidate.min_y,
+        },
+        crate::Point {
+            x: candidate.max_x,
+            y: candidate.min_y,
+        },
+        crate::Point {
+            x: candidate.max_x,
+            y: candidate.max_y,
+        },
+        crate::Point {
+            x: candidate.min_x,
+            y: candidate.max_y,
+        },
+    ]])
 }
 
 fn rectangle_inside_container(prepared: &PreparedProblem, candidate: Bounds) -> bool {
@@ -420,7 +418,7 @@ fn best_motif_offsets(
             }
             let mut polygons = first.geometry.polygons.clone();
             polygons.extend(moved.polygons);
-            let motif_bounds = bounds(&PolygonSet { polygons });
+            let motif_bounds = bounds(&PolygonSet::new(polygons));
             let box_area = motif_bounds.width() * motif_bounds.height();
             if !box_area.is_finite() || box_area <= EPSILON {
                 continue;
@@ -519,9 +517,7 @@ fn motif_fill(
     let moved_second = transform(&second.geometry, 0.0, offset.x, offset.y);
     let mut motif_polygons = first.geometry.polygons.clone();
     motif_polygons.extend(moved_second.polygons);
-    let motif = PolygonSet {
-        polygons: motif_polygons,
-    };
+    let motif = PolygonSet::new(motif_polygons);
     let clearance = prepared.problem.clearance.item_to_item;
     let pitch_x =
         learned_geometry_separation(&motif, motif_bounds, 0.0, false, clearance, counters);

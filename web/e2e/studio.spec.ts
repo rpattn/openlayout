@@ -648,6 +648,16 @@ test("builds and transforms a joined multi-region material from the toolbar", as
 test("runs packing and lets a user move and rotate returned items", async ({ page }) => {
   test.setTimeout(60_000);
   await page.goto("/");
+  const snapToggle = page.locator("#toggle-grid-snap");
+  await expect(snapToggle).toHaveAttribute("aria-pressed", "true");
+  await expect(snapToggle).toContainText("Snap");
+  await snapToggle.click();
+  await expect(snapToggle).toHaveAttribute("aria-pressed", "false");
+  await page.getByRole("button", { name: "Drafting aids" }).click();
+  await expect(page.getByLabel("Snap to grid")).not.toBeChecked();
+  await snapToggle.click();
+  await expect(snapToggle).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByLabel("Snap to grid")).toBeChecked();
   await configureFastSolve(page);
   await page.getByRole("button", { name: "Validate" }).click();
   await expect(page.locator("#status")).toContainText("valid", { timeout: 10_000 });
@@ -660,6 +670,26 @@ test("runs packing and lets a user move and rotate returned items", async ({ pag
   await firstPlacement.click();
   await expect(page.locator("#selection-inspector")).toContainText("PACKED ITEM 1");
   const x = page.locator('[data-placement-field="x"]');
+  await page.locator("#respect-manual-constraints").click();
+  const canvasBox = await page.locator("#cad-canvas").boundingBox();
+  const viewBox = (await page.locator("#cad-canvas").getAttribute("viewBox"))!.split(" ").map(Number);
+  let dragBox = await firstPlacement.boundingBox();
+  if (!canvasBox || !dragBox) throw new Error("Placement drag bounds are unavailable");
+  const fractionalDrag = .17 / viewBox[2] * canvasBox.width;
+  await page.mouse.move(dragBox.x + dragBox.width / 2, dragBox.y + dragBox.height / 2);
+  await page.mouse.down(); await page.mouse.move(dragBox.x + dragBox.width / 2 + fractionalDrag, dragBox.y + dragBox.height / 2); await page.mouse.up();
+  const snappedX = Number(await x.inputValue());
+  expect(snappedX / .5).toBeCloseTo(Math.round(snappedX / .5), 6);
+
+  dragBox = await firstPlacement.boundingBox();
+  if (!dragBox) throw new Error("Moved placement has no drag bounds");
+  await page.keyboard.down("Alt");
+  await page.mouse.move(dragBox.x + dragBox.width / 2, dragBox.y + dragBox.height / 2);
+  await page.mouse.down(); await page.mouse.move(dragBox.x + dragBox.width / 2 + fractionalDrag, dragBox.y + dragBox.height / 2); await page.mouse.up();
+  await page.keyboard.up("Alt");
+  const unsnappedX = Number(await x.inputValue());
+  expect(Math.abs(unsnappedX / .5 - Math.round(unsnappedX / .5))).toBeGreaterThan(.05);
+
   await x.fill(String(Number(await x.inputValue()) + 1)); await x.blur();
   await expect.poll(() => page.locator('[data-cad-kind="placement"][data-cad-index="0"]').first().getAttribute("d")).not.toBe(originalPath);
   await expect(page.locator("#workspace-summary")).toContainText("manual layout");
@@ -679,6 +709,9 @@ test("runs packing and lets a user move and rotate returned items", async ({ pag
   await expect(page.locator("#diagnostics-dialog")).toBeVisible();
   await expect(page.locator("#diagnostics")).toContainText("manually edited");
   await expect(page.locator("#diagnostics")).toContainText("independently valid");
+  await expect(page.locator("#diagnostics")).toContainText("Worker startup");
+  await expect(page.locator("#diagnostics")).toContainText("Progress transport");
+  await expect(page.locator("#diagnostics")).toContainText("Wasm memory");
 });
 
 test("keeps sensitivity as the only separate analysis view", async ({ page }) => {

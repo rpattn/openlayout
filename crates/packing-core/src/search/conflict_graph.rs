@@ -17,15 +17,24 @@ pub(super) fn conflict_graph_refine(
             .collect(),
     );
     let mut candidates = generate_candidates(prepared, &empty, config, metrics, observer, None)?;
-    score_candidates(prepared, &empty, &mut candidates, metrics);
-    candidates.truncate(96);
+    score_candidates(prepared, &empty, &[], &mut candidates, metrics);
+    candidates.references.truncate(96);
     let spatial = SpatialIndex::new(
         &empty,
         prepared.minimum_item_area.sqrt().max(config.grid_stride),
     );
     let mut feasible = candidates
-        .into_iter()
-        .filter_map(|candidate| feasible_candidate(prepared, &empty, &spatial, &candidate, metrics))
+        .references
+        .iter()
+        .filter_map(|reference| {
+            feasible_candidate(
+                prepared,
+                &empty,
+                &spatial,
+                reference.candidate(&[], &candidates.dynamic),
+                metrics,
+            )
+        })
         .collect::<Vec<_>>();
     metrics.conflict_graph_candidates = feasible.len();
     if feasible.is_empty() {

@@ -38,6 +38,15 @@ fn run() -> Result<Value, String> {
         [command, source_path, strip_length] if command == "convert-jagua-strip" => {
             convert_jagua_strip_command(source_path, strip_length)
         }
+        [command, source_path, strip_length, output_path] if command == "convert-jagua-strip" => {
+            let converted = convert_jagua_strip_command(source_path, strip_length)?;
+            fs::write(
+                output_path,
+                serde_json::to_string_pretty(&converted).map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| format!("failed to write '{output_path}': {error}"))?;
+            Ok(json!({ "output": output_path, "valid": true }))
+        }
         [command, problem_path, target] if command == "feasible" => feasibility_command(problem_path, target, None),
         [command, problem_path, target, options_path] if command == "feasible" => feasibility_command(problem_path, target, Some(options_path)),
         [command, problem_path, study_path] if command == "sensitivity" => {
@@ -45,7 +54,7 @@ fn run() -> Result<Value, String> {
             let study: SensitivityStudy = read_json(study_path)?;
             serde_json::to_value(run_sensitivity(&problem, &study).map_err(|error| error.to_string())?).map_err(|error| error.to_string())
         }
-        _ => Err("usage: packing-cli validate <problem.json> | solve <problem.json> [options.json] | benchmark <problem.json> <options.json> <repeats> | convert-jagua-strip <instance.json> <strip-length> | feasible <problem.json> <count> [options.json] | sensitivity <problem.json> <study.json>".to_string()),
+        _ => Err("usage: packing-cli validate <problem.json> | solve <problem.json> [options.json] | benchmark <problem.json> <options.json> <repeats> | convert-jagua-strip <instance.json> <strip-length> [output.json] | feasible <problem.json> <count> [options.json] | sensitivity <problem.json> <study.json>".to_string()),
     }
 }
 
@@ -125,6 +134,13 @@ fn benchmark_command(
             "exact_geometry_checks": result.statistics.exact_geometry_checks,
             "explored_search_states": result.statistics.explored_search_states,
             "iterations": result.statistics.iterations,
+            "candidate_generation_ms": result.statistics.candidate_generation_ms,
+            "candidate_scoring_ms": result.statistics.candidate_scoring_ms,
+            "containment_check_ms": result.statistics.containment_check_ms,
+            "collision_check_ms": result.statistics.collision_check_ms,
+            "overlap_repair_evaluated_moves": result.statistics.overlap_repair_evaluated_moves,
+            "overlap_repair_component_reinsert_attempts": result.statistics.overlap_repair_component_reinsert_attempts,
+            "overlap_repair_component_reinsert_successes": result.statistics.overlap_repair_component_reinsert_successes,
         }));
     }
     wall_times.sort_by(f64::total_cmp);

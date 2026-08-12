@@ -112,6 +112,8 @@ export interface SolveResult {
     overlap_repair_accepted_moves: number;
     overlap_repair_weight_updates: number;
     overlap_repair_successes: number;
+    overlap_repair_component_reinsert_attempts: number;
+    overlap_repair_component_reinsert_successes: number;
     overlap_repair_best_penalty: number | null;
     continuation_stages: number;
     continuation_repair_only_stages: number;
@@ -128,6 +130,24 @@ export interface SolveResult {
     total_ms: number;
     phase_ms: Partial<Record<SolveProgress["phase"], number>>;
     worker_count: number;
+    lane?: "full" | "direct" | "clearance_continuation";
+    cold_start_ms?: number;
+    callback_count?: number;
+    callback_bytes?: number;
+    request_bytes?: number;
+    wasm_memory_bytes?: number;
+    winning_lane?: "full" | "direct" | "clearance_continuation";
+    lanes?: Array<{
+      lane: "full" | "direct" | "clearance_continuation";
+      total_ms: number;
+      cold_start_ms: number;
+      callback_count: number;
+      callback_bytes: number;
+      request_bytes: number;
+      wasm_memory_bytes: number;
+    }>;
+    portfolio_wins?: Partial<Record<"full" | "direct" | "clearance_continuation", number>>;
+    portfolio_runs?: number;
   };
 }
 

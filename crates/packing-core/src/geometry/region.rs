@@ -4,12 +4,8 @@ use i_overlay::core::overlay_rule::OverlayRule;
 use i_overlay::float::single::SingleFloatOverlay;
 
 pub(crate) fn container_region(parts: &[RegionPart]) -> Result<PolygonSet, PackingError> {
-    let mut additions = PolygonSet {
-        polygons: Vec::new(),
-    };
-    let mut subtractions = PolygonSet {
-        polygons: Vec::new(),
-    };
+    let mut additions = PolygonSet::new(Vec::new());
+    let mut subtractions = PolygonSet::new(Vec::new());
     for (part, geometry) in parts.iter().zip(region_geometries(parts)?) {
         match part.operation {
             RegionOperation::Add => additions = overlay(&additions, &geometry, OverlayRule::Union),
@@ -153,20 +149,15 @@ fn resolve_region_translation(
 }
 
 pub(crate) fn union_set(set: &PolygonSet) -> PolygonSet {
-    set.polygons.iter().fold(
-        PolygonSet {
-            polygons: Vec::new(),
-        },
-        |result, contour| {
+    set.polygons
+        .iter()
+        .fold(PolygonSet::new(Vec::new()), |result, contour| {
             overlay(
                 &result,
-                &PolygonSet {
-                    polygons: vec![contour.clone()],
-                },
+                &PolygonSet::new(vec![contour.clone()]),
                 OverlayRule::Union,
             )
-        },
-    )
+        })
 }
 
 fn overlay(subject: &PolygonSet, clip: &PolygonSet, rule: OverlayRule) -> PolygonSet {
@@ -183,8 +174,8 @@ fn overlay(subject: &PolygonSet, clip: &PolygonSet, rule: OverlayRule) -> Polygo
     let subject_paths = to_overlay_paths(subject);
     let clip_paths = to_overlay_paths(clip);
     let shapes = subject_paths.overlay(&clip_paths, rule, FillRule::NonZero);
-    PolygonSet {
-        polygons: shapes
+    PolygonSet::new(
+        shapes
             .into_iter()
             .flat_map(|shape| shape.into_iter())
             .map(|path| {
@@ -196,7 +187,7 @@ fn overlay(subject: &PolygonSet, clip: &PolygonSet, rule: OverlayRule) -> Polygo
                     .collect()
             })
             .collect(),
-    }
+    )
 }
 
 fn to_overlay_paths(set: &PolygonSet) -> Vec<Vec<[f64; 2]>> {

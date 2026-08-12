@@ -575,8 +575,9 @@ export class CadWorkspace {
     const current = this.eventPoint(event);
     if (this.drag.mode === "placement") {
       const rawX = original.x + current.x - this.drag.startWorld.x, rawY = original.y + current.y - this.drag.startWorld.y;
-      placement.x = round(this.state.drafting.snapToGrid ? snapUnit(rawX, this.state.drafting.gridStep) : rawX);
-      placement.y = round(this.state.drafting.snapToGrid ? snapUnit(rawY, this.state.drafting.gridStep) : rawY);
+      const snap = this.state.drafting.snapToGrid && !event.altKey;
+      placement.x = round(snap ? snapUnit(rawX, this.state.drafting.gridStep) : rawX);
+      placement.y = round(snap ? snapUnit(rawY, this.state.drafting.gridStep) : rawY);
     } else {
       const start = Math.atan2(this.drag.startWorld.y - original.y, this.drag.startWorld.x - original.x);
       const angle = Math.atan2(current.y - original.y, current.x - original.x);

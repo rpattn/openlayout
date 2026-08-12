@@ -160,6 +160,10 @@ pub struct SolveStatistics {
     #[serde(default)]
     pub overlap_repair_successes: u64,
     #[serde(default)]
+    pub overlap_repair_component_reinsert_attempts: u64,
+    #[serde(default)]
+    pub overlap_repair_component_reinsert_successes: u64,
+    #[serde(default)]
     pub overlap_repair_best_penalty: Option<f64>,
     #[serde(default)]
     pub continuation_stages: u64,

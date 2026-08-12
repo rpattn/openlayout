@@ -77,6 +77,58 @@ struct Candidate {
     score: f64,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum CandidateOrigin {
+    Static(usize),
+    Dynamic(usize),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CandidateRef {
+    origin: CandidateOrigin,
+    source: CandidateSource,
+    contact_support: u16,
+    score: f64,
+    id: u64,
+}
+
+struct CandidateBatch {
+    references: Vec<CandidateRef>,
+    dynamic: Vec<Candidate>,
+}
+
+impl CandidateRef {
+    fn candidate<'a>(
+        &self,
+        static_candidates: &'a [Candidate],
+        dynamic: &'a [Candidate],
+    ) -> &'a Candidate {
+        match self.origin {
+            CandidateOrigin::Static(index) => &static_candidates[index],
+            CandidateOrigin::Dynamic(index) => &dynamic[index],
+        }
+    }
+}
+
+impl CandidateBatch {
+    fn into_candidates(self) -> Vec<Candidate> {
+        self.references
+            .into_iter()
+            .map(|reference| {
+                let mut candidate = match reference.origin {
+                    CandidateOrigin::Static(_) => unreachable!("root candidates are dynamic"),
+                    CandidateOrigin::Dynamic(index) => self.dynamic[index].clone(),
+                };
+                candidate.source = reference.source;
+                candidate.contact_support = reference.contact_support;
+                candidate.score = reference.score;
+                candidate.id = reference.id;
+                candidate
+            })
+            .collect()
+    }
+}
+
 #[derive(Clone)]
 struct SearchConfig {
     beam_width: usize,
@@ -84,6 +136,7 @@ struct SearchConfig {
     max_states: u64,
     grid_stride: f64,
     use_conflict_graph: bool,
+    use_nfp_events: bool,
 }
 
 impl SearchConfig {
@@ -96,6 +149,7 @@ impl SearchConfig {
                 max_states: (options.max_iterations / 4).clamp(32, 5_000),
                 grid_stride: options.grid_step * 2.0,
                 use_conflict_graph: false,
+                use_nfp_events: false,
             },
             SolveQuality::Balanced => Self {
                 beam_width: 8,
@@ -103,6 +157,7 @@ impl SearchConfig {
                 max_states: (options.max_iterations / 3).clamp(64, 20_000),
                 grid_stride: options.grid_step * 2.0,
                 use_conflict_graph: false,
+                use_nfp_events: false,
             },
             SolveQuality::Thorough => Self {
                 beam_width: 24,
@@ -110,6 +165,7 @@ impl SearchConfig {
                 max_states: options.max_iterations.clamp(256, 120_000),
                 grid_stride: options.grid_step,
                 use_conflict_graph: true,
+                use_nfp_events: true,
             },
         };
         config.beam_width = options.beam_width.unwrap_or(config.beam_width);
@@ -164,7 +220,8 @@ pub(crate) fn bounded_search(
         solver_strategy: "contact_candidates".to_string(),
     });
     let static_candidates =
-        generate_candidates(prepared, &root, &config, &mut metrics, observer, None)?;
+        generate_candidates(prepared, &root, &config, &mut metrics, observer, None)?
+            .into_candidates();
 
     'search: while !beam.is_empty() && metrics.explored_states < config.max_states {
         if target_count.is_some_and(|target| best.placed.len() >= target) {
@@ -196,9 +253,15 @@ pub(crate) fn bounded_search(
             ) else {
                 break 'search;
             };
-            score_candidates(prepared, state, &mut candidates, &mut metrics);
-            let candidates = diverse_candidate_frontier(
-                candidates,
+            score_candidates(
+                prepared,
+                state,
+                &static_candidates,
+                &mut candidates,
+                &mut metrics,
+            );
+            let candidate_references = diverse_candidate_frontier(
+                candidates.references,
                 config.candidates_per_state.saturating_mul(24),
             );
             let spatial = SpatialIndex::new(
@@ -206,7 +269,8 @@ pub(crate) fn bounded_search(
                 prepared.minimum_item_area.sqrt().max(config.grid_stride),
             );
             let mut expanded = 0usize;
-            for (candidate_index, candidate) in candidates.into_iter().enumerate() {
+            for (candidate_index, reference) in candidate_references.into_iter().enumerate() {
+                let candidate = reference.candidate(&static_candidates, &candidates.dynamic);
                 if candidate_index.is_multiple_of(256) && observer.should_cancel() {
                     metrics.cancelled = true;
                     break 'search;
@@ -222,7 +286,7 @@ pub(crate) fn bounded_search(
                     break;
                 }
                 let Some(placed) =
-                    feasible_candidate(prepared, state, &spatial, &candidate, &mut metrics)
+                    feasible_candidate(prepared, state, &spatial, candidate, &mut metrics)
                 else {
                     continue;
                 };
@@ -314,8 +378,8 @@ pub(crate) fn bounded_search(
     })
 }
 
-fn diverse_candidate_frontier(candidates: Vec<Candidate>, limit: usize) -> Vec<Candidate> {
-    let mut buckets: BTreeMap<CandidateSource, VecDeque<Candidate>> = BTreeMap::new();
+fn diverse_candidate_frontier(candidates: Vec<CandidateRef>, limit: usize) -> Vec<CandidateRef> {
+    let mut buckets: BTreeMap<CandidateSource, VecDeque<CandidateRef>> = BTreeMap::new();
     for candidate in candidates {
         buckets
             .entry(candidate.source)
