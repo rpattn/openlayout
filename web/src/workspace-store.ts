@@ -132,7 +132,7 @@ export class WorkspaceStore {
 }
 
 function migrateProject(project: LocalProject): LocalProject {
-  const state = project.state as unknown as { containerParts?: unknown[]; items?: unknown[]; exclusions?: Array<{ primitive?: unknown; parts?: unknown[] }> };
+  const state = project.state as unknown as { containerParts?: unknown[]; items?: unknown[]; exclusions?: Array<{ primitive?: unknown; parts?: unknown[] }>; lockedEntities?: EditorState["lockedEntities"]; drafting?: EditorState["drafting"] & { traceImage?: EditorState["drafting"]["traceImages"][number]; guides?: Array<Partial<EditorState["drafting"]["guides"][number]> & { axis?: "x" | "y"; position?: number }> } };
   state.containerParts ??= [];
   state.items ??= [];
   state.exclusions ??= [];
@@ -140,6 +140,19 @@ function migrateProject(project: LocalProject): LocalProject {
     if (!Array.isArray(entry.parts)) entry.parts = entry.primitive ? [entry.primitive] : [];
     delete entry.primitive;
   });
+  state.drafting ??= { gridStep: 0.5, snapToGrid: true, smartSnap: true, defaultOwner: "material", guides: [], traceImages: [], shapes: [] };
+  state.drafting.defaultOwner ??= "material";
+  state.drafting.guides ??= [];
+  const legacyGuides = state.drafting.guides as unknown as Array<{ id?: string; x?: number; y?: number; rotation?: number; axis?: "x" | "y"; position?: number }>;
+  state.drafting.guides = legacyGuides.map((guide) => ({
+    id: guide.id ?? crypto.randomUUID(), x: guide.x ?? (guide.axis === "x" ? guide.position ?? 0 : 0),
+    y: guide.y ?? (guide.axis === "y" ? guide.position ?? 0 : 0), rotation: guide.rotation ?? (guide.axis === "x" ? 90 : 0),
+  }));
+  state.drafting.traceImages ??= state.drafting.traceImage ? [{ ...state.drafting.traceImage, rotation: state.drafting.traceImage.rotation ?? 0 }] : [];
+  state.drafting.traceImages.forEach((trace) => { trace.id ??= crypto.randomUUID(); trace.rotation ??= 0; });
+  state.drafting.shapes ??= [];
+  delete state.drafting.traceImage;
+  state.lockedEntities ??= [];
   return project as LocalProject;
 }
 

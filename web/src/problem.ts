@@ -46,6 +46,8 @@ export const defaultState = (): EditorState => ({
     quality: "balanced",
     baseline_only: false,
   },
+  drafting: { gridStep: 0.5, snapToGrid: true, smartSnap: true, defaultOwner: "material", guides: [], traceImages: [], shapes: [] },
+  lockedEntities: [],
   study: {
     parameterKey: "part_width:item-a:0",
     start: 3,

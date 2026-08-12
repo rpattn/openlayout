@@ -79,7 +79,8 @@ test("uses one interactive CAD workspace for definition, editing, pan, zoom, and
   await expect(page.locator("#cad-shell")).not.toHaveClass(/panel-hidden/);
 
   await page.getByRole("button", { name: "Dimensions" }).click();
-  await expect(page.locator(".cad-dimensions")).toHaveCount(1);
+  await expect(page.locator(".cad-dimensions")).not.toHaveCount(0);
+  await expect(page.locator(".cad-dimensions text").filter({ hasText: "exclusion" })).not.toHaveCount(0);
   await page.getByRole("button", { name: "Constraints" }).click();
   await expect(page.locator(".cad-clearance")).not.toHaveCount(0);
 });
@@ -158,6 +159,233 @@ test("edits item, container, cut-out, and exclusion geometry without leaving the
   const itemPreview = await canvasData(page, '[data-entity-preview="item:0"]');
   const exclusionPreview = await canvasData(page, '[data-entity-preview="exclusion:0"]');
   expect(itemPreview).not.toBe(exclusionPreview);
+});
+
+test("copies constituent shapes into their construction and removes empty owners", async ({ page }) => {
+  await page.goto("/");
+  await page.locator('[data-cad-kind="item"][data-cad-index="0"][data-cad-part="1"]').click();
+  await page.keyboard.press("ControlOrMeta+c");
+  await page.keyboard.press("ControlOrMeta+v");
+  await expect(page.locator('[data-cad-kind="item"][data-cad-index="0"]')).toHaveCount(4);
+  await expect(page.locator('[data-cad-select^="item:"]')).toHaveCount(1);
+  await expect(page.locator("#status")).toContainText("constituent shape");
+
+  await page.evaluate(() => localStorage.clear()); await page.reload();
+  await page.locator('[data-cad-kind="item"][data-cad-index="0"][data-cad-part="0"]').click();
+  await page.locator('[data-cad-kind="item"][data-cad-index="0"][data-cad-part="1"]').click({ modifiers: ["ControlOrMeta"], force: true });
+  await page.locator('[data-cad-kind="item"][data-cad-index="0"][data-cad-part="2"]').click({ modifiers: ["ControlOrMeta"], force: true });
+  await page.keyboard.press("ControlOrMeta+c"); await page.keyboard.press("ControlOrMeta+v");
+  await expect(page.locator('[data-cad-select^="item:"]')).toHaveCount(2);
+  await expect(page.locator("#status")).toContainText("new item");
+
+  await page.locator('[data-add-object="item"]').click();
+  await expect(page.locator('[data-cad-select^="item:"]')).toHaveCount(3);
+  await page.keyboard.press("Delete");
+  await expect(page.locator('[data-cad-select^="item:"]')).toHaveCount(2);
+  await expect(page.locator("#selection-inspector")).toContainText("Nothing selected");
+});
+
+test("provides persistent drafting guides, trace images, default roles, and bezier mirroring", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator("#packing-sidebar")).not.toContainText("Drafting aids");
+  await expect(page.getByRole("button", { name: "Add trace image" })).toBeVisible();
+  await page.getByRole("button", { name: "Drafting aids" }).click();
+  await expect(page.getByLabel("Drafting aids panel")).toBeVisible();
+  await page.getByRole("button", { name: "+ Vertical" }).click();
+  await page.locator("#cad-canvas").hover({ position: { x: 610, y: 390 } });
+  await expect(page.locator(".cad-guide-placement-preview")).toBeVisible();
+  await page.locator("#cad-canvas").click({ position: { x: 610, y: 390 } });
+  await expect(page.locator('[data-cad-kind="guide"]')).toHaveCount(1);
+  await page.getByRole("button", { name: "Drafting aids" }).click();
+  await page.locator('[data-guide-field="x"]').fill("1.24"); await page.locator('[data-guide-field="x"]').blur();
+  await expect(page.locator('[data-guide-field="x"]')).toHaveValue("1");
+
+  const imageChooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Add trace image" }).click();
+  await (await imageChooser).setFiles({
+    name: "trace.svg", mimeType: "image/svg+xml",
+    buffer: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50"><rect width="100" height="50" fill="red"/></svg>'),
+  });
+  await expect(page.locator(".cad-trace-image")).toHaveCount(1);
+  await expect(page.locator('[data-trace-field="opacity"]')).toHaveValue("0.35");
+
+  await page.locator("[data-cad-background]").click({ position: { x: 20, y: 200 } });
+  await page.getByRole("button", { name: /Default new shape role/ }).click();
+  await page.getByRole("menuitemradio", { name: /Exclusion/ }).click();
+  await page.getByRole("button", { name: "Add circle" }).click();
+  await expect(page.locator('[data-cad-select^="exclusion:"]')).toHaveCount(2);
+  await expect(page.locator('[data-cad-kind="exclusion"][data-cad-index="1"]')).toHaveCount(1);
+
+  await page.locator('[data-cad-kind="item"][data-cad-part="0"]').click();
+  await page.locator('[data-add-part="bezier"]').click();
+  const knots = page.locator("[data-bezier-knots]");
+  const before = JSON.parse(await knots.inputValue());
+  await page.getByRole("button", { name: "Mirror left ↔ right" }).click();
+  const after = JSON.parse(await knots.inputValue());
+  expect(after[0].point.x).toBeCloseTo(-before.at(-1).point.x);
+  expect(after[1].point.x).toBe(-before.at(-2).point.x);
+
+  await page.getByRole("button", { name: "Dimensions" }).click();
+  await expect(page.locator(".cad-dimensions text").filter({ hasText: /exclusion$/ })).toHaveCount(2);
+
+  await page.reload();
+  await expect(page.locator(".cad-trace-image")).toHaveCount(1);
+  await expect(page.locator('[data-cad-kind="guide"]')).toHaveCount(1);
+  await expect(page.getByRole("button", { name: /Default new shape role/ })).toHaveAttribute("data-value", "exclusion");
+});
+
+test("smart-snaps a circle radius to a related rectangle dimension", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Drafting aids" }).click();
+  const grid = page.locator('[data-drafting-field="gridStep"]');
+  await grid.fill("0.3"); await grid.blur();
+  await page.keyboard.press("Escape");
+  await page.locator('[data-cad-kind="item"][data-cad-part="1"]').click();
+  const radius = page.locator('[data-primitive-field="radius"]');
+  await expect(radius).toHaveValue("1.1");
+  const handle = page.locator('[data-geometry-handle^="radius:"]').first();
+  const handleBox = await handle.boundingBox(), canvasBox = await page.locator("#cad-canvas").boundingBox();
+  const viewBox = (await page.locator("#cad-canvas").getAttribute("viewBox"))!.split(" ").map(Number);
+  if (!handleBox || !canvasBox) throw new Error("Circle radius grip is unavailable");
+  const deltaPixels = 0.9 / viewBox[2] * canvasBox.width;
+  await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
+  await page.mouse.down(); await page.mouse.move(handleBox.x + handleBox.width / 2 + deltaPixels, handleBox.y + handleBox.height / 2); await page.mouse.up();
+  await expect(radius).toHaveValue("2");
+});
+
+test("snaps polygon vertices to the unit grid while dragging", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator('[data-cad-kind="container"][data-cad-index="0"]')).toHaveClass(/selected/);
+  const handle = page.locator('[data-geometry-handle="vertex:0"]');
+  const handleBox = await handle.boundingBox(), canvasBox = await page.locator("#cad-canvas").boundingBox();
+  const viewBox = (await page.locator("#cad-canvas").getAttribute("viewBox"))!.split(" ").map(Number);
+  if (!handleBox || !canvasBox) throw new Error("Polygon vertex grip is unavailable");
+  const dx = .37 / viewBox[2] * canvasBox.width, dy = .34 / viewBox[3] * canvasBox.height;
+  await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
+  await page.mouse.down(); await page.mouse.move(handleBox.x + handleBox.width / 2 + dx, handleBox.y + handleBox.height / 2 - dy); await page.mouse.up();
+  const first = (await page.locator("[data-primitive-points]").inputValue()).split("\n")[0].split(",").map(Number);
+  expect(Math.abs(first[0] * 2 - Math.round(first[0] * 2))).toBeLessThan(.001);
+  expect(Math.abs(first[1] * 2 - Math.round(first[1] * 2))).toBeLessThan(.001);
+});
+
+test("creates and directly transforms guides, drafting paths, construction shapes, and multiple images", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Add vertical drafting line" }).click();
+  await expect(page.locator("#cad-canvas")).toHaveClass(/placing-guide/);
+  const initialCanvasBox = await page.locator("#cad-canvas").boundingBox();
+  if (!initialCanvasBox) throw new Error("CAD canvas is unavailable");
+  await page.mouse.move(initialCanvasBox.x + 520, initialCanvasBox.y + 240);
+  await expect(page.locator(".cad-guide-placement-preview")).toBeVisible();
+  await page.mouse.click(initialCanvasBox.x + 520, initialCanvasBox.y + 240);
+  const guide = page.locator('[data-cad-kind="guide"]').first();
+  await expect(guide).toHaveCount(1);
+  await expect(page.locator("#selection-inspector")).toContainText("DRAFTING GUIDE");
+  const guideBefore = await guide.getAttribute("x1");
+  const guideBox = await guide.boundingBox();
+  if (!guideBox) throw new Error("Drafting guide has no bounds");
+  const guideGrabY = initialCanvasBox.y + initialCanvasBox.height / 2;
+  await page.mouse.move(guideBox.x + guideBox.width / 2, guideGrabY); await page.mouse.down();
+  await page.mouse.move(guideBox.x + guideBox.width / 2 + 30, guideGrabY + 30); await page.mouse.up();
+  await expect.poll(() => guide.getAttribute("x1")).not.toBe(guideBefore);
+  const rotate = page.locator(".cad-rotate-handle");
+  await expect(rotate).toBeVisible();
+  const rotateBox = await rotate.boundingBox();
+  if (!rotateBox) throw new Error("Guide rotation handle is unavailable");
+  const rotatedBefore = await guide.getAttribute("y1");
+  await page.mouse.move(rotateBox.x + rotateBox.width / 2, rotateBox.y + rotateBox.height / 2); await page.mouse.down();
+  await page.mouse.move(rotateBox.x + 45, rotateBox.y + 20); await page.mouse.up();
+  await expect.poll(() => guide.getAttribute("y1")).not.toBe(rotatedBefore);
+
+  const canvas = page.locator("#cad-canvas"), canvasBox = await canvas.boundingBox();
+  if (!canvasBox) throw new Error("CAD canvas is unavailable");
+  await page.getByRole("button", { name: "Draw two-point drafting line" }).click();
+  await expect(canvas).toHaveClass(/placing-draft/);
+  await page.mouse.move(canvasBox.x + 240, canvasBox.y + 250);
+  await expect(page.locator(".cad-draft-cursor")).toBeVisible();
+  await page.mouse.click(canvasBox.x + 240, canvasBox.y + 250); await page.mouse.move(canvasBox.x + 330, canvasBox.y + 300);
+  await expect(page.locator(".cad-draft-preview")).toBeVisible();
+  await page.mouse.click(canvasBox.x + 330, canvasBox.y + 300);
+  await expect(page.locator(".cad-drafting-shape")).toHaveCount(1);
+  await expect(page.locator(".cad-drafting-point-handle")).toHaveCount(2);
+  const draftingLine = page.locator(".cad-drafting-shape").first(), lineBefore = await draftingLine.getAttribute("d");
+  const pointHandle = page.locator(".cad-drafting-point-handle").first(), pointBox = await pointHandle.boundingBox();
+  if (!pointBox) throw new Error("Drafting point handle is unavailable");
+  await page.mouse.move(pointBox.x + pointBox.width / 2, pointBox.y + pointBox.height / 2); await page.mouse.down();
+  await page.mouse.move(pointBox.x + pointBox.width / 2 + 17, pointBox.y + pointBox.height / 2 + 11); await page.mouse.up();
+  await expect.poll(() => draftingLine.getAttribute("d")).not.toBe(lineBefore);
+  const movedCoordinates = (await draftingLine.getAttribute("d"))!.match(/-?\d+(?:\.\d+)?/g)!.map(Number);
+  expect(Math.abs(movedCoordinates[0] * 2 - Math.round(movedCoordinates[0] * 2))).toBeLessThan(.001);
+  expect(Math.abs(movedCoordinates[1] * 2 - Math.round(movedCoordinates[1] * 2))).toBeLessThan(.001);
+  await page.getByRole("button", { name: "Draw drafting polyline" }).click();
+  await page.mouse.click(canvasBox.x + 380, canvasBox.y + 260); await page.mouse.click(canvasBox.x + 430, canvasBox.y + 320); await page.mouse.click(canvasBox.x + 490, canvasBox.y + 270);
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".cad-drafting-shape")).toHaveCount(2);
+
+  await page.getByRole("button", { name: "Drafting shape mode" }).click();
+  await page.getByRole("button", { name: "Add rectangle" }).click();
+  await expect(page.locator(".cad-drafting-shape")).toHaveCount(3);
+  await expect(page.locator('[data-cad-kind="container"]')).toHaveCount(1);
+
+  for (const color of ["red", "blue"]) {
+    const chooser = page.waitForEvent("filechooser"); await page.getByRole("button", { name: "Add trace image" }).click();
+    await (await chooser).setFiles({ name: `${color}.svg`, mimeType: "image/svg+xml", buffer: Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="60"><rect width="100" height="60" fill="${color}"/></svg>`) });
+  }
+  await expect(page.locator(".cad-trace-image")).toHaveCount(2);
+  const traceHit = page.locator('[data-cad-kind="trace"]').last(), traceBox = await traceHit.boundingBox();
+  if (!traceBox) throw new Error("Trace image has no selection border");
+  const traceCenter = { x: traceBox.x + traceBox.width / 2, y: traceBox.y + traceBox.height / 2 };
+  await page.mouse.click(traceCenter.x, traceCenter.y);
+  await expect(page.locator("#selection-inspector")).toContainText("TRACE IMAGE");
+  const transformBefore = await traceHit.getAttribute("transform");
+  await page.mouse.move(traceCenter.x, traceCenter.y); await page.mouse.down(); await page.mouse.move(traceCenter.x + 30, traceCenter.y + 20); await page.mouse.up();
+  await expect.poll(() => traceHit.getAttribute("transform")).not.toBe(transformBefore);
+  const widthBefore = Number(await page.locator(".cad-trace-image").last().getAttribute("width"));
+  const scale = page.locator(".cad-global-scale-handle"), scaleBox = await scale.boundingBox();
+  if (!scaleBox) throw new Error("Trace image resize handle is unavailable");
+  await page.mouse.move(scaleBox.x + scaleBox.width / 2, scaleBox.y + scaleBox.height / 2); await page.mouse.down(); await page.mouse.move(scaleBox.x + 35, scaleBox.y + 25); await page.mouse.up();
+  await expect.poll(async () => Number(await page.locator(".cad-trace-image").last().getAttribute("width"))).not.toBe(widthBefore);
+});
+
+test("locks every CAD entity type and exposes locked entities only in the sidebar", async ({ page }) => {
+  await page.goto("/");
+  const lock = page.getByRole("button", { name: "Lock selection" });
+
+  await lock.click();
+  await expect(page.locator(".locked-entity-group")).toBeVisible();
+  await expect(page.locator('.locked-entity-group [data-cad-select="container:0"]')).toContainText("stock");
+  await expect(page.locator('[data-cad-kind="container"][data-cad-index="0"]')).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Unlock selection" })).toBeEnabled();
+  await page.locator("[data-toggle-lock]").click();
+  await expect(page.locator(".locked-entity-group")).toHaveCount(0);
+  await expect(page.locator('[data-cad-kind="container"][data-cad-index="0"]')).toHaveCount(1);
+
+  await page.locator('[data-cad-select="exclusion:0"]').click(); await lock.click();
+  await page.locator('[data-cad-select="item:0"]').click(); await lock.click();
+  await expect(page.locator('[data-cad-kind="exclusion"][data-cad-index="0"]')).toHaveCount(0);
+  await expect(page.locator('[data-cad-kind="item"][data-cad-index="0"]')).toHaveCount(0);
+
+  const canvasBox = await page.locator("#cad-canvas").boundingBox();
+  if (!canvasBox) throw new Error("CAD canvas is unavailable");
+  await page.getByRole("button", { name: "Draw two-point drafting line" }).click();
+  await page.mouse.click(canvasBox.x + 700, canvasBox.y + 250); await page.mouse.click(canvasBox.x + 790, canvasBox.y + 310);
+  await lock.click();
+  await expect(page.locator(".cad-drafting-shape.locked")).toHaveCount(1);
+  await expect(page.locator('[data-cad-kind="drafting"]')).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Add vertical drafting line" }).click();
+  await page.mouse.click(canvasBox.x + 820, canvasBox.y + 260); await lock.click();
+  await expect(page.locator('[data-cad-kind="guide"]')).toHaveCount(0);
+
+  const chooser = page.waitForEvent("filechooser"); await page.getByRole("button", { name: "Add trace image" }).click();
+  await (await chooser).setFiles({ name: "locked.svg", mimeType: "image/svg+xml", buffer: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50"><rect width="100" height="50" fill="purple"/></svg>') });
+  await lock.click();
+  await expect(page.locator(".cad-trace-image")).toHaveCount(1);
+  await expect(page.locator('[data-cad-kind="trace"]')).toHaveCount(0);
+  await expect(page.locator(".locked-entity-group .locked-row")).toHaveCount(5);
+
+  await page.reload();
+  await expect(page.locator(".locked-entity-group .locked-row")).toHaveCount(5);
+  await expect(page.locator('[data-cad-kind="trace"], [data-cad-kind="drafting"], [data-cad-kind="guide"], [data-cad-kind="item"][data-cad-index="0"], [data-cad-kind="exclusion"][data-cad-index="0"]')).toHaveCount(0);
 });
 
 test("keeps oriented snap anchors attached through rotation", async ({ page }) => {
@@ -335,7 +563,7 @@ test("stops an active worker and starts a clean replacement", async ({ page }) =
   await expect(page.locator("#status")).toContainText("valid", { timeout: 10_000 });
 });
 
-test("uses unified silhouettes and permits empty invalid constructions", async ({ page }) => {
+test("uses unified silhouettes and removes owners when their last shape is deleted", async ({ page }) => {
   await page.goto("/");
   const itemSilhouette = page.locator('[data-unified-geometry="item:0"]');
   await expect(itemSilhouette).toHaveCount(1);
@@ -358,10 +586,8 @@ test("uses unified silhouettes and permits empty invalid constructions", async (
   await page.keyboard.press("Delete");
   await expect(page.locator("#item-part-select option")).toHaveCount(1);
   await page.keyboard.press("Delete");
-  await expect(page.locator("#selection-inspector")).toContainText("Empty construction");
+  await expect(page.locator("#selection-inspector")).toContainText("Nothing selected");
   await expect(page.locator('[data-cad-kind="exclusion"]')).toHaveCount(0);
-
-  await page.getByRole("button", { name: "Delete exclusion" }).click();
   await expect(page.locator('[data-cad-select^="exclusion:"]')).toHaveCount(0);
   await page.locator('[data-cad-select="item:0"]').click();
   await page.getByRole("button", { name: "Delete item" }).click();

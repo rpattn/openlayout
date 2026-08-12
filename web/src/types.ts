@@ -214,6 +214,31 @@ export interface EditorRegion {
   primitive: PrimitiveEditor;
 }
 
+export interface ConstructionGuide { id: string; x: number; y: number; rotation: number }
+export interface DraftingPath { id: string; points: Point[]; x: number; y: number; rotation: number; closed: boolean }
+export interface TraceImage {
+  id: string;
+  dataUrl: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  opacity: number;
+  rotation: number;
+}
+export interface DraftingSettings {
+  gridStep: number;
+  snapToGrid: boolean;
+  smartSnap: boolean;
+  defaultOwner: "item" | "material" | "cutout" | "exclusion";
+  guides: ConstructionGuide[];
+  traceImages: TraceImage[];
+  shapes: DraftingPath[];
+}
+
+export type LockableEntityKind = "container" | "exclusion" | "item" | "guide" | "drafting" | "trace";
+export interface LockedEntity { kind: LockableEntityKind; id: string }
+
 export interface EditorState {
   containerParts: EditorRegion[];
   items: EditorItem[];
@@ -221,5 +246,7 @@ export interface EditorState {
   fixedPlacements: PackingProblem["fixed_placements"];
   clearance: PackingProblem["clearance"];
   options: SolveOptions;
+  drafting: DraftingSettings;
+  lockedEntities: LockedEntity[];
   study: Omit<SensitivityStudy, "parameter" | "solve_options"> & { parameterKey: string };
 }
