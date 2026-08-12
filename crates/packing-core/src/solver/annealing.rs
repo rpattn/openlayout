@@ -162,8 +162,7 @@ fn anneal_hard_valid(
                 .item_to_exclusion
                 .max(prepared.problem.exclusions[index].clearance);
             !candidate.bounds.overlaps(bounds(exclusion), required)
-                || (!sets_overlap(&candidate.geometry, exclusion)
-                    && set_distance(&candidate.geometry, exclusion) + EPSILON >= required)
+                || !sets_conflict(&candidate.geometry, exclusion, required)
         })
 }
 

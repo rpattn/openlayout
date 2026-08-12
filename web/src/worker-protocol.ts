@@ -4,12 +4,12 @@ export type SolveLane = "full" | "direct" | "clearance_continuation";
 
 export type WorkerRequest =
   | { id: number; type: "validate"; problem: PackingProblem }
-  | { id: number; type: "solve"; problem: PackingProblem; options: SolveOptions; lane?: SolveLane }
+  | { id: number; type: "solve"; problem: PackingProblem; options: SolveOptions; lane?: SolveLane; reportProgress?: boolean }
   | { id: number; type: "sensitivity"; problem: PackingProblem; study: SensitivityStudy };
 
 export type WorkerRequestPayload =
   | { type: "validate"; problem: PackingProblem }
-  | { type: "solve"; problem: PackingProblem; options: SolveOptions; lane?: SolveLane }
+  | { type: "solve"; problem: PackingProblem; options: SolveOptions; lane?: SolveLane; reportProgress?: boolean }
   | { type: "sensitivity"; problem: PackingProblem; study: SensitivityStudy };
 
 export type WorkerResponse =

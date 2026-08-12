@@ -1,0 +1,12 @@
+{
+  "seed": 42,
+  "deterministic": true,
+  "max_iterations": 1000,
+  "time_limit_ms": null,
+  "grid_step": 250.0,
+  "restarts": 1,
+  "quality": "balanced",
+  "baseline_only": false,
+  "max_search_states": 256,
+  "max_candidates_per_state": 8
+}

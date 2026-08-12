@@ -1,5 +1,8 @@
 # Solver review and literature map
 
+The dated [solver optimization audit](solver-optimization-audit.md) extends this review with the
+2026 hot-path inspection, newer CG:SHOP avenues, browser-runtime findings, and an experiment ledger.
+
 This review separates three questions that are easy to conflate: whether a returned layout is
 geometrically valid, whether the search finds a strong layout quickly, and whether the count is
 globally optimal. OpenLayout independently validates every returned layout. It is a bounded

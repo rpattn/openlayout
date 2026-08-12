@@ -436,10 +436,17 @@ pub(crate) fn sets_overlap(a: &PolygonSet, b: &PolygonSet) -> bool {
             .any(|point| point_strictly_in_set(*point, a))
 }
 
-pub(crate) fn set_distance(a: &PolygonSet, b: &PolygonSet) -> f64 {
-    if sets_overlap(a, b) {
-        return 0.0;
-    }
+/// Returns whether two polygon sets overlap or violate the required clearance.
+///
+/// Distance is non-negative, so the clearance half of the predicate cannot be true when
+/// `required <= EPSILON`. Avoiding it matters for detailed polygons because exact distance
+/// compares every pair of potentially competitive edges.
+pub(crate) fn sets_conflict(a: &PolygonSet, b: &PolygonSet, required: f64) -> bool {
+    sets_overlap(a, b)
+        || (required > EPSILON && set_distance_between_disjoint_sets(a, b) + EPSILON < required)
+}
+
+fn set_distance_between_disjoint_sets(a: &PolygonSet, b: &PolygonSet) -> f64 {
     let mut minimum = f64::INFINITY;
     for left in &a.polygons {
         for right in &b.polygons {
@@ -672,5 +679,21 @@ mod tests {
         let c = Point { x: 0.5, y: -1.0 };
         let d = Point { x: 0.5, y: 1.0 };
         assert!(segment_distance(a, b, c, d) <= EPSILON);
+    }
+
+    #[test]
+    fn conflict_skips_irrelevant_distance_at_zero_clearance() {
+        let square = shape_to_polygons(&Shape::Rectangle {
+            width: 1.0,
+            height: 1.0,
+        })
+        .unwrap();
+        let separated = transform(&square, 0.0, 1.5, 0.0);
+        let overlapping = transform(&square, 0.0, 0.5, 0.0);
+
+        assert!(!sets_conflict(&square, &separated, 0.0));
+        assert!(!sets_conflict(&square, &separated, 0.4));
+        assert!(sets_conflict(&square, &separated, 0.6));
+        assert!(sets_conflict(&square, &overlapping, 0.0));
     }
 }

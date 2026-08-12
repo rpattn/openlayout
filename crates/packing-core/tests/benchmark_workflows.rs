@@ -4,6 +4,24 @@ use common::*;
 use packing_core::*;
 
 #[test]
+fn converted_gardeyn0_retains_the_high_vertex_baseline() {
+    let problem: PackingProblem =
+        serde_json::from_str(include_str!("../../../benchmarks/gardeyn0-90.json")).unwrap();
+    let mut solve_options = options();
+    solve_options.quality = SolveQuality::Fast;
+    solve_options.baseline_only = true;
+    solve_options.max_iterations = 5_000;
+    solve_options.grid_step = 250.0;
+    solve_options.restarts = 1;
+
+    let result = solve(&problem, &solve_options).unwrap();
+    assert_eq!(result.packed_item_count, 10);
+    assert_eq!(result.statistics.generated_candidates, 1_250);
+    assert_eq!(result.statistics.exact_geometry_checks, 228);
+    assert!(result.validation.valid);
+}
+
+#[test]
 fn published_dighe2_target_bounds_and_validates_the_current_result() {
     // Dighe2 from the ESICUP irregular strip-packing corpus has ten fixed-orientation polygons
     // whose total area exactly tiles a 100 by 100 field.

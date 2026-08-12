@@ -34,6 +34,9 @@ The engine now has reusable prepared rotations and bounds, a measured greedy bas
 
 ## Geometry and performance robustness
 
+- Use the measured hypotheses and cross-shape acceptance matrix in the
+  [solver optimization audit](solver-optimization-audit.md); do not tune against one showcase.
+
 - Set representative latency, state-count, exact-check, and memory budgets for fast, balanced, and thorough modes.
 - Reduce thorough-mode candidate regeneration, currently its clearest measured bottleneck.
 - Strengthen predicates or adopt a more robust offset/Minkowski facility only for reproduced failures.

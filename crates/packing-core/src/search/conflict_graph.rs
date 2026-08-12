@@ -138,8 +138,7 @@ fn placements_conflict(prepared: &PreparedProblem, first: &Placed, second: &Plac
     }
     let gap = prepared.problem.clearance.item_to_item;
     first.bounds.overlaps(second.bounds, gap)
-        && (sets_overlap(&first.geometry, &second.geometry)
-            || set_distance(&first.geometry, &second.geometry) + EPSILON < gap)
+        && sets_conflict(&first.geometry, &second.geometry, gap)
 }
 
 #[allow(clippy::too_many_arguments)]

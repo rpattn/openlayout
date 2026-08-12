@@ -1,7 +1,5 @@
 use crate::clock::Clock;
-use crate::geometry::{
-    Bounds, EPSILON, PolygonSet, bounds, set_distance, set_inside, sets_overlap, transform,
-};
+use crate::geometry::{Bounds, EPSILON, PolygonSet, bounds, set_inside, sets_conflict, transform};
 use crate::numeric::angular_distance;
 use crate::{
     ConflictGraphStatus, Placement, PreparedProblem, SolveObserver, SolveOptions, SolvePhase,

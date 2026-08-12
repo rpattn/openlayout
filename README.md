@@ -46,6 +46,7 @@ cargo test --workspace
 cargo run -p packing-cli -- validate examples/irregular-rectangles.json
 cargo run -p packing-cli -- solve examples/irregular-rectangles.json
 cargo run -p packing-cli -- solve examples/compound-with-exclusion.json
+cargo run --release -p packing-cli -- benchmark examples/irregular-rectangles.json examples/benchmark-options.json 5
 cargo run -p packing-cli -- feasible examples/irregular-rectangles.json 18
 cargo run -p packing-cli -- sensitivity examples/sensitivity-problem.json examples/sensitivity-study.json
 cargo run -p packing-cli -- sensitivity examples/snapped-compound.json examples/snapped-width-study.json

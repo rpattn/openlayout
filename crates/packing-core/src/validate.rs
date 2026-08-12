@@ -1,6 +1,6 @@
 use crate::geometry::{
-    EPSILON, bounds, container_region, set_distance, set_inside, sets_overlap, shape_to_polygons,
-    transform, union_set,
+    EPSILON, bounds, container_region, set_inside, sets_conflict, shape_to_polygons, transform,
+    union_set,
 };
 use crate::numeric::same_rotation;
 use crate::{PackingError, PackingProblem, Placement, PreparedProblem, ValidationReport};
@@ -156,9 +156,7 @@ pub fn validate_placements(
                 .clearance
                 .item_to_exclusion
                 .max(prepared.problem.exclusions[exclusion_index].clearance);
-            if sets_overlap(&geometry, exclusion)
-                || set_distance(&geometry, exclusion) + EPSILON < required
-            {
+            if sets_conflict(&geometry, exclusion, required) {
                 errors.push(format!(
                     "placement {index} intersects exclusion '{}' or violates its clearance",
                     prepared.problem.exclusions[exclusion_index].id
@@ -211,9 +209,7 @@ pub fn validate_placements(
             let b_bounds = bounds(&geometries[second].1);
             let required = prepared.problem.clearance.item_to_item;
             if a_bounds.overlaps(b_bounds, required)
-                && (sets_overlap(&geometries[first].1, &geometries[second].1)
-                    || set_distance(&geometries[first].1, &geometries[second].1) + EPSILON
-                        < required)
+                && sets_conflict(&geometries[first].1, &geometries[second].1, required)
             {
                 errors.push(format!(
                     "placements {} and {} overlap or violate item clearance",

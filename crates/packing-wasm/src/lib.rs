@@ -3,8 +3,9 @@ use packing_core::{
     PackingProblem, PreparedProblem, SensitivityObserver, SensitivityProgress, SensitivityStudy,
     SolveObserver, SolveOptions, SolveProgress, prepare_problem, resolve_problem_geometry,
     run_sensitivity as core_run_sensitivity, run_sensitivity_with_observer, solve_prepared,
-    solve_prepared_feasibility, solve_with_observer, solve_with_observer_clearance_continuation,
-    solve_with_observer_direct, validate_problem as core_validate_problem,
+    solve_prepared_clearance_continuation, solve_prepared_direct, solve_prepared_feasibility,
+    solve_with_observer, solve_with_observer_clearance_continuation, solve_with_observer_direct,
+    validate_problem as core_validate_problem,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -51,6 +52,29 @@ impl PackingEngine {
         let result = solve_with_observer(prepared, &options, &mut observer).map_err(core_error)?;
         observer.finish()?;
         encode(&result)
+    }
+
+    /// Run the direct lane without crossing into JavaScript for intermediate layouts. Browser
+    /// portfolio workers that do not own visible progress use this lower-overhead entry point.
+    pub fn solve_direct(
+        &mut self,
+        input_json: &str,
+        options_json: &str,
+    ) -> Result<String, JsError> {
+        let options = parse_options(options_json)?;
+        let prepared = self.prepare(input_json)?;
+        encode(&solve_prepared_direct(prepared, &options).map_err(core_error)?)
+    }
+
+    /// Run continuation without progress callbacks for non-visible portfolio lanes.
+    pub fn solve_clearance_continuation(
+        &mut self,
+        input_json: &str,
+        options_json: &str,
+    ) -> Result<String, JsError> {
+        let options = parse_options(options_json)?;
+        let prepared = self.prepare(input_json)?;
+        encode(&solve_prepared_clearance_continuation(prepared, &options).map_err(core_error)?)
     }
 
     pub fn solve_direct_with_progress(

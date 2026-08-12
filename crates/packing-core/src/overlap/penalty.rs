@@ -130,8 +130,7 @@ fn pieces_conflict(
         return false;
     }
     metrics.exact_geometry_checks += 1;
-    sets_overlap(&first.geometry, &second.geometry)
-        || set_distance(&first.geometry, &second.geometry) + EPSILON < required
+    sets_conflict(&first.geometry, &second.geometry, required)
 }
 
 pub(super) fn conflicting_neighbours(

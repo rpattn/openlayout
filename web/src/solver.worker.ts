@@ -27,11 +27,18 @@ scope.onmessage = ({ data }: MessageEvent<WorkerRequest>) => {
         activePhase = progress.phase;
         post({ id: data.id, type: "progress", progress });
       };
-      const encoded = data.lane === "direct"
-        ? engine.solve_direct_with_progress(problem, JSON.stringify(data.options), reportProgress)
-        : data.lane === "clearance_continuation"
-          ? engine.solve_clearance_continuation_with_progress(problem, JSON.stringify(data.options), reportProgress)
-          : engine.solve_with_progress(problem, JSON.stringify(data.options), reportProgress);
+      const options = JSON.stringify(data.options);
+      const encoded = data.reportProgress === false
+        ? data.lane === "direct"
+          ? engine.solve_direct(problem, options)
+          : data.lane === "clearance_continuation"
+            ? engine.solve_clearance_continuation(problem, options)
+            : engine.solve(problem, options)
+        : data.lane === "direct"
+          ? engine.solve_direct_with_progress(problem, options, reportProgress)
+          : data.lane === "clearance_continuation"
+            ? engine.solve_clearance_continuation_with_progress(problem, options, reportProgress)
+            : engine.solve_with_progress(problem, options, reportProgress);
       const finished = performance.now();
       if (activePhase !== null) phaseMs[activePhase] = (phaseMs[activePhase] ?? 0) + finished - phaseStarted;
       const result = JSON.parse(encoded);

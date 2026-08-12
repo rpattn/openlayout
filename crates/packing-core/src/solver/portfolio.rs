@@ -541,9 +541,7 @@ pub(super) fn feasible<'a>(
             continue;
         }
         counters.exact_geometry_checks += 1;
-        if sets_overlap(&next.geometry, exclusion)
-            || set_distance(&next.geometry, exclusion) + EPSILON < required
-        {
+        if sets_conflict(&next.geometry, exclusion, required) {
             counters.collision_check_ms += collision_started.elapsed_ms();
             return false;
         }
@@ -561,9 +559,7 @@ pub(super) fn feasible<'a>(
             continue;
         }
         counters.exact_geometry_checks += 1;
-        if sets_overlap(&next.geometry, &existing.geometry)
-            || set_distance(&next.geometry, &existing.geometry) + EPSILON < required
-        {
+        if sets_conflict(&next.geometry, &existing.geometry, required) {
             counters.collision_check_ms += collision_started.elapsed_ms();
             return false;
         }

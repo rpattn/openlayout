@@ -1,5 +1,5 @@
 use crate::geometry::{
-    Bounds, EPSILON, PolygonSet, area, bounds, set_distance, set_inside, sets_overlap, transform,
+    Bounds, EPSILON, PolygonSet, area, bounds, set_inside, sets_conflict, sets_overlap, transform,
 };
 use crate::numeric::same_rotation;
 use crate::search::{SearchMetrics, bounded_search};
@@ -643,7 +643,7 @@ fn solve_with_observer_internal(
                 .time_limit_ms
                 .map(|limit| limit.saturating_sub(started.elapsed_ms()));
         }
-        let repair = crate::overlap::repair_one_more(
+        let repair = crate::overlap::repair_more(
             prepared,
             &repair_options,
             &incumbent,

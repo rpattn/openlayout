@@ -472,7 +472,7 @@ fn separated_motif_offset(
     let separated = |extra: f64| {
         let offset = offset_at(extra);
         let moved = transform(second, 0.0, offset.x, offset.y);
-        !sets_overlap(first, &moved) && set_distance(first, &moved) + EPSILON >= clearance
+        !sets_conflict(first, &moved, clearance)
     };
     if separated(0.0) {
         return Some(contact_offset);
@@ -753,7 +753,7 @@ fn geometries_separated(
     } else {
         transform(geometry, 0.0, separation, orthogonal_offset)
     };
-    !sets_overlap(geometry, &moved) && set_distance(geometry, &moved) + EPSILON >= clearance
+    !sets_conflict(geometry, &moved, clearance)
 }
 
 pub(in crate::solver) fn alternating_fill(

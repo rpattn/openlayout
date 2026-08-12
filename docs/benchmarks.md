@@ -26,6 +26,10 @@ guards against reducing non-rectangular pieces to their bounding boxes during pa
   a benchmark subset.
 - [Semi-discrete bottom-left-fill](https://arxiv.org/abs/2103.08739) is a useful recent reference
   for deterministic benchmark protocols over free rotations.
+- The official ESICUP [Gardeyn dataset](https://github.com/ESICUP/datasets/tree/main/2d_irregular/gardeyn)
+  supplies the CC0 high-vertex `Gardeyn0` source. The checked-in schema-v2 conversion uses the
+  48,681.08 × 20,000 container from Sparrow's published best-known record and permits the source
+  0/90/180/270-degree orientations.
 
 Strip instances are tested as fixed-container feasibility problems: the strip height and a
 published target length become a rectangle, and each source piece becomes a quantity-one item with
@@ -37,6 +41,7 @@ the source orientation policy. This does not change feasibility at that target l
 | --- | ---: | ---: | --- |
 | ESICUP `Dighe1` | 16 pieces in 100 × 100 (100% density) | 12 / 16 with the retained balanced regression budget | Guided overlap repair raises the previous 10-piece floor. The reflected up-left source coordinates preserve feasibility in OpenLayout's coordinate convention; all transforms pass independent validation. |
 | ESICUP `Dighe2` | 10 pieces in 100 × 100 (100% density) | 7 / 10 with the retained balanced regression budget | The seventh piece is recovered by overlap repair within 600 evaluated moves. Input area gives a safe upper bound of 10 and every returned transform passes independent validation. |
+| ESICUP `Gardeyn0` | 50 demanded pieces in Sparrow's 48,681.08 × 20,000 record container | 10 / 50 with the retained fast smoke budget | The mechanically converted fixture spans five polygon types and up to 160 vertices. The automated check fixes the deterministic 1,250-candidate/228-exact-check signature and independently validates the result. |
 | Studio start problem | 21-capsule regression target | 20 direct; 21 / 21 through clearance continuation | Contact closure completes the 20-item learned lattice during baseline, before angle refinement. A conservative capsule-surrogate annealing lane repairs the 21-item relaxed-clearance donor, and the ordinary final validator accepts the original compound geometry at full item, boundary, and exclusion clearances. |
 
 Neither Dighe case is labelled solved by OpenLayout. Reaching every requested piece would prove
@@ -51,6 +56,13 @@ Run the native suite for both embedded Dighe coordinate sets:
 
 ```sh
 cargo test -p packing-core published_dighe
+```
+
+Run the pinned high-vertex research fixture repeatedly with:
+
+```sh
+cargo run --release -p packing-cli -- benchmark \
+  benchmarks/gardeyn0-90.json benchmarks/research-fast-options.json 5
 ```
 
 The studio start case uses seed 7, balanced quality, grid step 0.5, and three restarts. The direct

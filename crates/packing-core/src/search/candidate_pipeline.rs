@@ -21,18 +21,8 @@ pub(super) fn generate_candidates(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let boundary_points = prepared
-        .container_contacts
-        .iter()
-        .take(32)
-        .copied()
-        .collect::<Vec<_>>();
-    let exclusion_points = prepared
-        .exclusion_contacts
-        .iter()
-        .take(24)
-        .copied()
-        .collect::<Vec<_>>();
+    let boundary_points = prepared.container_contacts.iter().take(32);
+    let exclusion_points = prepared.exclusion_contacts.iter().take(24);
     for variant in &prepared.variants {
         if observer.should_cancel() {
             metrics.cancelled = true;
@@ -87,7 +77,7 @@ pub(super) fn generate_candidates(
         let dynamic_item_point_count = detailed_contact_limit(&variant.geometry);
         let prioritize_exact_fits = prefers_exact_fit_priority(&variant.geometry);
         if cached_static.is_none() {
-            for boundary in &boundary_points {
+            for boundary in boundary_points.clone() {
                 for item in &item_points {
                     positions.push((
                         boundary.x - item.x,
@@ -96,7 +86,7 @@ pub(super) fn generate_candidates(
                     ));
                 }
             }
-            for boundary in &exclusion_points {
+            for boundary in exclusion_points.clone() {
                 for item in item_points.iter().take(8) {
                     positions.push((
                         boundary.x - item.x,
@@ -329,9 +319,7 @@ pub(super) fn feasible_candidate(
             continue;
         }
         metrics.exact_geometry_checks += 1;
-        if sets_overlap(&geometry, exclusion)
-            || set_distance(&geometry, exclusion) + EPSILON < required
-        {
+        if sets_conflict(&geometry, exclusion, required) {
             metrics.collision_check_ms += collision_started.elapsed_ms();
             return None;
         }
@@ -373,10 +361,11 @@ pub(super) fn feasible_candidate(
             continue;
         }
         metrics.exact_geometry_checks += 1;
-        if sets_overlap(&geometry, &existing.geometry)
-            || set_distance(&geometry, &existing.geometry) + EPSILON
-                < prepared.problem.clearance.item_to_item
-        {
+        if sets_conflict(
+            &geometry,
+            &existing.geometry,
+            prepared.problem.clearance.item_to_item,
+        ) {
             metrics.collision_check_ms += collision_started.elapsed_ms();
             return None;
         }
@@ -400,6 +389,7 @@ pub(super) fn feasible_candidate(
 pub(super) struct SpatialIndex {
     cell_size: f64,
     cells: BTreeMap<(i64, i64), Vec<usize>>,
+    placement_count: usize,
 }
 
 impl SpatialIndex {
@@ -411,30 +401,53 @@ impl SpatialIndex {
                 cells.entry(key).or_insert_with(Vec::new).push(index);
             }
         }
-        Self { cell_size, cells }
+        Self {
+            cell_size,
+            cells,
+            placement_count: state.placed.len(),
+        }
     }
 
     fn query(&self, bounds: Bounds, gap: f64) -> Vec<usize> {
-        let mut found = BTreeSet::new();
-        for key in cell_keys(bounds, gap, self.cell_size) {
-            if let Some(indexes) = self.cells.get(&key) {
-                found.extend(indexes.iter().copied());
+        // States usually contain at most a few dozen placements. A stack bitmap avoids the tree
+        // allocation/comparisons (and a second heap allocation) for the common case while the
+        // fallback keeps arbitrary problem sizes and the old sorted result order.
+        let mut found = Vec::with_capacity(self.placement_count.min(128));
+        if self.placement_count <= 128 {
+            let mut seen = 0u128;
+            for key in cell_keys(bounds, gap, self.cell_size) {
+                if let Some(indexes) = self.cells.get(&key) {
+                    for &index in indexes {
+                        let bit = 1u128 << index;
+                        if seen & bit == 0 {
+                            seen |= bit;
+                            found.push(index);
+                        }
+                    }
+                }
+            }
+        } else {
+            let mut seen = vec![false; self.placement_count];
+            for key in cell_keys(bounds, gap, self.cell_size) {
+                if let Some(indexes) = self.cells.get(&key) {
+                    for &index in indexes {
+                        if !seen[index] {
+                            seen[index] = true;
+                            found.push(index);
+                        }
+                    }
+                }
             }
         }
-        found.into_iter().collect()
+        found.sort_unstable();
+        found
     }
 }
 
-fn cell_keys(bounds: Bounds, gap: f64, cell_size: f64) -> Vec<(i64, i64)> {
+fn cell_keys(bounds: Bounds, gap: f64, cell_size: f64) -> impl Iterator<Item = (i64, i64)> {
     let min_x = ((bounds.min_x - gap) / cell_size).floor() as i64;
     let max_x = ((bounds.max_x + gap) / cell_size).floor() as i64;
     let min_y = ((bounds.min_y - gap) / cell_size).floor() as i64;
     let max_y = ((bounds.max_y + gap) / cell_size).floor() as i64;
-    let mut keys = Vec::new();
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            keys.push((x, y));
-        }
-    }
-    keys
+    (min_y..=max_y).flat_map(move |y| (min_x..=max_x).map(move |x| (x, y)))
 }

@@ -61,6 +61,10 @@ test("Wasm engine validates, streams layouts, and reuses deterministic preparati
     (json) => progress.push(JSON.parse(json)),
   ));
   const second = JSON.parse(engine.solve(JSON.stringify(problem), JSON.stringify(options)));
+  const quietDirect = JSON.parse(engine.solve_direct(
+    JSON.stringify(problem),
+    JSON.stringify(options),
+  ));
 
   assert.ok(progress.length >= 1);
   assert.ok(progress.some((entry) => entry.placements.length > 0));
@@ -69,6 +73,8 @@ test("Wasm engine validates, streams layouts, and reuses deterministic preparati
   assert.equal(first.validation.valid, true);
   assert.equal(first.layout_id, second.layout_id);
   assert.deepEqual(first.placements, second.placements);
+  assert.equal(quietDirect.layout_id, first.layout_id);
+  assert.deepEqual(quietDirect.placements, first.placements);
   engine.free();
 });
 

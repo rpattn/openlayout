@@ -45,7 +45,13 @@ export class SolverClient {
         max_iterations: Math.max(10_000, Math.floor(options.max_iterations / (workerIndex === 0 ? 2 : 4))),
         restarts: Math.min(options.restarts, workerIndex === 0 ? 2 : 1),
       };
-      return this.requestOn<SolveResult>(workerIndex, { type: "solve", problem, options: workerOptions, lane }, report);
+      return this.requestOn<SolveResult>(workerIndex, {
+        type: "solve",
+        problem,
+        options: workerOptions,
+        lane,
+        reportProgress: workerIndex <= 1,
+      }, report);
     });
     const settled = await Promise.allSettled(jobs);
     const results = settled

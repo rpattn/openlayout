@@ -9,7 +9,16 @@ export class PackingEngine {
     sensitivity(input_json: string, study_json: string): string;
     sensitivity_with_progress(input_json: string, study_json: string, callback: Function): string;
     solve(input_json: string, options_json: string): string;
+    /**
+     * Run continuation without progress callbacks for non-visible portfolio lanes.
+     */
+    solve_clearance_continuation(input_json: string, options_json: string): string;
     solve_clearance_continuation_with_progress(input_json: string, options_json: string, callback: Function): string;
+    /**
+     * Run the direct lane without crossing into JavaScript for intermediate layouts. Browser
+     * portfolio workers that do not own visible progress use this lower-overhead entry point.
+     */
+    solve_direct(input_json: string, options_json: string): string;
     solve_direct_with_progress(input_json: string, options_json: string, callback: Function): string;
     solve_with_progress(input_json: string, options_json: string, callback: Function): string;
     validate(input_json: string): string;
@@ -33,7 +42,9 @@ export interface InitOutput {
     readonly packingengine_sensitivity: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly packingengine_sensitivity_with_progress: (a: number, b: number, c: number, d: number, e: number, f: any) => [number, number, number, number];
     readonly packingengine_solve: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly packingengine_solve_clearance_continuation: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly packingengine_solve_clearance_continuation_with_progress: (a: number, b: number, c: number, d: number, e: number, f: any) => [number, number, number, number];
+    readonly packingengine_solve_direct: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly packingengine_solve_direct_with_progress: (a: number, b: number, c: number, d: number, e: number, f: any) => [number, number, number, number];
     readonly packingengine_solve_with_progress: (a: number, b: number, c: number, d: number, e: number, f: any) => [number, number, number, number];
     readonly packingengine_validate: (a: number, b: number, c: number) => [number, number, number, number];

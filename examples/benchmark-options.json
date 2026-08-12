@@ -1,0 +1,10 @@
+{
+  "seed": 42,
+  "deterministic": true,
+  "max_iterations": 30000,
+  "time_limit_ms": null,
+  "grid_step": 0.5,
+  "restarts": 2,
+  "quality": "balanced",
+  "baseline_only": false
+}

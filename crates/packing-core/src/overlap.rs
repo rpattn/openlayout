@@ -1,7 +1,5 @@
 use crate::clock::Clock;
-use crate::geometry::{
-    Bounds, EPSILON, PolygonSet, bounds, set_distance, set_inside, sets_overlap, transform,
-};
+use crate::geometry::{Bounds, EPSILON, PolygonSet, bounds, set_inside, sets_conflict, transform};
 use crate::numeric::{angular_distance, same_rotation};
 use crate::prepare::PreparedVariant;
 use crate::solver::SolveObserver;
@@ -43,7 +41,7 @@ struct RepairState {
     weighted_penalty: f64,
 }
 
-pub(crate) fn repair_one_more(
+pub(crate) fn repair_more(
     prepared: &PreparedProblem,
     options: &SolveOptions,
     incumbent: &[Placement],
@@ -65,19 +63,71 @@ pub(crate) fn repair_one_more(
             metrics,
         };
     }
-
-    let Some(base) = state_from_placements(prepared, incumbent) else {
+    let Some(mut base) = state_from_placements(prepared, incumbent) else {
         return OverlapRepairOutcome {
             placements: None,
             metrics,
         };
     };
-    let mut seeds = seed_states(
-        prepared,
-        &base,
-        failed_constructive_candidates,
-        &mut metrics,
-    );
+    let total_budget = repair_budget(options);
+    let mut best_repaired = None;
+    let maximum_gains = match options.quality {
+        SolveQuality::Fast => 0,
+        // Balanced retains its strict latency contract: stop at the first validated gain even if
+        // move budget remains. Thorough may reinvest that remainder in harder target counts.
+        SolveQuality::Balanced => 1,
+        SolveQuality::Thorough => 4,
+    };
+    for _ in 0..maximum_gains {
+        if metrics.evaluated_moves >= total_budget
+            || base.pieces.len() >= total_requested(prepared)
+            || prepared
+                .simple_upper_bound
+                .is_some_and(|upper| base.pieces.len() >= upper)
+            || !repair_complexity_allowed(prepared, options.quality, base.pieces.len() + 1)
+        {
+            break;
+        }
+        let Some(repaired) = repair_next_count(
+            prepared,
+            options,
+            &base,
+            failed_constructive_candidates,
+            total_budget,
+            &mut metrics,
+            observer,
+            started,
+        ) else {
+            break;
+        };
+        best_repaired = Some(
+            repaired
+                .pieces
+                .iter()
+                .map(|piece| piece.placement.clone())
+                .collect(),
+        );
+        base = repaired;
+    }
+
+    OverlapRepairOutcome {
+        placements: best_repaired,
+        metrics,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn repair_next_count(
+    prepared: &PreparedProblem,
+    options: &SolveOptions,
+    base: &RepairState,
+    failed_constructive_candidates: &[Placement],
+    total_budget: u64,
+    metrics: &mut OverlapRepairMetrics,
+    observer: &mut dyn SolveObserver,
+    started: Clock,
+) -> Option<RepairState> {
+    let mut seeds = seed_states(prepared, base, failed_constructive_candidates, metrics);
     let seed_limit = match options.quality {
         SolveQuality::Fast => 0,
         SolveQuality::Balanced => 3,
@@ -90,10 +140,7 @@ pub(crate) fn repair_one_more(
     });
     seeds.dedup_by(|a, b| state_key(a) == state_key(b));
     seeds.truncate(seed_limit);
-
-    let total_budget = repair_budget(options);
     let seed_count = seeds.len();
-    let mut best_repaired = None;
     for (seed_index, mut state) in seeds.into_iter().enumerate() {
         if repair_time_limit_reached(options, started) {
             metrics.limit_reached = true;
@@ -104,17 +151,10 @@ pub(crate) fn repair_one_more(
             break;
         }
         metrics.attempts += 1;
-        update_best_penalty(&mut metrics, state.original_penalty);
+        update_best_penalty(metrics, state.original_penalty);
         if state.original_penalty <= EPSILON && independently_valid(prepared, &state) {
             metrics.successful_repairs += 1;
-            best_repaired = Some(
-                state
-                    .pieces
-                    .into_iter()
-                    .map(|piece| piece.placement)
-                    .collect(),
-            );
-            break;
+            return Some(state);
         }
         let attempts_left = (seed_count.saturating_sub(seed_index)).max(1) as u64;
         let used = metrics.evaluated_moves;
@@ -127,31 +167,20 @@ pub(crate) fn repair_one_more(
             options,
             &mut state,
             used + attempt_budget,
-            &mut metrics,
+            metrics,
             observer,
             started,
         );
-        update_best_penalty(&mut metrics, state.original_penalty);
+        update_best_penalty(metrics, state.original_penalty);
         if state.original_penalty <= EPSILON && independently_valid(prepared, &state) {
             metrics.successful_repairs += 1;
-            best_repaired = Some(
-                state
-                    .pieces
-                    .into_iter()
-                    .map(|piece| piece.placement)
-                    .collect(),
-            );
-            break;
+            return Some(state);
         }
         if metrics.evaluated_moves >= total_budget || metrics.cancelled {
             break;
         }
     }
-
-    OverlapRepairOutcome {
-        placements: best_repaired,
-        metrics,
-    }
+    None
 }
 
 fn repair_complexity_allowed(
@@ -664,9 +693,7 @@ fn hard_valid(
             continue;
         }
         metrics.exact_geometry_checks += 1;
-        if sets_overlap(&candidate.geometry, exclusion)
-            || set_distance(&candidate.geometry, exclusion) + EPSILON < required
-        {
+        if sets_conflict(&candidate.geometry, exclusion, required) {
             return false;
         }
     }
@@ -786,7 +813,7 @@ mod tests {
                     width: 2.0,
                     height: 2.0,
                 },
-                quantity: 2,
+                quantity: 4,
                 rotation_policy: RotationPolicy::Discrete {
                     angles_deg: vec![0.0],
                     coupling: RotationCoupling::Independent,
@@ -834,5 +861,37 @@ mod tests {
         assert!(metrics.weight_updates > 0);
         assert!(state.weighted_penalty > state.original_penalty);
         assert_eq!(state.original_penalty, overlap);
+    }
+
+    #[test]
+    fn thorough_repair_reinvests_unused_budget_in_the_next_count() {
+        let prepared = rectangle_problem();
+        let incumbent = vec![Placement {
+            item_id: "item-a".into(),
+            x: -3.0,
+            y: 0.0,
+            rotation_deg: 0.0,
+            fixed: false,
+        }];
+        let failed = [0.0, 3.0]
+            .into_iter()
+            .map(|x| Placement {
+                item_id: "item-a".into(),
+                x,
+                y: 0.0,
+                rotation_deg: 0.0,
+                fixed: false,
+            })
+            .collect::<Vec<_>>();
+        let options = SolveOptions {
+            quality: SolveQuality::Thorough,
+            max_iterations: 100,
+            ..SolveOptions::default()
+        };
+        let result = repair_more(&prepared, &options, &incumbent, &failed, &mut Observer);
+
+        assert_eq!(result.placements.as_ref().map(Vec::len), Some(4));
+        assert_eq!(result.metrics.successful_repairs, 3);
+        assert!(result.metrics.evaluated_moves <= 512);
     }
 }
