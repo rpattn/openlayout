@@ -264,7 +264,9 @@ test("offers selection-aware drafting actions from the context menu", async ({ p
 
 test("edits item, container, cut-out, and exclusion geometry without leaving the workspace", async ({ page }) => {
   await page.goto("/");
-  const initialCircle = page.locator('[data-cad-kind="item"][data-cad-part="1"]'), initialCircleBox = await initialCircle.boundingBox();
+  const initialCircle = page.locator('[data-cad-kind="item"][data-cad-part="1"]');
+  await expect(initialCircle).toBeVisible();
+  const initialCircleBox = await initialCircle.boundingBox();
   if (!initialCircleBox) throw new Error("Snapped circle has no bounding box");
   await initialCircle.click({ position: { x: initialCircleBox.width * .2, y: initialCircleBox.height / 2 } });
   await expect(page.locator("#item-part-select")).toHaveValue("1");
@@ -501,7 +503,7 @@ test("creates and directly transforms guides, drafting paths, construction shape
     const dx = next.x - screen.x, dy = next.y - screen.y, magnitude = Math.hypot(dx, dy) || 1;
     return { x: screen.x - dy / magnitude * 5, y: screen.y + dx / magnitude * 5 };
   });
-  await page.locator("[data-cad-background]").click({ position: { x: 20, y: 20 } });
+  await page.locator("[data-cad-background]").click({ position: { x: 20, y: 120 } });
   await expect(page.locator(".cad-drafting-point-handle")).toHaveCount(0);
   await page.mouse.click(forgivingTarget.x, forgivingTarget.y);
   await expect(page.locator(".cad-drafting-point-handle")).toHaveCount(2);

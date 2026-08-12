@@ -1,45 +1,30 @@
 import "./style.css";
-import { CadWorkspace, type CadSelection } from "./cad-workspace";
+import { CadWorkspace } from "./cad-workspace";
+import { cadLockReference, isPartSelection, sameCadSelection as sameSelection, type CadSelection } from "./cad-selection";
 import { initGeometryResolver } from "./geometry-resolver";
 import { SolverClient } from "./solver-client";
-import { cloneItemAtParameter, fromProblem, makePrimitive, parsePointText, primitiveShape, resolveEditorTranslations, shapePoints, toProblem, transformPoint } from "./problem";
+import { fromProblem, makePrimitive, parsePointText, primitiveDependsOn, primitiveShape, resolveEditorTranslations, shapePoints, toProblem, transformPoint } from "./problem";
 import { renderLayout, renderPolygonsPreview, renderSensitivity, sensitivityValueAt } from "./renderer";
 import { resolveGeometry } from "./geometry-resolver";
 import { WorkspaceHistory, WorkspaceStore } from "./workspace-store";
+import { escapeHtml, formatNumber, humanize } from "./ui-utils";
+import { editorColor } from "./design-tokens";
+import { downloadBlob, downloadLayoutPng, downloadText, layoutToSvg, placementsCsv, safeFilename, shapesToSvg } from "./export-service";
+import { decodeParameter, parameterCatalog, parameterCurrentValue, stateAtParameter, studyValues } from "./sensitivity-model";
+import { bindToolbarPalette, closeToolbarPalettes } from "./toolbar-palette";
+import { shortcutsMarkup } from "./shortcuts";
+import { renderInspector } from "./inspector-markup";
+import { studioShellHtml } from "./studio-shell";
+import { packingSidebarHtml } from "./packing-sidebar";
+import { diagnosticsHtml, metricsHtml, parameterMatchesHtml, sensitivitySidebarHtml, studyStepsHtml, transitionsHtml } from "./sensitivity-markup";
+import { exportOptionsHtml, projectDialogHtml } from "./dialog-markup";
 import type {
-  AnchorName, EditorItem, EditorState, PackingProblem, ParameterPath, Placement, Point, PrimitiveEditor, SensitivityProgress,
+  AnchorName, EditorItem, EditorState, PackingProblem, Placement, Point, PrimitiveEditor, SensitivityProgress,
   SensitivityResult, SensitivityStudy, SolveProgress, SolveResult,
 } from "./types";
 
 type PageName = "packing" | "sensitivity";
 type StatusTone = "neutral" | "working" | "success" | "error";
-type ShortcutGroup = "Navigate" | "Edit" | "View" | "Run";
-interface Shortcut { keys: string[]; label: string; group: ShortcutGroup }
-interface ToolbarPaletteOption { value: string; icon: string; label: string; detail: string }
-const ANCHORS: AnchorName[] = ["center", "top", "bottom", "left", "right", "top_left", "top_right", "bottom_left", "bottom_right"];
-const SHORTCUTS: Shortcut[] = [
-  { keys: ["?"], label: "Show keyboard shortcuts", group: "Navigate" },
-  { keys: ["1"], label: "Open workspace", group: "Navigate" },
-  { keys: ["2"], label: "Open sensitivity", group: "Navigate" },
-  { keys: ["Esc"], label: "Close menu or dialog", group: "Navigate" },
-  { keys: ["Ctrl/⌘", "Z"], label: "Undo", group: "Edit" },
-  { keys: ["Ctrl/⌘", "Shift", "Z"], label: "Redo", group: "Edit" },
-  { keys: ["Ctrl/⌘", "C"], label: "Copy selection", group: "Edit" },
-  { keys: ["Ctrl/⌘", "V"], label: "Paste selection", group: "Edit" },
-  { keys: ["Ctrl/⌘", "D"], label: "Duplicate selection", group: "Edit" },
-  { keys: ["Delete"], label: "Delete selection", group: "Edit" },
-  { keys: ["F"], label: "Fit workspace", group: "View" },
-  { keys: ["Shift", "F"], label: "Focus selection", group: "View" },
-  { keys: ["D"], label: "Toggle dimensions", group: "View" },
-  { keys: ["G"], label: "Toggle constraints", group: "View" },
-  { keys: ["P"], label: "Toggle problem panel", group: "View" },
-  { keys: ["+"], label: "Zoom in", group: "View" },
-  { keys: ["−"], label: "Zoom out", group: "View" },
-  { keys: ["R"], label: "Run packing or study", group: "Run" },
-  { keys: ["V"], label: "Validate problem", group: "Run" },
-  { keys: ["E"], label: "Open export options", group: "Run" },
-  { keys: ["Ctrl/⌘", "S"], label: "Save project", group: "Run" },
-];
 
 await initGeometryResolver();
 
@@ -75,122 +60,7 @@ let activeDimensionTool = false;
 const display = { dimensions: state.viewSettings.showDimensions, clearance: state.viewSettings.showClearance };
 const studyDisplay = { dimensions: false, clearance: false };
 
-root.innerHTML = `
-  <section id="packing-page" class="app-page">
-    <div id="cad-shell" class="cad-shell">
-      <aside id="problem-panel" class="problem-panel">
-        <header class="studio-brand">
-          <div class="brand-lockup"><div><strong>OpenLayout</strong><small>2D packing studio</small></div></div>
-          <div class="project-quick"><select id="quick-project" aria-label="Switch project"></select><button id="open-projects" class="project-chip" aria-label="Edit projects" title="Manage, import, and export projects"><span id="active-project-name" class="sr-only"></span>•••</button></div>
-        </header>
-        <div id="packing-sidebar" class="problem-panel-scroll"></div>
-        <footer class="run-dock">
-          <div class="run-buttons"><button id="validate" class="button ghost" title="Validate problem (V)">Validate</button><button id="cancel" class="button danger" disabled>Stop</button><button id="solve" class="button primary" title="Run packing (R)">Run packing</button></div>
-          <div id="solve-progress-wrap" class="solve-progress-wrap" hidden><div><strong id="solve-stage">Preparing…</strong><span id="solve-detail"></span></div><progress id="solve-progress" max="100" value="0" aria-label="Packing solve progress"></progress></div>
-        </footer>
-      </aside>
-      <main class="cad-stage-shell">
-        <div class="cad-toolbar" aria-label="Workspace tools">
-          <div class="toolbar-group" aria-label="Panels"><button id="sidebar-toggle" class="tool-button" aria-label="Hide problem panel" title="Problem panel (P)">☰</button></div>
-          <div class="toolbar-group" aria-label="Geometry">
-          <button class="tool-button geometry-action icon-tool" data-toolbar-shape="rectangle" aria-label="Add rectangle" title="Rectangle">▭</button>
-          <button class="tool-button geometry-action icon-tool" data-toolbar-shape="circle" aria-label="Add circle" title="Circle">○</button>
-          ${toolbarPaletteHtml("toolbar-add-shape", "Add other geometry", "⬡", [
-            { value: "triangle", icon: "△", label: "Triangle", detail: "3 vertices" },
-            { value: "polygon", icon: "⬠", label: "Polygon", detail: "Vertex geometry" },
-            { value: "bezier", icon: "∿", label: "Bézier", detail: "Curve geometry" },
-          ])}
-          ${toolbarPaletteHtml("toolbar-default-owner", "Default new shape role", "◈", [
-            { value: "material", icon: "▧", label: "Material", detail: "Container add" },
-            { value: "cutout", icon: "▱", label: "Cut-out", detail: "Container subtract" },
-            { value: "item", icon: "◇", label: "Item", detail: "Packable" },
-            { value: "exclusion", icon: "⊘", label: "Exclusion", detail: "Keep-out" },
-          ], state.drafting.defaultOwner)}
-          </div>
-          <div class="toolbar-group" aria-label="Selection">
-          <label class="toolbar-color" title="Selected part colour"><input id="toolbar-part-color" type="color" aria-label="Selected part colour" value="#51c6a4"></label>
-          <button id="join-material" class="tool-button icon-tool" aria-label="Unify selected material" title="Unify material">⌁</button>
-          <button id="lock-selection" class="tool-button icon-tool" aria-label="Lock selection" title="Lock">⌑</button>
-          <button id="delete-selection" class="tool-button danger-tool" aria-label="Delete selection" title="Delete (Delete)">⌫</button>
-          <button id="respect-manual-constraints" class="tool-button compact-overlay active" aria-label="Toggle manual collision guard" aria-pressed="true" title="Collision guard">♢</button>
-          </div>
-          <div class="toolbar-group" aria-label="Display">
-          <button id="toggle-dimensions" class="tool-button compact-overlay" aria-label="Dimensions" aria-pressed="false" title="Dimensions (D)">↔</button>
-          <button id="toggle-clearance" class="tool-button compact-overlay" aria-label="Constraints" aria-pressed="false" title="Clearances (G)">◌</button>
-          <button id="open-view-settings" class="tool-button icon-tool" aria-label="View settings" aria-pressed="false" title="View settings">⚙</button>
-          </div>
-          <div class="toolbar-group" aria-label="Drafting">
-          <button id="open-drafting-aids" class="tool-button icon-tool" aria-label="Drafting aids" aria-pressed="false" title="Drafting settings">⌗</button>
-          <button id="add-vertical-guide" class="tool-button icon-tool" aria-label="Add vertical drafting line" aria-pressed="false" title="Vertical guide">┃</button>
-          <button id="add-horizontal-guide" class="tool-button icon-tool" aria-label="Add horizontal drafting line" aria-pressed="false" title="Horizontal guide">━</button>
-          <button id="draw-drafting-line" class="tool-button icon-tool" aria-label="Draw two-point drafting line" aria-pressed="false" title="2-point line">╱</button>
-          <button id="draw-drafting-polyline" class="tool-button icon-tool" aria-label="Draw drafting polyline" aria-pressed="false" title="Polyline · Enter to finish">⌁</button>
-          <button id="draw-dimension" class="tool-button icon-tool" aria-label="Create dimension" aria-pressed="false" title="Dimension between two points">↔</button>
-          <button id="drafting-shape-mode" class="tool-button icon-tool" aria-label="Drafting shape mode" aria-pressed="false" title="Drafting geometry mode">◇</button>
-          <button id="add-trace-image" class="tool-button icon-tool" aria-label="Add trace image" title="Trace image">▧</button>
-          <button id="add-scene-text" class="tool-button icon-tool" aria-label="Add scene text" title="Text annotation">T</button>
-          </div>
-          <span class="tool-spacer"></span>
-          <div class="toolbar-group" aria-label="History">
-          <button id="undo" class="tool-button" aria-label="Undo" title="Undo (Ctrl/⌘+Z)" disabled>↶</button>
-          <button id="redo" class="tool-button" aria-label="Redo" title="Redo (Ctrl/⌘+Shift+Z)" disabled>↷</button>
-          </div>
-          <div class="toolbar-group" aria-label="Analysis and output">
-          <button id="open-diagnostics" class="tool-button icon-tool" aria-label="Diagnostics" title="Diagnostics">⚙</button>
-          <button id="open-sensitivity" class="tool-button icon-tool" aria-label="Sensitivity" title="Sensitivity analysis (2)">∿</button>
-          <button id="open-export" class="tool-button icon-tool" aria-label="Export" title="Export (E)">⇩</button>
-          <button id="open-shortcuts" class="tool-button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">⌨</button>
-          <button id="theme-toggle" class="tool-button" aria-label="Toggle theme">◐</button>
-          </div>
-        </div>
-        <input id="toolbar-trace-image-input" class="sr-only" type="file" accept="image/*" data-trace-image aria-label="Choose trace image">
-        <section id="drafting-panel" class="cad-tool-panel" aria-label="Drafting aids panel" hidden></section>
-        <section id="view-settings-panel" class="cad-tool-panel view-settings-panel" aria-label="View settings panel" hidden></section>
-        <svg id="cad-canvas" class="cad-canvas" tabindex="0" aria-label="Interactive packing workspace"></svg>
-        <div class="cad-nav-toolbar" aria-label="View navigation">
-          <button id="select-tool" class="tool-button active icon-tool" aria-label="Select tool" title="Select tool">↖</button>
-          <button id="fit-view" class="tool-button icon-tool" aria-label="Fit workspace" title="Fit workspace (F)">⌗</button>
-          <button id="focus-selection" class="tool-button icon-tool" aria-label="Focus selection" title="Zoom to selected geometry (Shift+F)">◎</button>
-          <button id="zoom-in" class="tool-button icon-tool" aria-label="Zoom in" title="Zoom in (+)">＋</button>
-          <button id="zoom-out" class="tool-button icon-tool" aria-label="Zoom out" title="Zoom out (−)">−</button>
-        </div>
-        <div class="cad-help">Ctrl/⌘ drag: marquee · Alt: bypass snap · Shift: opposite-edge resize</div>
-        <div class="workspace-state"><span id="status-dot"></span><span id="status" class="status neutral">Saved locally</span><strong id="workspace-summary">Problem definition</strong></div>
-        <div id="cad-context-menu" class="cad-context-menu" hidden><button data-context-action="focus">Focus selection</button><button data-context-action="copy">Copy</button><button data-context-action="duplicate">Duplicate</button><button data-context-action="lock">Lock</button><button data-context-action="front">Bring to front</button><button data-context-action="back">Send to back</button><button data-context-action="reset-rotation">Reset rotation</button><button data-context-action="fixed">Toggle fixed</button><button data-context-action="delete" class="danger-text">Delete</button></div>
-      </main>
-    </div>
-  </section>
-
-  <section id="sensitivity-page" class="app-page" hidden>
-    <div class="sensitivity-header"><button id="back-to-workspace" class="button ghost" title="Open workspace (1)">← Workspace</button><div><small>SENSITIVITY</small><strong>Capacity study</strong></div><span class="sensitivity-header-spacer"></span><button id="edit-study-source" class="button ghost">Edit varied geometry</button><button id="open-export-study" class="button ghost" title="Export (E)">Export</button><button id="open-shortcuts-study" class="tool-button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">⌨</button><button id="theme-toggle-study" class="tool-button" aria-label="Toggle theme from sensitivity">◐</button></div>
-    <div class="page-shell sensitivity-shell">
-      <aside id="sensitivity-sidebar" class="side-panel"></aside>
-      <main class="sensitivity-content">
-        <section class="panel study-preview-panel">
-          <div class="panel-heading"><div><small>GEOMETRY PREVIEW</small><h1>Study steps and extremes</h1></div>${overlayToggles("study")}</div>
-          <div id="study-shape-preview" class="sensitivity-steps"></div>
-        </section>
-        <section class="study-results-grid">
-          <div class="panel sensitivity-panel">
-            <div class="panel-heading"><div><small>PARAMETER STUDY</small><h2>Capacity transitions</h2></div><div id="study-progress" class="study-progress" hidden><progress max="100" value="0"></progress><span>Preparing…</span></div></div>
-            <div id="sensitivity-scroll" class="sensitivity-scroll"><canvas id="sensitivity-canvas" tabindex="0" aria-label="Sensitivity capacity chart"></canvas></div>
-            <div id="transitions" class="transition-list"></div>
-          </div>
-          <div class="panel sensitivity-layout-panel">
-            <div class="panel-heading"><div><small>SELECTED RESULT</small><h2 id="sensitivity-layout-title">No result selected</h2></div><div class="selected-layout-actions"><button id="edit-selected-layout" class="button ghost" disabled>Edit layout</button><div id="sensitivity-layout-id" class="layout-id">—</div></div></div>
-            <canvas id="sensitivity-layout-canvas" aria-label="Selected sensitivity layout"></canvas>
-            <div id="sensitivity-metrics" class="metrics"></div>
-          </div>
-        </section>
-      </main>
-    </div>
-  </section>
-
-  <dialog id="project-dialog" class="studio-dialog"><form method="dialog"><header><div><small>LOCAL WORKSPACE</small><h2>Projects</h2></div><button class="dialog-close" value="cancel" aria-label="Close projects">×</button></header><div id="project-dialog-body"></div></form></dialog>
-  <dialog id="diagnostics-dialog" class="studio-dialog diagnostics-dialog"><form method="dialog"><header><div><small>ENGINE OUTPUT</small><h2>Diagnostics & metrics</h2></div><button class="dialog-close" value="cancel" aria-label="Close diagnostics">×</button></header><div id="diagnostics" class="diagnostics"><p>Run a solve to inspect validation and search statistics.</p></div><footer><button id="copy-result" type="button" class="button ghost">Copy result JSON</button><button class="button" value="cancel">Done</button></footer></form></dialog>
-  <dialog id="export-dialog" class="studio-dialog export-dialog"><form method="dialog"><header><div><small>DOWNLOADS</small><h2>Export workspace</h2></div><button class="dialog-close" value="cancel" aria-label="Close export options">×</button></header><div id="export-options" class="export-options"></div></form></dialog>
-  <dialog id="shortcuts-dialog" class="studio-dialog shortcuts-dialog"><form method="dialog"><header><div><small>QUICK REFERENCE</small><h2>Keyboard shortcuts</h2></div><button class="dialog-close" value="cancel" aria-label="Close keyboard shortcuts">×</button></header><div id="shortcut-list" class="shortcut-list"></div></form></dialog>`;
-
+root.innerHTML = studioShellHtml({ defaultOwner: state.drafting.defaultOwner, studyDisplay });
 applyTheme(projects.theme);
 cad = new CadWorkspace(document.getElementById("cad-canvas") as unknown as SVGSVGElement, state, toProblem(state), {
   onSelect: selectCad,
@@ -379,7 +249,7 @@ function handleShortcut(event: KeyboardEvent): boolean {
 
 function openShortcuts(): void {
   const host = element("shortcut-list");
-  host.innerHTML = (["Navigate", "Edit", "View", "Run"] as ShortcutGroup[]).map((group) => `<section><h3>${group}</h3>${SHORTCUTS.filter((entry) => entry.group === group).map((entry) => `<div><span>${escapeHtml(entry.label)}</span><kbd>${entry.keys.map(escapeHtml).join("</kbd><kbd>")}</kbd></div>`).join("")}</section>`).join("");
+  host.innerHTML = shortcutsMarkup();
   element<HTMLDialogElement>("shortcuts-dialog").showModal();
 }
 
@@ -446,29 +316,15 @@ function renderPackingSidebar(): void {
   quickProject.innerHTML = projects.projects.map((project) => `<option value="${project.id}" ${project.id === projects.activeProjectId ? "selected" : ""}>${escapeHtml(project.name)}</option>`).join("");
   element("active-project-name").textContent = projects.active.name;
   const sidebar = element("packing-sidebar");
-  const locked = lockedSelections();
-  sidebar.innerHTML = `
-    <section class="problem-section entity-section">
-      <div class="section-title"><div><small>PROBLEM</small><h2>Drawing objects</h2></div></div>
-      <div class="entity-group"><span>Container</span>${state.containerParts.map((entry, index) => isLocked({ kind: "container", index }) ? "" : entityButton("container", index, entry.id, entry.operation === "add" ? "Material" : "Cut-out")).join("")}</div>
-      <div class="entity-group"><span>Exclusions</span>${state.exclusions.map((entry, index) => isLocked({ kind: "exclusion", index }) ? "" : entityButton("exclusion", index, entry.id, `${format(entry.clearance)} clearance`)).join("") || '<p class="empty-inline">None</p>'}</div>
-      <div class="entity-group"><span>Packable shapes</span>${state.items.map((item, index) => isLocked({ kind: "item", index }) ? "" : entityButton("item", index, item.id, `${item.quantity} requested`)).join("")}</div>
-      ${locked.length ? `<div class="entity-group locked-entity-group"><span>Locked</span>${locked.map(lockedEntityButton).join("")}</div>` : ""}
-      <div class="object-add-row"><button data-add-object="item">+ Item</button><button data-add-object="material">+ Material</button><button data-add-object="cutout">+ Cut-out</button><button data-add-object="exclusion">+ Exclusion</button></div>
-    </section>
-    <section id="selection-inspector" class="problem-section inspector-section">${selectionInspector()}</section>
-    <details class="problem-section settings-section" open><summary>Clearances <span>Constraints</span></summary><div class="details-body field-grid three">
-      ${numberField("Item ↔ item", "clearance", "item_to_item", state.clearance.item_to_item, .05)}
-      ${numberField("Boundary", "clearance", "item_to_boundary", state.clearance.item_to_boundary, .05)}
-      ${numberField("Exclusion", "clearance", "item_to_exclusion", state.clearance.item_to_exclusion, .05)}
-    </div></details>
-    <details class="problem-section settings-section"><summary>Fixed placements <span>${state.fixedPlacements.length || "None"}</span></summary><div class="details-body">${fixedPlacementsHtml()}</div></details>
-    <details class="problem-section settings-section"><summary>Solver <span>${humanStatus(state.options.quality)}</span></summary><div class="details-body field-grid two">
-      ${numberField("Seed", "option", "seed", state.options.seed, 1)}${numberField("Base iterations", "option", "max_iterations", state.options.max_iterations, 1000)}
-      ${numberField("Grid step", "option", "grid_step", state.options.grid_step, .1)}${numberField("Restarts", "option", "restarts", state.options.restarts, 1)}
-      <label class="wide">Quality<select data-pack-scope="option" data-field="quality"><option value="fast" ${state.options.quality === "fast" ? "selected" : ""}>Fast preview</option><option value="balanced" ${state.options.quality === "balanced" ? "selected" : ""}>Balanced</option><option value="thorough" ${state.options.quality === "thorough" ? "selected" : ""}>Thorough</option></select></label>
-      <label class="wide checkbox-field"><input type="checkbox" data-pack-scope="option" data-field="baseline_only" ${state.options.baseline_only ? "checked" : ""}> Baseline only · quick validation</label>
-    </div></details>`;
+  sidebar.innerHTML = packingSidebarHtml({
+    state,
+    selection,
+    selections,
+    lockedSelections: lockedSelections(),
+    inspectorHtml: selectionInspector(),
+    isLocked,
+    selectionLabel,
+  });
   applySidebarTooltips(sidebar);
   sidebar.querySelectorAll<HTMLElement>("[data-cad-select]").forEach((node) => node.addEventListener("click", (event) => {
     const next = parseSelection(node.dataset.cadSelect!); selectCad(next, undefined, event.ctrlKey || event.metaKey);
@@ -495,23 +351,6 @@ function renderPackingSidebar(): void {
   updateToolbarState();
 }
 
-function entityButton(kind: "container" | "exclusion" | "item", index: number, name: string, meta: string): string {
-  const key = `${kind}:${index}`;
-  const selected = selections.some((entry) => entry.kind === kind && entry.index === index);
-  return `<button class="entity-row ${selected ? "selected" : ""}" data-cad-select="${key}" title="${kind === "item" ? "Packable shape" : kind === "exclusion" ? "Exclusion" : "Container region"}"><canvas data-entity-preview="${key}" aria-hidden="true"></canvas><span><strong>${escapeHtml(name)}</strong><small>${escapeHtml(meta)}</small></span></button>`;
-}
-
-function lockedEntityButton(value: CadSelection): string {
-  const key = `${value.kind}:${value.index}`, selected = selection ? sameSelection(selection, value) : false;
-  return `<button class="entity-row locked-row ${selected ? "selected" : ""}" data-cad-select="${key}" title="Locked"><span class="locked-entity-icon" aria-hidden="true">⌑</span><span><strong>${escapeHtml(selectionLabel(value))}</strong><small>${escapeHtml(selectionKindLabel(value))}</small></span></button>`;
-}
-
-function selectionKindLabel(value: CadSelection): string {
-  return value.kind === "container" ? (state.containerParts[value.index]?.operation === "subtract" ? "Container cut-out" : "Container material")
-    : value.kind === "exclusion" ? "Exclusion" : value.kind === "item" ? "Packable shape"
-    : value.kind === "guide" ? "Drafting guide" : value.kind === "drafting" ? "Drafting shape" : value.kind === "dimension" || value.kind === "auto-dimension" ? "Dimension" : value.kind === "text" ? "Scene text" : value.kind === "trace" ? "Background image" : "Packed item";
-}
-
 function selectionLabel(value: CadSelection): string {
   return value.kind === "container" ? state.containerParts[value.index]?.id ?? "Material"
     : value.kind === "exclusion" ? state.exclusions[value.index]?.id ?? "Exclusion"
@@ -522,21 +361,6 @@ function selectionLabel(value: CadSelection): string {
     : value.kind === "auto-dimension" ? `${value.owner} ${value.axis}`
     : value.kind === "text" ? `Text ${value.index + 1}`
     : value.kind === "trace" ? `Reference image ${value.index + 1}` : currentResult?.placements[value.index]?.item_id ?? "Packed item";
-}
-
-function lockReference(value: CadSelection): EditorState["lockedEntities"][number] | null {
-  if (value.kind === "dimension" || value.kind === "auto-dimension") return null;
-  if (value.kind === "placement") {
-    const id = currentResult?.placements[value.index]?.item_id;
-    return id ? { kind: "item", id } : null;
-  }
-  const id = value.kind === "container" ? state.containerParts[value.index]?.id
-    : value.kind === "exclusion" ? state.exclusions[value.index]?.id
-    : value.kind === "item" ? state.items[value.index]?.id
-    : value.kind === "guide" ? state.drafting.guides[value.index]?.id
-    : value.kind === "drafting" ? state.drafting.shapes[value.index]?.id
-    : value.kind === "text" ? state.drafting.texts[value.index]?.id : state.drafting.traceImages[value.index]?.id;
-  return id ? { kind: value.kind, id } : null;
 }
 
 function selectionForLock(ref: EditorState["lockedEntities"][number]): CadSelection | null {
@@ -552,7 +376,7 @@ function selectionForLock(ref: EditorState["lockedEntities"][number]): CadSelect
 
 function lockedSelections(): CadSelection[] { return state.lockedEntities.map(selectionForLock).filter((entry): entry is CadSelection => entry !== null); }
 function isLocked(value: CadSelection): boolean {
-  const ref = lockReference(value);
+  const ref = cadLockReference(state, value, currentResult?.placements);
   return !!ref && state.lockedEntities.some((entry) => entry.kind === ref.kind && entry.id === ref.id);
 }
 
@@ -560,10 +384,10 @@ function toggleSelectionLock(): void {
   if (!selection) return;
   const before = structuredClone(state), unlocking = selections.length === 1 && isLocked(selection);
   if (unlocking) {
-    const ref = lockReference(selection);
+    const ref = cadLockReference(state, selection, currentResult?.placements);
     if (ref) state.lockedEntities = state.lockedEntities.filter((entry) => entry.kind !== ref.kind || entry.id !== ref.id);
   } else {
-    const refs = selections.map(lockReference).filter((entry): entry is EditorState["lockedEntities"][number] => entry !== null);
+    const refs = selections.map((entry) => cadLockReference(state, entry, currentResult?.placements)).filter((entry): entry is EditorState["lockedEntities"][number] => entry !== null);
     refs.forEach((ref) => { if (!state.lockedEntities.some((entry) => entry.kind === ref.kind && entry.id === ref.id)) state.lockedEntities.push(ref); });
     selection = refs.length ? selectionForLock(refs.at(-1)!) : selection; selections = selection ? [selection] : [];
   }
@@ -573,98 +397,18 @@ function toggleSelectionLock(): void {
 }
 
 function selectionInspector(): string {
-  if (selection && isLocked(selection)) return `<div class="inspector-heading"><div><small>LOCKED ENTITY</small><h2>${escapeHtml(selectionLabel(selection))}</h2></div><span class="selection-badge">Locked</span></div><button data-toggle-lock class="button full">Unlock</button>`;
-  if (selections.length > 1) return `<div class="inspector-empty"><small>MULTI-SELECTION</small><strong>${selections.length} ${selections.every(isPartSelection) ? "parts" : "objects"} selected</strong></div>`;
-  if (!selection) return `<div class="inspector-empty"><small>INSPECTOR</small><strong>Nothing selected</strong></div>`;
-  if (selection.kind === "guide") {
-    const guide = state.drafting.guides[selection.index];
-    return guide ? `<div class="inspector-heading"><div><small>DRAFTING GUIDE</small><h2>Construction line ${selection.index + 1}</h2></div><span class="selection-badge">${format(guide.rotation)}°</span></div><button data-delete-object class="button danger full">Delete line</button>` : emptyConstructionHtml("Guide unavailable", "");
-  }
-  if (selection.kind === "drafting") {
-    const shape = state.drafting.shapes[selection.index];
-    return shape ? `<div class="inspector-heading"><div><small>DRAFTING SHAPE</small><h2>${shape.closed ? "Construction shape" : "Construction path"} ${selection.index + 1}</h2></div><span class="selection-badge">${shape.points.length} points</span></div><p class="hint">Grid snap · Alt bypass</p><button data-delete-object class="button danger full">Delete drafting shape</button>` : emptyConstructionHtml("Drafting shape unavailable", "");
-  }
-  if (selection.kind === "dimension") {
-    const dimension = state.dimensions[selection.index];
-    if (!dimension) return emptyConstructionHtml("Dimension unavailable", "");
-    const measured = Math.hypot(dimension.end.x - dimension.start.x, dimension.end.y - dimension.start.y);
-    return `<div class="inspector-heading"><div><small>ENGINEERING DIMENSION</small><h2>Dimension ${selection.index + 1}</h2></div><span class="selection-badge">${format(measured)}</span></div>
-      <div class="field-grid two">${dimensionNumber("Start X", "start.x", dimension.start.x)}${dimensionNumber("Start Y", "start.y", dimension.start.y)}${dimensionNumber("End X", "end.x", dimension.end.x)}${dimensionNumber("End Y", "end.y", dimension.end.y)}${dimensionNumber("Offset X", "offset.x", dimension.offset.x)}${dimensionNumber("Offset Y", "offset.y", dimension.offset.y)}<label class="wide">Text override<input data-dimension-field="textOverride" value="${escapeHtml(dimension.textOverride)}" placeholder="Calculated value"></label></div><p class="hint">Drag the dimension line or text to reposition it.</p><button data-delete-object class="button danger full">Delete dimension</button>`;
-  }
-  if (selection.kind === "auto-dimension") {
-    const position = state.dimensionPositions[selection.owner] ?? { x: 0, y: 0 }, key = `${selection.owner}:${selection.axis}`;
-    return `<div class="inspector-heading"><div><small>GENERATED DIMENSION</small><h2>${escapeHtml(selection.owner)}</h2></div><span class="selection-badge">${escapeHtml(selection.axis)}</span></div><div class="field-grid two">${autoDimensionNumber("Offset X", "x", position.x)}${autoDimensionNumber("Offset Y", "y", position.y)}<label class="wide">Text override<input data-auto-dimension-field="override" value="${escapeHtml(state.dimensionOverrides[key] ?? "")}" placeholder="Calculated value"></label></div><p class="hint">Drag the line or label to move it · Alt bypasses grid snap.</p><button data-reset-auto-dimension class="button ghost full">Reset generated dimension</button>`;
-  }
-  if (selection.kind === "trace") {
-    const trace = state.drafting.traceImages[selection.index];
-    return trace ? `<div class="inspector-heading"><div><small>TRACE IMAGE</small><h2>Reference image ${selection.index + 1}</h2></div><span class="selection-badge">${format(trace.opacity * 100)}%</span></div><button data-delete-object class="button danger full">Remove image</button>` : emptyConstructionHtml("Trace image unavailable", "");
-  }
-  if (selection.kind === "text") {
-    const entry = state.drafting.texts[selection.index];
-    return entry ? `<div class="inspector-heading"><div><small>SCENE TEXT</small><h2>Text ${selection.index + 1}</h2></div><span class="selection-badge">Drafting aid</span></div><div class="field-grid two"><label class="wide">Text<textarea rows="4" data-text-field="text">${escapeHtml(entry.text)}</textarea></label>${textNumber("X", "x", entry.x)}${textNumber("Y", "y", entry.y)}${textNumber("Size", "fontSize", entry.fontSize, .25)}${textNumber("Rotation°", "rotation", entry.rotation, 1)}<label>Font<select data-text-field="fontFamily"><option value="mono" ${entry.fontFamily === "mono" ? "selected" : ""}>Monospace</option><option value="sans" ${entry.fontFamily === "sans" ? "selected" : ""}>Sans serif</option><option value="serif" ${entry.fontFamily === "serif" ? "selected" : ""}>Serif</option></select></label><label>Alignment<select data-text-field="align"><option value="left" ${entry.align === "left" ? "selected" : ""}>Left</option><option value="center" ${entry.align === "center" ? "selected" : ""}>Centre</option><option value="right" ${entry.align === "right" ? "selected" : ""}>Right</option></select></label><label class="checkbox-field"><input type="checkbox" data-text-field="bold" ${entry.bold ? "checked" : ""}> Bold</label><label class="checkbox-field"><input type="checkbox" data-text-field="italic" ${entry.italic ? "checked" : ""}> Italic</label><label class="checkbox-field wide"><input type="checkbox" data-text-field="underline" ${entry.underline ? "checked" : ""}> Underline</label><label class="wide">Colour<input type="color" data-text-field="color" value="${escapeHtml(entry.color)}"></label></div><p class="hint">Drag to move · use the corner and top handles to resize and rotate.</p><button data-delete-object class="button danger full">Delete text</button>` : emptyConstructionHtml("Text unavailable", "");
-  }
-  if (selection.kind === "placement") {
-    const placement = currentResult?.placements[selection.index];
-    if (!placement) return `<div class="inspector-empty"><strong>Placement unavailable</strong></div>`;
-    return `<div class="inspector-heading"><div><small>PACKED ITEM ${selection.index + 1}</small><h2>${escapeHtml(placement.item_id)}</h2></div><span class="selection-badge">Manual edit</span></div>
-      <div class="field-grid three">${placementField("X", "x", placement.x, .1)}${placementField("Y", "y", placement.y, .1)}${placementField("Rotation°", "rotation_deg", placement.rotation_deg, 1)}</div>
-      <p class="hint">Manual layout · validation stale</p>
-      <button id="reset-layout" class="button ghost full">Discard solved layout</button>`;
-  }
-  if (selection.kind === "container") {
-    const entry = state.containerParts[selection.index];
-    if (!entry) return emptyConstructionHtml("Container is empty", "Add material or a cut-out from the object bar.");
-    return `<div class="inspector-heading"><div><small>CONTAINER REGION</small><h2>${escapeHtml(entry.id)}</h2></div><span class="selection-badge">${entry.operation}</span></div>
-      <div class="field-grid two"><label>ID<input data-object-field="id" value="${escapeHtml(entry.id)}"></label><label>Boolean operation<select data-object-field="operation"><option value="add" ${entry.operation === "add" ? "selected" : ""}>Add material</option><option value="subtract" ${entry.operation === "subtract" ? "selected" : ""}>Subtract cut-out</option></select></label></div>
-      ${primitiveEditorHtml(entry.primitive)}
-      ${snapEditorHtml(state.containerParts.map((region) => region.primitive), entry.primitive, "REGION CONNECTION")}
-      <button data-delete-object class="button danger full">Delete region</button>`;
-  }
-  if (selection.kind === "exclusion") {
-    const entry = state.exclusions[selection.index];
-    if (!entry) return emptyConstructionHtml("Exclusion unavailable", "Select or add an exclusion.");
-    selectedPartIndex = Math.min(selectedPartIndex, Math.max(0, entry.parts.length - 1));
-    const part = entry.parts[selectedPartIndex];
-    return `<div class="inspector-heading"><div><small>EXCLUSION</small><h2>${escapeHtml(entry.id)}</h2></div><span class="selection-badge">${format(entry.clearance)} clear</span></div>
-      <div class="field-grid two"><label>ID<input data-object-field="id" value="${escapeHtml(entry.id)}"></label><label>Clearance<input type="number" step=".05" data-object-field="clearance" value="${format(entry.clearance)}"></label></div>
-      ${constructionEditorHtml(entry.parts, part, "EXCLUSION PART")}
-      <div class="inline-actions"><button data-delete-part class="button danger" ${part ? "" : "disabled"}>Delete part</button><button data-delete-object class="button danger">Delete exclusion</button></div>`;
-  }
-  const item = state.items[selection.index];
-  if (!item) return emptyConstructionHtml("Shape unavailable", "Select or add a packable shape.");
-  selectedPartIndex = Math.min(selectedPartIndex, Math.max(0, item.parts.length - 1));
-  const part = item.parts[selectedPartIndex];
-  return `<div class="inspector-heading"><div><small>PACKABLE SHAPE</small><h2>${escapeHtml(item.id)}</h2></div><span class="selection-badge">${item.quantity} requested</span></div>
-    <div class="field-grid two"><label>ID<input data-object-field="id" value="${escapeHtml(item.id)}"></label><label>Quantity<input type="number" step="1" data-object-field="quantity" value="${item.quantity}"></label><label>Rotation search<select data-object-field="rotationMode"><option value="continuous" ${item.rotationMode === "continuous" ? "selected" : ""}>Adaptive</option><option value="discrete" ${item.rotationMode === "discrete" ? "selected" : ""}>Fixed angles</option></select></label><label>Coupling<select data-object-field="rotationCoupling"><option value="independent" ${item.rotationCoupling === "independent" ? "selected" : ""}>Independent</option><option value="shared_per_item" ${item.rotationCoupling === "shared_per_item" ? "selected" : ""}>Shared</option></select></label>${item.rotationMode === "continuous" ? objectNumber("Minimum°", "minRotation", item.minRotation, 1) + objectNumber("Maximum°", "maxRotation", item.maxRotation, 1) : `<label class="wide">Angles<input data-object-field="rotations" value="${escapeHtml(item.rotations)}"></label>`}</div>
-    ${constructionEditorHtml(item.parts, part, "PART CONSTRAINT")}
-    <div class="inline-actions"><button data-delete-part class="button danger" ${part ? "" : "disabled"}>Delete part</button><button data-delete-object class="button danger">Delete item</button></div>`;
-}
-
-function constructionEditorHtml(parts: PrimitiveEditor[], part: PrimitiveEditor | undefined, snapTitle: string): string {
-  return `<div class="inline-part-heading"><label>Editing part<select id="item-part-select" ${part ? "" : "disabled"}>${parts.map((entry, index) => `<option value="${index}" ${index === selectedPartIndex ? "selected" : ""}>${escapeHtml(entry.id)} · ${entry.kind}</option>`).join("")}</select></label><span>${part ? `${selectedPartIndex + 1}/${parts.length}` : "0/0"}</span></div>
-    ${part ? primitiveEditorHtml(part) + snapEditorHtml(parts, part, snapTitle) : '<div class="inspector-empty compact"><strong>Empty construction</strong></div>'}
-    <div class="part-add-row">${(["rectangle", "triangle", "circle", "polygon", "bezier"] as const).map((kind) => `<button data-add-part="${kind}">+ ${kind}</button>`).join("")}</div>`;
-}
-
-function emptyConstructionHtml(title: string, message: string): string {
-  return `<div class="inspector-empty"><small>INSPECTOR</small><strong>${escapeHtml(title)}</strong>${message ? `<p>${escapeHtml(message)}</p>` : ""}</div>`;
-}
-
-function primitiveEditorHtml(part: PrimitiveEditor): string {
-  const dimensions = part.kind === "rectangle" ? primitiveNumber("Width", "width", part.width) + primitiveNumber("Height", "height", part.height)
-    : part.kind === "triangle" ? primitiveNumber("Base", "base", part.base) + primitiveNumber("Height", "height", part.height)
-      : part.kind === "circle" ? primitiveNumber("Radius", "radius", part.radius) + primitiveNumber("Segments", "segments", part.segments, 1)
-        : part.kind === "polygon" ? `<label class="wide">Vertices<textarea rows="4" data-primitive-points>${part.vertices.map((point) => `${format(point.x)}, ${format(point.y)}`).join("\n")}</textarea></label>`
-          : `${primitiveNumber("Curve segments", "segments", part.segments, 1)}<label class="wide">Bézier knots<textarea rows="5" data-bezier-knots>${escapeHtml(JSON.stringify(part.knots, null, 2))}</textarea></label><div class="inline-actions wide"><button type="button" data-mirror-bezier="x" class="button ghost">Mirror left ↔ right</button><button type="button" data-mirror-bezier="y" class="button ghost">Mirror top ↔ bottom</button></div>`;
-  return `<div class="primitive-editor"><div class="primitive-editor-title"><small>PART GEOMETRY</small><span>${escapeHtml(part.id)}${part.snap ? " · snapped" : ""}</span></div><div class="field-grid two"><label class="wide">Shape type<select data-primitive-kind>${(["rectangle", "triangle", "circle", "polygon", "bezier"] as const).map((kind) => `<option value="${kind}" ${part.kind === kind ? "selected" : ""}>${humanStatus(kind)}</option>`).join("")}</select></label>${dimensions}${primitiveNumber("X", "x", part.x)}${primitiveNumber("Y", "y", part.y)}${primitiveNumber("Rotation°", "rotation", part.rotation, 1)}<label>Colour<input type="color" data-primitive-color value="${partColor(part)}"></label><label class="wide">Construction<select data-part-owner>${partOwnerOptions()}</select></label></div></div>`;
-}
-
-function snapEditorHtml(parts: PrimitiveEditor[], part: PrimitiveEditor, title: string): string {
-  const targets = parts.filter((entry) => entry.id !== part.id && !dependsOn(parts, entry.id, part.id));
-  return `<div class="inline-snap"><div class="primitive-editor-title"><small>${title}</small><span>${part.snap ? "Anchored" : "Free"}</span></div>
-    <label>Snap to<select data-snap-target><option value="">Free position</option>${targets.map((target) => `<option value="${escapeHtml(target.id)}" ${part.snap?.targetId === target.id ? "selected" : ""}>${escapeHtml(target.id)}</option>`).join("")}</select></label>
-    ${part.snap ? `<div class="field-grid two"><label>Own anchor<select data-snap-anchor="ownAnchor">${anchorOptions(part.snap.ownAnchor)}</select></label><label>Target anchor<select data-snap-anchor="targetAnchor">${anchorOptions(part.snap.targetAnchor)}</select></label>${snapNumber("Offset X", "x", part.snap.offset.x)}${snapNumber("Offset Y", "y", part.snap.offset.y)}</div><button id="detach-inline-snap" class="button ghost full">Detach at current position</button>` : ""}
-  </div>`;
+  const rendered = renderInspector({
+    state,
+    selection,
+    selections,
+    selectedPartIndex,
+    placements: currentResult?.placements,
+    isLocked,
+    selectionLabel,
+    partOwnerOptions: partOwnerOptions(),
+  });
+  selectedPartIndex = rendered.selectedPartIndex;
+  return rendered.html;
 }
 
 function bindInlineInspector(sidebar: HTMLElement): void {
@@ -1145,7 +889,7 @@ function joinSelectedMaterial(): void {
   mutate(() => {
     const selected = state.containerParts[selectedIndex]; if (!selected || selected.operation !== "add") return;
     const primitives = state.containerParts.map((entry) => entry.primitive);
-    const target = state.containerParts.find((entry, index) => index !== selectedIndex && entry.operation === "add" && !dependsOn(primitives, entry.primitive.id, selected.primitive.id));
+    const target = state.containerParts.find((entry, index) => index !== selectedIndex && entry.operation === "add" && !primitiveDependsOn(primitives, entry.primitive.id, selected.primitive.id));
     if (!target) return;
     selected.primitive.snap = { targetId: target.primitive.id, ownAnchor: "center", targetAnchor: "right", offset: { x: 0, y: 0 } };
   });
@@ -1221,7 +965,7 @@ function deleteSelectedPart(): void {
 function updateToolbarState(): void {
   const selectedRegion = selection?.kind === "container" && !isLocked(selection) ? state.containerParts[selection.index] : null;
   const primitives = state.containerParts.map((entry) => entry.primitive);
-  const canJoin = selectedRegion?.operation === "add" && state.containerParts.some((entry) => entry !== selectedRegion && entry.operation === "add" && !dependsOn(primitives, entry.primitive.id, selectedRegion.primitive.id));
+  const canJoin = selectedRegion?.operation === "add" && state.containerParts.some((entry) => entry !== selectedRegion && entry.operation === "add" && !primitiveDependsOn(primitives, entry.primitive.id, selectedRegion.primitive.id));
   element<HTMLButtonElement>("join-material").disabled = !canJoin;
   element<HTMLButtonElement>("delete-selection").disabled = selections.length === 0 || selections.some(isLocked) || (selections.length === 1 && (selection?.kind === "placement" || selection?.kind === "auto-dimension"));
   const lock = element<HTMLButtonElement>("lock-selection"), unlock = selections.length === 1 && !!selection && isLocked(selection);
@@ -1229,7 +973,7 @@ function updateToolbarState(): void {
   lock.title = unlock ? "Unlock this entity for CAD interaction" : "Lock selected entities against CAD interaction";
   lock.classList.toggle("active", unlock);
   const color = element<HTMLInputElement>("toolbar-part-color"), parts = selectedPrimitivesForColor(), texts = selectedTextsForColor();
-  color.disabled = parts.length === 0 && texts.length === 0; color.value = texts[0]?.color ?? partColor(parts[0]);
+  color.disabled = parts.length === 0 && texts.length === 0; color.value = texts[0]?.color ?? editorColor(parts[0]);
   const trace = element<HTMLButtonElement>("add-trace-image"); trace.classList.toggle("has-content", state.drafting.traceImages.length > 0);
   trace.title = state.drafting.traceImages.length ? "Add another tracing image" : "Add a transparent tracing image";
 }
@@ -1404,10 +1148,7 @@ function openProjects(): void {
 
 function renderProjectDialog(): void {
   const host = element("project-dialog-body");
-  host.innerHTML = `<div class="project-dialog-grid"><label>Active project<select id="project-select" aria-label="Local project">${projects.projects.map((project) => `<option value="${project.id}" ${project.id === projects.activeProjectId ? "selected" : ""}>${escapeHtml(project.name)}</option>`).join("")}</select></label><label>Project name<input id="project-name" aria-label="Project name" value="${escapeHtml(projects.active.name)}"></label></div>
-    <p class="dialog-note">Projects are autosaved to two browser stores for restart recovery. Use Problem JSON below for a portable geometry backup.</p>
-    <div class="dialog-actions"><button id="new-project" type="button" class="button ghost">New project</button><button id="empty-project" type="button" class="button ghost">New empty</button><button id="duplicate-project" type="button" class="button ghost">Duplicate</button><button id="delete-project" type="button" class="button danger">Delete</button><span></span><button id="save-project" type="button" class="button primary">Save changes</button></div>
-    <details class="json-panel"><summary>Problem JSON <span>Import / export</span></summary><div class="details-body"><textarea id="problem-json" rows="11">${escapeHtml(JSON.stringify(toProblem(state), null, 2))}</textarea><div class="inline-actions"><button id="load-json" type="button" class="button ghost">Load JSON</button><button id="copy-problem" type="button" class="button ghost">Copy JSON</button></div></div></details>`;
+  host.innerHTML = projectDialogHtml(projects.projects, projects.activeProjectId, toProblem(state));
   host.querySelector<HTMLSelectElement>("#project-select")!.addEventListener("change", (event) => { projects.save(state); loadProject((event.target as HTMLSelectElement).value); renderProjectDialog(); });
   host.querySelector("#save-project")!.addEventListener("click", () => {
     try { projects.rename(host.querySelector<HTMLInputElement>("#project-name")!.value); projects.save(state); renderPackingSidebar(); setStatus("success", "Project saved on this device"); renderProjectDialog(); }
@@ -1440,21 +1181,8 @@ function loadProject(id: string): void {
 function renderSensitivitySidebar(): void {
   const sidebar = element("sensitivity-sidebar");
   const optionsHtml = parameterOptions();
-  const selectedParameter = parameterCatalog().find((entry) => entry.key === state.study.parameterKey);
-  sidebar.innerHTML = `<div class="side-heading"><div><small>SENSITIVITY</small><h2>Study configuration</h2></div><span>${state.study.strategy}</span></div>
-    <section class="sidebar-section parameter-picker"><small>1 · CHOOSE WHAT CHANGES</small>
-      <label class="wide parameter-search">Find a variable<input id="study-parameter-search" type="search" placeholder="Try width, clearance, radius…" autocomplete="off"></label>
-      <div id="study-parameter-matches" class="parameter-matches"></div>
-      <label class="wide">Selected variable<select id="study-parameter">${optionsHtml}</select></label>
-      <div id="study-parameter-summary" class="parameter-summary"><span>${escapeHtml(selectedParameter?.group ?? "Geometry")}</span><strong>${escapeHtml(selectedParameter?.label ?? state.study.parameterKey)}</strong><small>Current value ${format(parameterCurrentValue(state.study.parameterKey))}</small></div>
-      <button id="suggest-study-range" type="button" class="button ghost full">Set a useful range around current value</button>
-    </section>
-    <section class="sidebar-section"><small>2 · SET RANGE & METHOD</small><div class="field-grid two study-range-grid">
-      ${studyNumber("Start", "start", state.study.start, .1)}${studyNumber("End", "end", state.study.end, .1)}
-      ${studyNumber("Initial step", "initial_step", state.study.initial_step, .05)}${studyNumber("Tolerance", "transition_tolerance", state.study.transition_tolerance, .01)}
-      <label>Sampling<select id="study-strategy"><option value="adaptive" ${state.study.strategy === "adaptive" ? "selected" : ""}>Adaptive refinement</option><option value="sampled" ${state.study.strategy === "sampled" ? "selected" : ""}>Sampled sweep</option></select></label>
-      <label>Seed policy<select id="seed-policy"><option value="fixed" ${state.study.seed_policy === "fixed" ? "selected" : ""}>Fixed</option><option value="derive_from_value" ${state.study.seed_policy === "derive_from_value" ? "selected" : ""}>Derive per value</option></select></label>
-    </div><button id="run-study" class="button primary full" title="Run sensitivity study (R)">Run sensitivity study</button></section>`;
+  const selectedParameter = parameterCatalog(state).find((entry) => entry.key === state.study.parameterKey);
+  sidebar.innerHTML = sensitivitySidebarHtml(state, optionsHtml, selectedParameter, parameterCurrentValue(state, state.study.parameterKey));
   sidebar.querySelector<HTMLSelectElement>("#study-parameter")!.addEventListener("change", (event) => studyChange(() => { state.study.parameterKey = (event.target as HTMLSelectElement).value; }));
   sidebar.querySelector<HTMLInputElement>("#study-parameter-search")!.addEventListener("input", renderParameterMatches);
   sidebar.querySelector("#suggest-study-range")!.addEventListener("click", suggestStudyRange);
@@ -1469,14 +1197,14 @@ function renderParameterMatches(event: Event): void {
   const query = (event.target as HTMLInputElement).value.trim().toLowerCase();
   const host = element("study-parameter-matches");
   if (!query) { host.innerHTML = ""; return; }
-  const matches = parameterCatalog().filter((entry) => `${entry.group} ${entry.label}`.toLowerCase().includes(query)).slice(0, 8);
-  host.innerHTML = matches.map((entry) => `<button type="button" data-parameter-key="${escapeHtml(entry.key)}"><span>${escapeHtml(entry.group)}</span><strong>${escapeHtml(entry.label)}</strong><small>${format(parameterCurrentValue(entry.key))}</small></button>`).join("") || '<p class="empty-state">No variables match that search.</p>';
+  const matches = parameterCatalog(state).filter((entry) => `${entry.group} ${entry.label}`.toLowerCase().includes(query)).slice(0, 8);
+  host.innerHTML = parameterMatchesHtml(matches.map((entry) => ({ ...entry, currentValue: parameterCurrentValue(state, entry.key) })));
   host.querySelectorAll<HTMLButtonElement>("[data-parameter-key]").forEach((button) => button.addEventListener("click", () => studyChange(() => { state.study.parameterKey = button.dataset.parameterKey!; })));
 }
 
 function suggestStudyRange(): void {
   studyChange(() => {
-    const current = parameterCurrentValue(state.study.parameterKey);
+    const current = parameterCurrentValue(state, state.study.parameterKey);
     const quantity = state.study.parameterKey.startsWith("item_quantity:");
     const delta = quantity ? Math.max(2, Math.round(current * .25)) : Math.max(Math.abs(current) * .25, .25);
     state.study.start = quantity ? Math.max(0, Math.round(current - delta)) : Number((current - delta).toPrecision(6));
@@ -1491,54 +1219,13 @@ function renderStudyGeometryPreview(): void {
   const host = element("study-shape-preview");
   const values = studyValues(state.study.start, state.study.end, state.study.initial_step);
   const itemIndex = itemIndexForParameter(state.study.parameterKey);
-  host.innerHTML = values.map((value, index) => `<article class="shape-step ${index === 0 || index === values.length - 1 ? "extreme" : ""}"><header><strong>${format(value)}</strong><span>${index === 0 ? "START" : index === values.length - 1 ? "END" : `STEP ${index}`}</span></header><canvas data-study-preview="${index}"></canvas></article>`).join("");
+  host.innerHTML = studyStepsHtml(values);
   host.querySelectorAll<HTMLCanvasElement>("[data-study-preview]").forEach((canvas, index) => {
-    const previewState = stateAtParameter(values[index]);
+    const previewState = stateAtParameter(state, values[index]);
     const previewProblem = toProblem(previewState);
     if (itemIndex >= 0) renderPolygonsPreview(canvas, resolveGeometry(previewProblem).items[itemIndex]?.polygons ?? [], { dimensions: studyDisplay.dimensions, clearance: studyDisplay.clearance ? previewProblem.clearance.item_to_item / 2 : 0 });
     else renderLayout(canvas, previewProblem, [], studyDisplay);
   });
-}
-
-function stateAtParameter(value: number): EditorState {
-  const clone = structuredClone(state); const [kind, id] = clone.study.parameterKey.split(":");
-  const itemIndex = clone.items.findIndex((item) => item.id === id);
-  if (itemIndex >= 0 && (kind.startsWith("part_") || kind === "item_scale")) clone.items[itemIndex] = cloneItemAtParameter(clone.items[itemIndex], clone.study.parameterKey, value);
-  else if (kind === "item_quantity" && itemIndex >= 0) clone.items[itemIndex].quantity = Math.max(0, Math.round(value));
-  else if (kind.startsWith("container_part_")) {
-    const part = clone.containerParts.find((entry) => entry.id === id)?.primitive;
-    if (part) applyPrimitiveParameter(part, kind.replace("container_part_", ""), value);
-  } else if (kind === "container_width" || kind === "container_height") {
-    const part = clone.containerParts.find((entry) => entry.operation === "add")?.primitive;
-    if (part) applyPrimitiveParameter(part, kind === "container_width" ? "width" : "height", value);
-  } else if (kind === "exclusion_scale") {
-    clone.exclusions.find((entry) => entry.id === id)?.parts.forEach((part) => scalePrimitivePreview(part, value));
-  } else if (kind === "clearance_item_to_item") clone.clearance.item_to_item = value;
-  else if (kind === "clearance_item_to_boundary") clone.clearance.item_to_boundary = value;
-  return clone;
-}
-
-function applyPrimitiveParameter(part: PrimitiveEditor, kind: string, value: number): void {
-  if (kind === "scale") { scalePrimitivePreview(part, value); return; }
-  if (kind === "width") {
-    if (part.kind === "rectangle") part.width = value; else if (part.kind === "triangle") part.base = value; else scaleAxis(part, "x", value);
-  } else if (kind === "height") {
-    if (part.kind === "rectangle" || part.kind === "triangle") part.height = value; else scaleAxis(part, "y", value);
-  }
-}
-
-function scalePrimitivePreview(part: PrimitiveEditor, scale: number): void {
-  if (part.kind === "rectangle") { part.width *= scale; part.height *= scale; }
-  else if (part.kind === "triangle") { part.base *= scale; part.height *= scale; }
-  else if (part.kind === "circle") part.radius *= scale;
-  else if (part.kind === "polygon") part.vertices.forEach((point) => { point.x *= scale; point.y *= scale; });
-  else part.knots.forEach((knot) => [knot.point, knot.control_in, knot.control_out].forEach((point) => { point.x *= scale; point.y *= scale; }));
-}
-
-function scaleAxis(part: PrimitiveEditor, axis: "x" | "y", target: number): void {
-  const points = part.kind === "polygon" ? part.vertices : part.kind === "bezier" ? part.knots.flatMap((knot) => [knot.point, knot.control_in, knot.control_out]) : [];
-  if (!points.length) return; const values = points.map((point) => point[axis]); const min = Math.min(...values), span = Math.max(...values) - min;
-  if (span > 0) points.forEach((point) => { point[axis] = min + (point[axis] - min) * target / span; });
 }
 
 async function solve(): Promise<void> {
@@ -1546,7 +1233,7 @@ async function solve(): Promise<void> {
   try {
     const problem = toProblem(state); setRunning(true, "Preparing geometry…"); currentResult = null; manualLayout = false; resultStale = false;
     currentResult = await client.solve(problem, state.options, (progress) => updateProgress(problem, progress));
-    setStatus("success", `${currentResult.packed_item_count} items · ${state.options.baseline_only ? "Baseline validated" : humanStatus(currentResult.status)}`); showPackingResult(problem, currentResult);
+    setStatus("success", `${currentResult.packed_item_count} items · ${state.options.baseline_only ? "Baseline validated" : humanize(currentResult.status)}`); showPackingResult(problem, currentResult);
   } catch (error) { handleRunError(error); } finally { setRunning(false); }
 }
 
@@ -1568,9 +1255,9 @@ async function runStudy(): Promise<void> {
 
 function updateProgress(problem: PackingProblem, progress: SolveProgress): void {
   element<HTMLProgressElement>("solve-progress").value = Math.round(progress.completed_fraction * 100);
-  element("solve-stage").textContent = humanStatus(progress.phase);
+  element("solve-stage").textContent = humanize(progress.phase);
   element("solve-detail").textContent = `${progress.packed_item_count} placed · ${Math.round(progress.completed_fraction * 100)}%`;
-  setStatus("working", `${humanStatus(progress.phase)} · ${progress.packed_item_count} placed · ${Math.round(progress.completed_fraction * 100)}%`);
+  setStatus("working", `${humanize(progress.phase)} · ${progress.packed_item_count} placed · ${Math.round(progress.completed_fraction * 100)}%`);
   cad.setModel(state, problem, progress.placements);
   element("workspace-summary").textContent = `Improving · ${progress.packed_item_count} items`;
 }
@@ -1597,18 +1284,15 @@ function placementChanged(index: number, placement: Placement): void {
 }
 
 function updateDiagnostics(): void {
-  const result = currentResult;
-  if (!result) { element("diagnostics").innerHTML = "<p>Run a solve to inspect validation and search statistics.</p>"; return; }
-  const phases = result.runtime_timing ? Object.entries(result.runtime_timing.phase_ms).map(([phase, elapsed]) => `<dt>${humanStatus(phase)}</dt><dd>${formatDuration(elapsed ?? 0)}</dd>`).join("") : "";
-  element("diagnostics").innerHTML = `${manualLayout || resultStale ? `<div class="warning">${resultStale ? "The problem definition changed after solving. The layout remains visible as a reference, but its validation is stale." : "This result was manually edited after solving. Geometry and collision validation shown below applies to the original solver output."}</div>` : ""}<div class="diagnostic-metrics">${metricsHtml(result)}</div><dl><dt>Status</dt><dd>${humanStatus(result.status)}</dd><dt>Strategy</dt><dd>${escapeHtml(result.solver_strategy)}</dd><dt>Layout</dt><dd>${result.layout_id}</dd><dt>Seed</dt><dd>${result.seed}</dd><dt>Workers</dt><dd>${result.runtime_timing?.worker_count ?? 1}</dd><dt>Iterations</dt><dd>${result.statistics.iterations.toLocaleString()}</dd><dt>Counts</dt><dd>${Object.entries(result.packed_count_by_item).map(([key, value]) => `${escapeHtml(key)}: ${value}`).join(" · ")}</dd>${phases}</dl>${result.warnings.length ? `<div class="warning">${result.warnings.map(escapeHtml).join("<br>")}</div>` : '<div class="validation-ok">✓ Independent final validation passed</div>'}`;
+  element("diagnostics").innerHTML = diagnosticsHtml(currentResult, manualLayout, resultStale);
 }
 
 function renderSensitivityResults(): void { renderSensitivity(element("sensitivity-canvas"), sensitivityResult, sensitivitySelection); renderTransitions(); }
 
 function renderTransitions(): void {
   const host = element("transitions");
-  if (!sensitivityResult) { host.innerHTML = '<p class="empty-state">Run the study to locate capacity transitions.</p>'; return; }
-  host.innerHTML = sensitivityResult.transitions.map((transition) => `<article class="transition"><header><strong>${transition.lower_capacity} → ${transition.upper_capacity}</strong><span>${format(transition.lower_value)}–${format(transition.upper_value)}</span></header><div><button data-value="${transition.lower_value}"><b>Before</b><span>${transition.lower_capacity} @ ${format(transition.lower_value)}</span></button><button data-value="${transition.upper_value}"><b>After</b><span>${transition.upper_capacity} @ ${format(transition.upper_value)}</span></button></div></article>`).join("") || '<p class="empty-state">No capacity transition was observed.</p>';
+  host.innerHTML = transitionsHtml(sensitivityResult);
+  if (!sensitivityResult) return;
   host.querySelectorAll<HTMLButtonElement>("button").forEach((button) => button.addEventListener("click", () => selectSensitivityEvaluation(Number(button.dataset.value), button.querySelector("b")!.textContent!.toLowerCase())));
 }
 
@@ -1668,46 +1352,13 @@ function refreshPacking(refit = false): void {
 }
 function refreshSensitivityPage(): void { renderStudyGeometryPreview(); renderSensitivityResults(); if (sensitivityResult && sensitivitySelection !== null) selectSensitivityEvaluation(sensitivitySelection, "selected"); }
 
-interface ParameterChoice { key: string; label: string; group: string }
-function parameterCatalog(): ParameterChoice[] {
-  const options: ParameterChoice[] = [];
-  const add = (key: string, label: string, group: string) => options.push({ key, label, group });
-  state.items.forEach((item) => {
-    add(`item_scale:${item.id}`, `${item.id} · whole shape scale`, "Packable shapes"); add(`item_quantity:${item.id}`, `${item.id} · quantity`, "Packable shapes");
-    item.parts.forEach((part, index) => {
-      add(`part_scale:${item.id}:${index}`, `${item.id} · ${part.id} scale`, "Packable shapes");
-      if (part.kind === "rectangle" || part.kind === "triangle" || part.kind === "polygon" || part.kind === "bezier") { add(`part_width:${item.id}:${index}`, `${item.id} · ${part.id} width/base`, "Packable shapes"); add(`part_height:${item.id}:${index}`, `${item.id} · ${part.id} height`, "Packable shapes"); }
-      if (part.kind === "circle") add(`part_radius:${item.id}:${index}`, `${item.id} · ${part.id} radius`, "Packable shapes");
-    });
-  });
-  state.containerParts.forEach((part) => { add(`container_part_scale:${part.id}`, `${part.id} · scale`, "Container"); add(`container_part_width:${part.id}`, `${part.id} · width`, "Container"); add(`container_part_height:${part.id}`, `${part.id} · height`, "Container"); });
-  add("clearance_item_to_item", "Item-to-item clearance", "Constraints"); add("clearance_item_to_boundary", "Boundary clearance", "Constraints"); add("container_width", "Container width", "Container"); add("container_height", "Container height", "Container");
-  state.exclusions.forEach((entry) => add(`exclusion_scale:${entry.id}`, `${entry.id} · scale`, "Keep-out regions"));
-  return options;
-}
 function parameterOptions(): string {
-  const options = parameterCatalog();
+  const options = parameterCatalog(state);
   if (!options.some((entry) => entry.key === state.study.parameterKey)) state.study.parameterKey = options[0]?.key ?? "container_width";
   return [...new Set(options.map((entry) => entry.group))].map((group) => `<optgroup label="${escapeHtml(group)}">${options.filter((entry) => entry.group === group).map((entry) => `<option value="${escapeHtml(entry.key)}" ${entry.key === state.study.parameterKey ? "selected" : ""}>${escapeHtml(entry.label)}</option>`).join("")}</optgroup>`).join("");
 }
 
 function buildStudy(): SensitivityStudy { return { parameter: decodeParameter(state.study.parameterKey), start: state.study.start, end: state.study.end, initial_step: state.study.initial_step, transition_tolerance: state.study.transition_tolerance, strategy: state.study.strategy, solve_options: state.options, seed_policy: state.study.seed_policy, increasing_is_harder: state.study.increasing_is_harder }; }
-function decodeParameter(key: string): ParameterPath {
-  const [kind, id, index] = key.split(":");
-  if (kind === "part_width") return { kind: "item_part_width", item_id: id, part_index: Number(index) };
-  if (kind === "part_height") return { kind: "item_part_height", item_id: id, part_index: Number(index) };
-  if (kind === "part_radius") return { kind: "item_part_radius", item_id: id, part_index: Number(index) };
-  if (kind === "part_scale") return { kind: "item_part_scale", item_id: id, part_index: Number(index) };
-  if (kind === "item_scale") return { kind: "item_scale", item_id: id };
-  if (kind === "item_quantity") return { kind: "item_quantity", item_id: id };
-  if (kind === "container_part_width") return { kind: "container_part_width", part_id: id };
-  if (kind === "container_part_height") return { kind: "container_part_height", part_id: id };
-  if (kind === "container_part_scale") return { kind: "container_part_scale", part_id: id };
-  if (kind === "exclusion_scale") return { kind: "exclusion_scale", exclusion_id: id };
-  if (kind === "clearance_item_to_item" || kind === "clearance_item_to_boundary" || kind === "container_width") return { kind };
-  return { kind: "container_height" };
-}
-
 function resetStudyProgress(): void { const host = element("study-progress"), progress = host.querySelector("progress")!; host.hidden = false; progress.value = 0; host.querySelector("span")!.textContent = "Preparing…"; }
 function updateStudyProgress(value: SensitivityProgress): void {
   const host = element("study-progress"), progress = host.querySelector("progress")!; host.hidden = false;
@@ -1747,22 +1398,9 @@ function editSelectedLayout(): void {
 function openExport(): void {
   const evaluation = selectedEvaluation();
   const result = page === "sensitivity" ? evaluation?.result ?? null : currentResult;
-  element("export-options").innerHTML = `<p class="export-intro">Choose a ready-to-use format. Vector exports preserve geometry; CSV is convenient for fabrication and downstream tools.</p><div class="export-grid">
-    ${exportCard("Problem JSON", "Complete editable geometry and constraints", "problem-json")}
-    ${exportCard("Shape library SVG", "All packable definitions as clean vectors", "shapes-svg")}
-    ${exportCard("Layout SVG", "Solved placements, container, and exclusions", "layout-svg", !result)}
-    ${exportCard("Layout PNG", "High-resolution image with active overlays", "layout-png", !result)}
-    ${exportCard("Scene PNG", "Everything in the fitted workspace scene", "scene-png")}
-    ${exportCard("Placements CSV", "Item, position, rotation, and fixed state", "placements-csv", !result)}
-    ${exportCard("Solve JSON", "Full result, metrics, and validation", "solve-json", !result)}
-    ${exportCard("Sensitivity JSON", "Evaluations, transitions, and representative layouts", "study-json", !sensitivityResult)}
-  </div>`;
+  element("export-options").innerHTML = exportOptionsHtml({ layout: !!result, sensitivity: !!sensitivityResult });
   element("export-options").querySelectorAll<HTMLButtonElement>("[data-export]").forEach((button) => button.addEventListener("click", () => void runExport(button.dataset.export!)));
   element<HTMLDialogElement>("export-dialog").showModal();
-}
-
-function exportCard(title: string, description: string, kind: string, disabled = false): string {
-  return `<article><div><strong>${title}</strong><p>${description}</p></div><button type="button" class="button ghost" data-export="${kind}" ${disabled ? "disabled" : ""}>Download</button></article>`;
 }
 
 async function runExport(kind: string): Promise<void> {
@@ -1776,42 +1414,10 @@ async function runExport(kind: string): Promise<void> {
   else if (kind === "placements-csv" && result) downloadText(`${base}-placements.csv`, placementsCsv(result.placements), "text/csv");
   else if (kind === "solve-json" && result) downloadText(`${base}-solve.json`, JSON.stringify(result, null, 2), "application/json");
   else if (kind === "study-json" && sensitivityResult) downloadText(`${base}-sensitivity.json`, JSON.stringify(sensitivityResult, null, 2), "application/json");
-  else if (kind === "layout-png" && result) await downloadLayoutPng(`${base}-layout.png`, problem, result.placements);
+  else if (kind === "layout-png" && result) await downloadLayoutPng(`${base}-layout.png`, problem, result.placements, { ...(page === "sensitivity" ? studyDisplay : display), viewSettings: state.viewSettings, customDimensions: page === "packing" ? state.dimensions : [] });
   else if (kind === "scene-png") { const blob = await cad.exportScenePng(); if (blob) downloadBlob(`${base}-scene.png`, blob); else throw new Error("Scene PNG could not be rendered"); }
   else return;
   setStatus("success", `${kind.replaceAll("-", " ")} exported`);
-}
-
-function downloadText(filename: string, content: string, type: string): void { downloadBlob(filename, new Blob([content], { type })); }
-function downloadBlob(filename: string, blob: Blob): void {
-  const url = URL.createObjectURL(blob), anchor = document.createElement("a"); anchor.href = url; anchor.download = filename; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 0);
-}
-async function downloadLayoutPng(filename: string, problem: PackingProblem, placements: Placement[]): Promise<void> {
-  const canvas = document.createElement("canvas"); canvas.style.width = "1600px"; canvas.style.height = "1000px"; canvas.style.position = "fixed"; canvas.style.left = "-10000px"; document.body.append(canvas);
-  renderLayout(canvas, problem, placements, { ...(page === "sensitivity" ? studyDisplay : display), viewSettings: state.viewSettings, customDimensions: page === "packing" ? state.dimensions : [] });
-  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png")); canvas.remove(); if (blob) downloadBlob(filename, blob);
-}
-function placementsCsv(placements: Placement[]): string {
-  return ["item_id,x,y,rotation_deg,fixed", ...placements.map((entry) => [csvCell(entry.item_id), entry.x, entry.y, entry.rotation_deg, entry.fixed].join(","))].join("\n");
-}
-function csvCell(value: string): string { return `"${value.replaceAll('"', '""')}"`; }
-function safeFilename(value: string): string { return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "openlayout"; }
-
-function layoutToSvg(problem: PackingProblem, placements: Placement[]): string {
-  const geometry = resolveGeometry(problem); const itemMap = new Map(geometry.items.map((entry) => [entry.id, entry.polygons]));
-  const placed = placements.flatMap((placement) => (itemMap.get(placement.item_id) ?? []).map((polygon) => polygon.map((point) => transformPoint(point, placement.rotation_deg, placement.x, placement.y))));
-  const all = [...geometry.container, ...geometry.exclusions.flatMap((entry) => entry.polygons), ...placed].flat();
-  if (!all.length) return '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>';
-  const xs = all.map((point) => point.x), ys = all.map((point) => point.y), minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys), padding = Math.max(maxX - minX, maxY - minY) * .035 + .25;
-  const view = `${format(minX - padding)} ${format(-maxY - padding)} ${format(maxX - minX + padding * 2)} ${format(maxY - minY + padding * 2)}`;
-  const paths = (polygons: typeof geometry.container, className: string) => polygons.map((polygon) => `<polygon class="${className}" points="${polygon.map((point) => `${format(point.x)},${format(-point.y)}`).join(" ")}"/>`).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${view}"><style>.container{fill:#202b36;stroke:#82909f}.exclusion{fill:#ee716f55;stroke:#ee716f}.item{fill:#51c6a4aa;stroke:#168b70}polygon{stroke-width:.08;vector-effect:non-scaling-stroke}</style>${paths(geometry.container, "container")}${geometry.exclusions.map((entry) => paths(entry.polygons, "exclusion")).join("")}${paths(placed, "item")}</svg>`;
-}
-
-function shapesToSvg(problem: PackingProblem): string {
-  const items = resolveGeometry(problem).items; let cursor = 0; const groups: string[] = []; let maxHeight = 1;
-  items.forEach((item) => { const points = item.polygons.flat(); if (!points.length) return; const xs = points.map((point) => point.x), ys = points.map((point) => point.y), minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys); const width = maxX - minX, height = maxY - minY; maxHeight = Math.max(maxHeight, height); groups.push(`<g transform="translate(${format(cursor - minX)} ${format(maxY)})"><title>${escapeHtml(item.id)}</title>${item.polygons.map((polygon) => `<polygon points="${polygon.map((point) => `${format(point.x)},${format(-point.y)}`).join(" ")}"/>`).join("")}</g>`); cursor += width + Math.max(width * .2, 1); });
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="-0.5 -0.5 ${format(Math.max(cursor, 1))} ${format(maxHeight + 1)}"><style>polygon{fill:#51c6a488;stroke:#168b70;stroke-width:.06;vector-effect:non-scaling-stroke}</style>${groups.join("")}</svg>`;
 }
 
 function applyTheme(theme: "light" | "dark"): void {
@@ -1823,7 +1429,6 @@ function bindOverlay(prefix: string, target: { dimensions: boolean; clearance: b
   element<HTMLInputElement>(`${prefix}-dimensions`).addEventListener("change", (event) => { target.dimensions = (event.target as HTMLInputElement).checked; refreshCurrentPage(); });
   element<HTMLInputElement>(`${prefix}-clearance`).addEventListener("change", (event) => { target.clearance = (event.target as HTMLInputElement).checked; refreshCurrentPage(); });
 }
-function overlayToggles(prefix: string): string { const target = prefix === "study" ? studyDisplay : display; return `<div class="layout-tools"><label><input id="${prefix}-dimensions" type="checkbox" ${target.dimensions ? "checked" : ""}> Dimensions</label><label><input id="${prefix}-clearance" type="checkbox" ${target.clearance ? "checked" : ""}> Clearance</label></div>`; }
 function updateHistoryButtons(): void { element<HTMLButtonElement>("undo").disabled = !history.canUndo; element<HTMLButtonElement>("redo").disabled = !history.canRedo; }
 function normalizeSelection(value: CadSelection | null): CadSelection | null {
   if (value?.kind === "auto-dimension") return value;
@@ -1837,27 +1442,7 @@ function isEditingText(target: EventTarget | null): boolean {
   return !!element?.closest("input, textarea, select, [contenteditable='true']");
 }
 function parseSelection(value: string): CadSelection { const [kind, index] = value.split(":"); return { kind: kind as CadSelection["kind"], index: Number(index) } as CadSelection; }
-function sameSelection(a: CadSelection, b: CadSelection): boolean { return a.kind === b.kind && a.index === b.index && ("partIndex" in a ? a.partIndex : undefined) === ("partIndex" in b ? b.partIndex : undefined) && ("owner" in a ? a.owner : undefined) === ("owner" in b ? b.owner : undefined) && ("axis" in a ? a.axis : undefined) === ("axis" in b ? b.axis : undefined); }
-function isPartSelection(value: CadSelection): value is Extract<CadSelection, { kind: "item" | "exclusion" }> { return (value.kind === "item" || value.kind === "exclusion") && value.partIndex !== undefined; }
 function itemIndexForParameter(key: string): number { const [kind, id] = key.split(":"); return kind.startsWith("part_") || kind.startsWith("item_") ? state.items.findIndex((item) => item.id === id) : -1; }
-function parameterCurrentValue(key: string): number {
-  const [kind, id, rawIndex] = key.split(":");
-  if (kind === "clearance_item_to_item") return state.clearance.item_to_item;
-  if (kind === "clearance_item_to_boundary") return state.clearance.item_to_boundary;
-  if (kind === "item_quantity") return state.items.find((item) => item.id === id)?.quantity ?? 0;
-  if (kind === "item_scale" || kind === "part_scale" || kind === "container_part_scale" || kind === "exclusion_scale") return 1;
-  let part: PrimitiveEditor | undefined;
-  if (kind.startsWith("part_")) part = state.items.find((item) => item.id === id)?.parts[Number(rawIndex)];
-  else if (kind.startsWith("container_part_")) part = state.containerParts.find((entry) => entry.id === id)?.primitive;
-  else if (kind === "container_width" || kind === "container_height") part = state.containerParts.find((entry) => entry.operation === "add")?.primitive;
-  if (!part) return 0;
-  if (kind.endsWith("radius") && part.kind === "circle") return part.radius;
-  const points = shapePoints(primitiveShape(part));
-  const xs = points.map((point) => point.x), ys = points.map((point) => point.y);
-  const width = xs.length ? Math.max(...xs) - Math.min(...xs) : 0, height = ys.length ? Math.max(...ys) - Math.min(...ys) : 0;
-  return kind.endsWith("height") ? height : width;
-}
-
 function editStudySource(): void {
   const [kind, id, rawIndex] = state.study.parameterKey.split(":");
   let next: CadSelection | null = null; let partIndex = Number(rawIndex) || 0;
@@ -1878,12 +1463,6 @@ function syncWorkspaceOverlays(): void {
   });
   cad.setOverlays(display.dimensions, display.clearance);
 }
-function studyValues(start: number, end: number, step: number): number[] { const values = [start]; if (step > 0) for (let value = start + step; value < end && values.length < 6; value += step) values.push(value); if (end !== start) values.push(end); return values; }
-function numberField(label: string, scope: string, field: string, value: number, step: number): string { return `<label title="${escapeHtml(optionHelp(field))}">${label}<input type="number" value="${value}" step="${step}" data-pack-scope="${scope}" data-field="${field}"></label>`; }
-function optionHelp(field: string): string {
-  return ({ item_to_item: "Minimum edge-to-edge gap between packed items.", item_to_boundary: "Minimum distance from each item to the container boundary.", item_to_exclusion: "Minimum distance from items to keep-out regions.", seed: "Reuses the same random sequence for repeatable layouts.", max_iterations: "Search effort per restart; higher values can improve layouts but take longer.", grid_step: "Translation sampling interval; smaller values are more precise and slower.", restarts: "Independent searches; more restarts improve robustness at added runtime." } as Record<string, string>)[field] ?? labelForHelp(field);
-}
-function labelForHelp(field: string): string { return `Controls ${humanStatus(field).toLowerCase()} for this packing problem.`; }
 function applySidebarTooltips(sidebar: HTMLElement): void {
   const help: Record<string, string> = {
     "Rotation search": "Adaptive searches any angle in the range; fixed angles restrict the solver to the listed orientations.",
@@ -1898,24 +1477,7 @@ function applySidebarTooltips(sidebar: HTMLElement): void {
     const key = Object.keys(help).find((candidate) => label.textContent?.trim().startsWith(candidate)); if (key && !label.title) label.title = help[key];
   });
 }
-function placementField(label: string, field: keyof Placement, value: number, step: number): string { return `<label>${label}<input type="number" value="${format(value)}" step="${step}" data-placement-field="${field}"></label>`; }
-function dimensionNumber(label: string, field: string, value: number): string { return `<label>${label}<input type="number" value="${format(value)}" step=".1" data-dimension-field="${field}"></label>`; }
-function autoDimensionNumber(label: string, field: "x" | "y", value: number): string { return `<label>${label}<input type="number" value="${format(value)}" step=".1" data-auto-dimension-field="${field}"></label>`; }
-function textNumber(label: string, field: string, value: number, step = .1): string { return `<label>${label}<input type="number" value="${format(value)}" step="${step}" data-text-field="${field}"></label>`; }
-function primitiveNumber(label: string, field: string, value: number, step = .1): string { return `<label>${label}<input type="number" value="${format(value)}" step="${step}" data-primitive-field="${field}"></label>`; }
-function objectNumber(label: string, field: string, value: number, step = .1): string { return `<label>${label}<input type="number" value="${format(value)}" step="${step}" data-object-field="${field}"></label>`; }
 function draftingEntityNumber(label: string, entity: "guide" | "trace", index: number, field: string, value: number, step = .1): string { return `<label>${label}<input type="number" value="${format(value)}" step="${step}" data-${entity}-field="${field}" data-entity-index="${index}"></label>`; }
-function snapNumber(label: string, field: "x" | "y", value: number): string { return `<label>${label}<input type="number" value="${format(value)}" step=".1" data-snap-offset="${field}"></label>`; }
-function fixedPlacementsHtml(): string {
-  const rows = state.fixedPlacements.map((placement, index) => `<div class="fixed-inline-row" data-fixed-row="${index}">
-    <select aria-label="Fixed placement item">${state.items.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === placement.item_id ? "selected" : ""}>${escapeHtml(item.id)}</option>`).join("")}</select>
-    <input aria-label="Fixed placement X" type="number" step=".1" value="${format(placement.x)}" data-fixed-field="x">
-    <input aria-label="Fixed placement Y" type="number" step=".1" value="${format(placement.y)}" data-fixed-field="y">
-    <input aria-label="Fixed placement rotation" type="number" step="1" value="${format(placement.rotation_deg)}" data-fixed-field="rotation_deg">
-    <button aria-label="Delete fixed placement" data-delete-fixed>×</button>
-  </div>`).join("");
-  return `<div class="fixed-inline-head"><span>Item</span><span>X</span><span>Y</span><span>Rot°</span><span></span></div>${rows || '<p class="empty-inline">No fixed items.</p>'}<button id="add-fixed-inline" class="button ghost full">+ Add fixed placement</button>`;
-}
 function bindFixedPlacements(sidebar: HTMLElement): void {
   sidebar.querySelector("#add-fixed-inline")?.addEventListener("click", () => mutate(() => {
     const item = state.items[0]; if (!item) return;
@@ -1941,53 +1503,6 @@ function uniqueId(prefix: string, ids: string[]): string {
   let suffix = 2; while (ids.includes(`${prefix}-${suffix}`)) suffix += 1;
   return `${prefix}-${suffix}`;
 }
-function toolbarPaletteHtml(id: string, label: string, icon: string, options: ToolbarPaletteOption[], selected?: string): string {
-  const active = options.find((option) => option.value === selected);
-  return `<div class="tool-popover" data-toolbar-palette>
-    <button id="${id}" class="tool-button icon-tool" type="button" aria-label="${escapeHtml(active ? `${label}: ${active.label}` : label)}" aria-haspopup="menu" aria-expanded="false" title="${escapeHtml(active ? `${label}: ${active.label}` : label)}" data-palette-label="${escapeHtml(label)}" data-value="${escapeHtml(selected ?? "")}"><span data-toolbar-trigger-icon aria-hidden="true">${escapeHtml(active?.icon ?? icon)}</span></button>
-    <div id="${id}-menu" class="toolbar-palette" role="menu" aria-label="${escapeHtml(label)}" hidden>
-      ${options.map((option) => `<button type="button" role="${selected === undefined ? "menuitem" : "menuitemradio"}" ${selected === undefined ? "" : `aria-checked="${option.value === selected}"`} data-toolbar-menu-value="${escapeHtml(option.value)}" data-toolbar-menu-icon="${escapeHtml(option.icon)}" class="${option.value === selected ? "selected" : ""}"><span class="shape-menu-icon">${escapeHtml(option.icon)}</span><span><strong>${escapeHtml(option.label)}</strong><small>${escapeHtml(option.detail)}</small></span><span class="palette-check" aria-hidden="true">✓</span></button>`).join("")}
-    </div>
-  </div>`;
-}
-function bindToolbarPalette(id: string, onSelect: (value: string) => void, reflectSelection = false): void {
-  const trigger = element<HTMLButtonElement>(id), menu = element(`${id}-menu`);
-  trigger.addEventListener("click", () => {
-    const opening = menu.hidden;
-    closeToolbarPalettes();
-    menu.hidden = !opening; trigger.setAttribute("aria-expanded", String(opening));
-    if (opening) menu.querySelector<HTMLButtonElement>(".selected, button")?.focus();
-  });
-  menu.querySelectorAll<HTMLButtonElement>("[data-toolbar-menu-value]").forEach((button) => button.addEventListener("click", () => {
-    const value = button.dataset.toolbarMenuValue!;
-    if (reflectSelection) {
-      menu.querySelectorAll<HTMLButtonElement>("[data-toolbar-menu-value]").forEach((entry) => {
-        const active = entry === button; entry.classList.toggle("selected", active); entry.setAttribute("aria-checked", String(active));
-      });
-      trigger.dataset.value = value;
-      trigger.querySelector("[data-toolbar-trigger-icon]")!.textContent = button.dataset.toolbarMenuIcon!;
-      const optionLabel = button.querySelector("strong")!.textContent!;
-      trigger.setAttribute("aria-label", `${trigger.dataset.paletteLabel}: ${optionLabel}`); trigger.title = `${trigger.dataset.paletteLabel}: ${optionLabel}`;
-    }
-    onSelect(value); menu.hidden = true; trigger.setAttribute("aria-expanded", "false"); trigger.focus();
-  }));
-}
-function closeToolbarPalettes(focus = false): boolean {
-  let closed = false;
-  document.querySelectorAll<HTMLElement>("[data-toolbar-palette]").forEach((root) => {
-    const menu = root.querySelector<HTMLElement>("[role=menu]");
-    const trigger = root.querySelector<HTMLButtonElement>("[aria-haspopup=menu]");
-    if (!menu || menu.hidden) return;
-    menu.hidden = true; trigger?.setAttribute("aria-expanded", "false");
-    if (focus && !closed) trigger?.focus();
-    closed = true;
-  });
-  return closed;
-}
-function anchorOptions(selected: AnchorName): string { return ANCHORS.map((anchor) => `<option value="${anchor}" ${anchor === selected ? "selected" : ""}>${humanStatus(anchor)}</option>`).join(""); }
-function partColor(part: PrimitiveEditor | null | undefined): string {
-  return part?.color && /^#[0-9a-f]{6}$/i.test(part.color) ? part.color : "#51c6a4";
-}
 function convertPrimitive(source: PrimitiveEditor, kind: PrimitiveEditor["kind"]): PrimitiveEditor {
   if (source.kind === kind) return source;
   const next = makePrimitive(kind);
@@ -2009,23 +1524,8 @@ function replaceSelectedPrimitive(next: PrimitiveEditor): void {
   else if (selection.kind === "exclusion") state.exclusions[selection.index].parts[selection.partIndex ?? selectedPartIndex] = next;
   else if (selection.kind === "item") state.items[selection.index].parts[selection.partIndex ?? selectedPartIndex] = next;
 }
-function dependsOn(parts: PrimitiveEditor[], startId: string, targetId: string): boolean {
-  const byId = new Map(parts.map((part) => [part.id, part]));
-  const seen = new Set<string>(); let current = byId.get(startId);
-  while (current?.snap && !seen.has(current.id)) {
-    if (current.snap.targetId === targetId) return true;
-    seen.add(current.id); current = byId.get(current.snap.targetId);
-  }
-  return false;
-}
-function studyNumber(label: string, field: string, value: number, step: number): string { return `<label>${label}<input type="number" value="${value}" step="${step}" data-study-field="${field}"></label>`; }
-function metricsHtml(result: SolveResult): string { return metricHtml("Packed", result.packed_item_count) + metricHtml("Upper bound", result.simple_upper_bound ?? "—") + metricHtml("Candidates", result.statistics.candidates_evaluated.toLocaleString()) + metricHtml("Elapsed", formatDuration(result.runtime_timing?.total_ms ?? result.statistics.elapsed_ms)) + metricHtml("Validation", result.validation.valid ? "Passed" : "Failed"); }
-function metricHtml(label: string, value: string | number): string { return `<div><small>${label}</small><strong>${value}</strong></div>`; }
 function setField(target: object, field: string, value: unknown): void { (target as Record<string, unknown>)[field] = value; }
-function humanStatus(value: string): string { return value.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase()); }
-function format(value: number): string { return Number.isInteger(value) ? String(value) : value.toFixed(3).replace(/0+$/, "").replace(/\.$/, ""); }
+function format(value: number): string { return formatNumber(value); }
 function clampNumber(value: number, min: number, max: number): number { return Math.min(max, Math.max(min, Number.isFinite(value) ? value : min)); }
-function formatDuration(value: number): string { return value >= 1000 ? `${(value / 1000).toFixed(2)} s` : `${Math.round(value)} ms`; }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
-function escapeHtml(value: unknown): string { return String(value).replace(/[&<>\"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '\"': "&quot;" })[character]!); }
 function element<T extends HTMLElement = HTMLElement>(id: string): T { return document.getElementById(id) as T; }

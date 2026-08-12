@@ -1,0 +1,23 @@
+.studio-dialog { width: min(680px, calc(100vw - 40px)); max-height: calc(100vh - 40px); padding: 0; border: 1px solid var(--line-strong); border-radius: var(--radius-lg); background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+.studio-dialog::backdrop { background: rgba(2,6,10,.7); backdrop-filter: blur(4px); }
+.studio-dialog form > header { min-height: 66px; display: flex; align-items: center; justify-content: space-between; padding: 13px 16px; border-bottom: 1px solid var(--line); }
+.studio-dialog h2 { margin: 3px 0 0; font-size: 15px; }
+.dialog-close { width: 30px; height: 30px; border: 1px solid var(--line); border-radius: 50%; background: transparent; cursor: pointer; }
+#project-dialog-body { padding: 16px; }
+.project-dialog-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.dialog-actions { display: grid; grid-template-columns: auto auto auto 1fr auto; gap: 7px; margin-top: 14px; }
+.json-panel { margin-top: 16px; border: 1px solid var(--line); border-radius: var(--radius); }
+.diagnostics-dialog form > footer { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); }
+.diagnostics { max-height: min(620px, calc(100vh - 170px)); overflow: auto; padding: 16px; color: var(--muted); font-size: 10px; }
+.diagnostics dl { display: grid; grid-template-columns: 100px 1fr; gap: 7px; margin: 16px 0; }
+.diagnostics dt { color: var(--muted); }
+.diagnostics dd { margin: 0; color: var(--text-soft); font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
+.diagnostic-metrics, .metrics { display: grid; grid-template-columns: repeat(5,1fr); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.diagnostic-metrics > div, .metrics > div { padding: 10px; border-right: 1px solid var(--line); }
+.diagnostic-metrics > div:last-child, .metrics > div:last-child { border: 0; }
+.diagnostic-metrics small, .metrics small { display: block; color: var(--muted); font-size: 8px; }
+.diagnostic-metrics strong, .metrics strong { display: block; margin-top: 4px; font: 600 12px ui-monospace, monospace; }
+.validation-ok, .warning { padding: 9px; border-radius: var(--radius-sm); font-size: 10px; }
+.validation-ok { color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); background: var(--accent-soft); }
+.warning { margin-bottom: 10px; color: var(--amber); border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent); background: color-mix(in srgb, var(--amber) 7%, transparent); }
+

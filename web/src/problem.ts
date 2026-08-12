@@ -330,6 +330,18 @@ export function resolveEditorTranslations(parts: PrimitiveEditor[]): Map<string,
   return resolved;
 }
 
+export function primitiveDependsOn(parts: PrimitiveEditor[], startId: string, targetId: string): boolean {
+  const byId = new Map(parts.map((part) => [part.id, part]));
+  const seen = new Set<string>();
+  let current = byId.get(startId);
+  while (current?.snap && !seen.has(current.id)) {
+    if (current.snap.targetId === targetId) return true;
+    seen.add(current.id);
+    current = byId.get(current.snap.targetId);
+  }
+  return false;
+}
+
 export function primitiveBounds(part: PrimitiveEditor) {
   const points = shapePoints(primitiveShape(part)).map((point) => transformPoint(point, part.rotation, 0, 0));
   const xs = points.map((point) => point.x), ys = points.map((point) => point.y);
@@ -387,7 +399,7 @@ function scaleBezierAxis(knots: BezierKnot[], target: number, axis: "x" | "y"): 
   scalePolygonAxis(knots.flatMap((knot) => [knot.point, knot.control_in, knot.control_out]), target, axis);
 }
 
-function scalePrimitive(part: PrimitiveEditor, scale: number): void {
+export function scalePrimitive(part: PrimitiveEditor, scale: number): void {
   if (part.kind === "rectangle") { part.width *= scale; part.height *= scale; }
   else if (part.kind === "triangle") { part.base *= scale; part.height *= scale; }
   else if (part.kind === "circle") part.radius *= scale;

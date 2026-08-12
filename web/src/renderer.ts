@@ -1,8 +1,9 @@
 import { transformPoint } from "./problem";
 import { resolveGeometry } from "./geometry-resolver";
+import { ITEM_COLORS } from "./design-tokens";
+import { contourArea, offsetPolygon } from "./polygon-utils";
+import { pointBounds } from "./cad-geometry";
 import type { CadDimension, CadViewSettings, PackingProblem, Placement, Point, SensitivityResult } from "./types";
-
-const ITEM_COLORS = ["#4fc3a1", "#f4b860", "#7aa2f7", "#d98adf", "#ef6f6c", "#94c973"];
 export interface LayoutDisplayOptions { dimensions?: boolean; clearance?: boolean; viewSettings?: CadViewSettings; customDimensions?: CadDimension[] }
 
 export function renderLayout(canvas: HTMLCanvasElement, problem: PackingProblem, placements: Placement[] = [], display: LayoutDisplayOptions = {}): void {
@@ -138,12 +139,6 @@ function setup(canvas: HTMLCanvasElement): CanvasRenderingContext2D {
   return canvas.getContext("2d")!;
 }
 
-function pointBounds(points: Point[]) {
-  const xs = points.map((point) => point.x), ys = points.map((point) => point.y);
-  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
-  return { minX, maxX, minY, maxY, width: maxX - minX, height: maxY - minY };
-}
-
 function makeViewport(canvas: HTMLCanvasElement, bounds: ReturnType<typeof pointBounds>, padding: number) {
   const worldWidth = bounds.width + padding * 2, worldHeight = bounds.height + padding * 2;
   const scale = Math.min(canvas.width / worldWidth, canvas.height / worldHeight);
@@ -208,30 +203,6 @@ function drawLinearDimension(context: CanvasRenderingContext2D, dimension: CadDi
   context.save(); context.strokeStyle = theme.text; context.fillStyle = theme.text; context.lineWidth = Math.max(devicePixelRatio, settings.edgeThickness * .75 * devicePixelRatio); context.font = `650 ${settings.dimensionTextSize * devicePixelRatio}px ui-monospace, monospace`; context.textAlign = "center";
   context.beginPath(); context.moveTo(start.x, start.y); context.lineTo(lineStart.x, lineStart.y); context.moveTo(end.x, end.y); context.lineTo(lineEnd.x, lineEnd.y); context.moveTo(lineStart.x, lineStart.y); context.lineTo(lineEnd.x, lineEnd.y); context.stroke();
   context.save(); context.translate(midpoint.x, midpoint.y); const readable = angle > Math.PI / 2 || angle < -Math.PI / 2 ? angle + Math.PI : angle; context.rotate(readable); context.fillText(label, 0, 0); context.restore(); context.restore();
-}
-
-function offsetPolygon(points: Point[], distance: number): Point[] {
-  if (points.length < 3 || distance === 0) return points;
-  const area = points.reduce((sum, point, index) => { const next = points[(index + 1) % points.length]; return sum + point.x * next.y - next.x * point.y; }, 0);
-  const direction = area >= 0 ? 1 : -1;
-  const shifted = points.map((point, index) => {
-    const next = points[(index + 1) % points.length], dx = next.x - point.x, dy = next.y - point.y, length = Math.hypot(dx, dy) || 1;
-    const normal = { x: direction * dy / length * distance, y: -direction * dx / length * distance };
-    return { point: { x: point.x + normal.x, y: point.y + normal.y }, direction: { x: dx, y: dy } };
-  });
-  return points.map((_, index) => lineIntersection(shifted[(index + shifted.length - 1) % shifted.length], shifted[index]) ?? shifted[index].point);
-}
-
-function contourArea(points: Point[]): number {
-  return points.reduce((sum, point, index) => { const next = points[(index + 1) % points.length]; return sum + point.x * next.y - next.x * point.y; }, 0);
-}
-
-function lineIntersection(a: { point: Point; direction: Point }, b: { point: Point; direction: Point }): Point | null {
-  const cross = a.direction.x * b.direction.y - a.direction.y * b.direction.x;
-  if (Math.abs(cross) < 1e-9) return null;
-  const delta = { x: b.point.x - a.point.x, y: b.point.y - a.point.y };
-  const amount = (delta.x * b.direction.y - delta.y * b.direction.x) / cross;
-  return { x: a.point.x + amount * a.direction.x, y: a.point.y + amount * a.direction.y };
 }
 
 function hatchPolygonSet(context: CanvasRenderingContext2D, polygons: Point[][], viewport: ReturnType<typeof makeViewport>): void {
