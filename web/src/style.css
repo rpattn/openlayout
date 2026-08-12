@@ -94,7 +94,7 @@ input:disabled { opacity: .45; }
 .cad-shell.panel-hidden { grid-template-columns: 0 minmax(0,1fr); }
 .problem-panel { min-width: 0; overflow: hidden; display: grid; grid-template-rows: auto minmax(0,1fr) auto; background: var(--surface); border-right: 1px solid var(--line); z-index: 5; }
 .panel-hidden .problem-panel { visibility: hidden; }
-.studio-brand { min-height: 72px; padding: 12px 14px; border-bottom: 1px solid var(--line); display: grid; gap: 10px; }
+.studio-brand { min-height: 58px; padding: 10px 14px; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: auto minmax(0,1fr); align-items: center; gap: 12px; }
 .brand-lockup { display: flex; align-items: center; gap: 10px; }
 .brand-mark { width: 35px; height: 35px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); color: var(--accent); font: 650 10px ui-monospace, monospace; }
 .brand-lockup strong { display: block; font-size: 15px; letter-spacing: -.02em; }
@@ -102,7 +102,7 @@ input:disabled { opacity: .45; }
 .project-chip { width: 100%; min-height: 32px; display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-raised); padding: 6px 9px; cursor: pointer; color: var(--text-soft); font-size: 11px; }
 .project-chip:hover { border-color: var(--accent); }
 .project-chip b { color: var(--muted); letter-spacing: 1px; }
-.project-quick { display: grid; grid-template-columns: minmax(0,1fr) 34px; gap: 5px; }
+.project-quick { min-width: 0; display: grid; grid-template-columns: minmax(0,1fr) 34px; gap: 5px; }
 .project-quick select { min-width: 0; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-raised); color: var(--text); padding: 6px 8px; font-size: 10px; }
 .project-quick .project-chip { width: 34px; justify-content: center; padding: 0; }
 .problem-panel-scroll { min-height: 0; overflow: auto; scrollbar-color: var(--line-strong) transparent; }
@@ -163,7 +163,7 @@ summary::-webkit-details-marker { display: none; }
 
 .cad-stage-shell { min-width: 0; position: relative; overflow: hidden; background: var(--canvas); }
 .cad-canvas { width: 100%; height: 100%; display: block; touch-action: none; user-select: none; }
-.cad-context-menu { position: fixed; z-index: 40; width: 154px; padding: 5px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); box-shadow: var(--shadow); }
+.cad-context-menu { position: fixed; z-index: 40; width: 176px; max-height: min(420px, calc(100vh - 20px)); overflow: auto; padding: 5px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); box-shadow: var(--shadow); }
 .cad-context-menu button { display: block; width: 100%; border: 0; border-radius: 4px; background: transparent; padding: 7px 8px; text-align: left; font-size: 10px; cursor: pointer; }
 .cad-context-menu button:hover { background: var(--accent-soft); }
 .cad-background { fill: var(--canvas); }
@@ -180,11 +180,15 @@ summary::-webkit-details-marker { display: none; }
 .cad-trace-image { pointer-events: none; }
 .cad-trace-hit { fill: transparent; stroke: transparent; stroke-width: 8px; vector-effect: non-scaling-stroke; pointer-events: all; cursor: move; }
 .cad-trace-hit.selected { stroke: var(--accent); stroke-width: 1.5px; }
+.cad-scene-text { white-space: pre; pointer-events: none; }
+.cad-text-hit { fill: transparent; stroke: transparent; stroke-width: 8px; vector-effect: non-scaling-stroke; pointer-events: all; cursor: move; }
+.cad-text-hit.selected { stroke: var(--accent); stroke-width: 1.5px; }
 .cad-construction-guides { pointer-events: none; }
 .cad-guide-visual { stroke: #49cfe8; stroke-width: 1px; stroke-dasharray: 7 4; opacity: .72; vector-effect: non-scaling-stroke; }
 .cad-guide-visual.selected, .cad-drafting-shape.selected { stroke: var(--amber); opacity: 1; stroke-width: 2px; }
 .cad-construction-guide { stroke: transparent; stroke-width: 10px; vector-effect: non-scaling-stroke; pointer-events: stroke; cursor: move; }
-.cad-drafting-shape { fill: none; stroke: #49cfe8; stroke-width: 1.4px; stroke-dasharray: 5 3; vector-effect: non-scaling-stroke; pointer-events: stroke; cursor: move; }
+.cad-drafting-shape { fill: none; stroke: #49cfe8; stroke-width: 1.4px; stroke-dasharray: 5 3; vector-effect: non-scaling-stroke; pointer-events: none; }
+.cad-drafting-hit { fill: none; stroke: transparent; stroke-width: 14px; vector-effect: non-scaling-stroke; pointer-events: stroke; cursor: move; }
 .cad-draft-preview { fill: none; stroke: var(--amber); stroke-width: 1.5px; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; pointer-events: none; }
 .cad-canvas.placing-guide, .cad-canvas.placing-draft { cursor: crosshair; }
 .cad-draft-cursor { pointer-events: none; }
@@ -201,21 +205,21 @@ summary::-webkit-details-marker { display: none; }
 .cad-part-color { stroke: none; pointer-events: none; opacity: .78; }
 .cad-part-color.item { opacity: .72; }
 .cad-part-color.exclusion { opacity: .4; }
-.cad-region { fill: var(--surface-soft); stroke: var(--muted); stroke-width: 1.4px; cursor: pointer; }
+.cad-region { fill: var(--surface-soft); stroke: var(--muted); stroke-width: var(--cad-edge-width, 1.4px); cursor: pointer; }
 .cad-region.subtract { fill: var(--canvas); stroke: var(--danger); stroke-dasharray: 6 4; }
 .cad-region:hover, .cad-region.selected { stroke: var(--accent); stroke-width: 2.2px; }
 .cad-source-hit { fill: transparent; stroke: transparent; stroke-width: 8px; vector-effect: non-scaling-stroke; cursor: pointer; }
 .cad-source-hit.selected { stroke: color-mix(in srgb, var(--accent) 72%, transparent); stroke-width: 1.4px; stroke-dasharray: 4 3; }
-.cad-source-hit.locked, .cad-placement.locked, .cad-drafting-shape.locked { pointer-events: none; }
-.cad-exclusion { fill: var(--danger-soft); stroke: var(--danger); stroke-width: 1.5px; stroke-dasharray: 5 3; cursor: pointer; }
+.cad-source-hit.locked, .cad-placement.locked { pointer-events: none; }
+.cad-exclusion { fill: var(--danger-soft); stroke: var(--danger); stroke-width: var(--cad-edge-width, 1.4px); stroke-dasharray: 5 3; cursor: pointer; }
 .cad-exclusion:hover, .cad-exclusion.selected { stroke-width: 2.5px; }
-.cad-placement { fill: color-mix(in srgb, var(--item-color) 70%, transparent); stroke: var(--item-color); stroke-width: 1.1px; cursor: move; }
+.cad-placement { fill: color-mix(in srgb, var(--item-color) 70%, transparent); stroke: var(--item-color); stroke-width: var(--cad-edge-width, 1.4px); cursor: move; }
 .cad-placement:hover, .cad-placement.selected { fill: color-mix(in srgb, var(--item-color) 86%, transparent); stroke: var(--text); stroke-width: 2px; }
 .cad-placement.fixed { stroke: var(--amber); stroke-width: 2.2px; stroke-dasharray: 4 2; }
 .cad-fixed-badge { pointer-events: none; }
 .cad-fixed-badge circle { fill: var(--amber); stroke: var(--canvas); stroke-width: .08px; }
 .cad-fixed-badge text { fill: #fff; font: 700 .28px ui-monospace, monospace; }
-.cad-item-sample { fill: color-mix(in srgb, var(--item-color) 38%, transparent); stroke: var(--item-color); stroke-width: 1.4px; cursor: pointer; }
+.cad-item-sample { fill: color-mix(in srgb, var(--item-color) 38%, transparent); stroke: var(--item-color); stroke-width: var(--cad-edge-width, 1.4px); cursor: pointer; }
 .cad-item-sample:hover, .cad-item-sample.selected { fill: color-mix(in srgb, var(--item-color) 60%, transparent); stroke-width: 2.1px; }
 .cad-region.selected, .cad-exclusion.selected, .cad-placement.selected, .cad-item-sample.selected {
   stroke: var(--accent); stroke-width: 3px; filter: drop-shadow(0 0 4px color-mix(in srgb, var(--accent) 72%, transparent));
@@ -224,8 +228,11 @@ summary::-webkit-details-marker { display: none; }
 .cad-clearance { fill: none; stroke: var(--constraint); stroke-width: 1.2px; stroke-dasharray: 7 5; vector-effect: non-scaling-stroke; pointer-events: none; }
 .cad-clearance.danger { stroke: var(--constraint-danger); }
 .cad-dimensions { pointer-events: none; }
-.cad-dimensions line { stroke: var(--text-soft); stroke-width: 1px; vector-effect: non-scaling-stroke; }
-.cad-dimensions text { fill: var(--text-soft); font: 600 .35px ui-monospace, monospace; text-anchor: middle; }
+.cad-dimensions line { fill: none; stroke: var(--text-soft); stroke-width: max(1px, calc(var(--cad-edge-width, 1.4px) * .75)); vector-effect: non-scaling-stroke; }
+.cad-dimensions .cad-dimension-extension { opacity: .72; }
+.cad-dimensions .cad-dimension-line { stroke: var(--text); }
+.cad-dimensions .cad-dimension-arrow { fill: var(--text); stroke: none; }
+.cad-dimensions text { fill: var(--text); stroke: var(--canvas); paint-order: stroke fill; font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-weight: 650; text-anchor: middle; dominant-baseline: central; letter-spacing: .02em; }
 .cad-selection-handles { pointer-events: none; }
 .cad-selection-handles line { stroke: var(--muted); stroke-width: 1px; vector-effect: non-scaling-stroke; }
 .cad-selection-handles circle { fill: var(--amber); stroke: var(--surface); stroke-width: 1.5px; vector-effect: non-scaling-stroke; pointer-events: auto; cursor: grab; }
@@ -238,9 +245,12 @@ summary::-webkit-details-marker { display: none; }
 .cad-selection-handles .cad-global-scale-handle { fill: var(--surface); stroke: var(--amber); stroke-width: 2px; cursor: nesw-resize; }
 .cad-selection-handles .cad-global-scale-handle:hover { fill: var(--amber); stroke: var(--surface); }
 .cad-bezier-tangent { stroke: var(--amber) !important; stroke-width: 1px !important; stroke-dasharray: 3 2; pointer-events: none; }
-.cad-edit-dimensions { pointer-events: none; }
-.cad-edit-dimensions line { stroke: var(--text-soft); stroke-width: 1px; stroke-dasharray: none; vector-effect: non-scaling-stroke; }
-.cad-edit-dimensions text { fill: var(--text); paint-order: stroke; stroke: var(--canvas); font: 650 .32px ui-monospace, monospace; text-anchor: middle; dominant-baseline: central; }
+.cad-linear-dimension[data-dimension-index] { pointer-events: visibleStroke; cursor: move; }
+.cad-auto-dimension,.cad-linear-dimension[data-auto-dimension-owner] { pointer-events: visibleStroke; cursor: move; }
+.cad-dimension-hit { stroke: transparent !important; stroke-width: 14px !important; pointer-events: stroke; vector-effect: non-scaling-stroke; }
+.cad-linear-dimension.selected .cad-dimension-line { stroke: var(--amber); }
+.cad-dimension-preview { opacity: .72; pointer-events: none; }
+.placing-dimension { cursor: crosshair; }
 .cad-snap-constraint { pointer-events: none; }
 .cad-snap-constraint line { stroke: var(--accent); stroke-width: 1.5px; stroke-dasharray: 3 3; }
 .cad-snap-constraint .cad-snap-offset { stroke: var(--amber); }
@@ -253,8 +263,14 @@ summary::-webkit-details-marker { display: none; }
 .cad-anchor-points .cad-snap-anchor.own:hover { fill: var(--accent); }
 .cad-anchor-guide { stroke: color-mix(in srgb, var(--accent) 55%, transparent) !important; stroke-width: 1px !important; pointer-events: none; }
 .cad-anchor-drag-line { stroke: var(--accent) !important; stroke-width: 1.8px !important; stroke-dasharray: 4 3; pointer-events: none; }
-.cad-toolbar { position: absolute; z-index: 3; left: 12px; right: 12px; top: 12px; min-height: 40px; display: flex; align-items: center; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 8px; background: color-mix(in srgb, var(--surface) 90%, transparent); box-shadow: 0 8px 28px rgba(0,0,0,.2); backdrop-filter: blur(12px); }
+.cad-toolbar { position: absolute; z-index: 3; left: 12px; right: 12px; top: 12px; min-height: 40px; display: flex; align-items: center; gap: 6px; padding: 4px; border: 1px solid var(--line); border-radius: 8px; background: color-mix(in srgb, var(--surface) 90%, transparent); box-shadow: 0 8px 28px rgba(0,0,0,.2); backdrop-filter: blur(12px); }
+.toolbar-group { min-width: 0; display: flex; align-items: center; gap: 2px; }
+.toolbar-group + .toolbar-group { padding-left: 6px; border-left: 1px solid var(--line); }
+.cad-nav-toolbar { position: absolute; z-index: 4; right: 14px; bottom: 56px; display: flex; flex-direction: column; gap: 3px; padding: 4px; border: 1px solid var(--line); border-radius: 7px; background: color-mix(in srgb, var(--surface) 92%, transparent); box-shadow: 0 8px 24px rgba(0,0,0,.22); backdrop-filter: blur(10px); }
+.cad-nav-toolbar .tool-button { width: 32px; min-width: 32px; height: 32px; padding: 0; font-size: 15px; }
 .cad-tool-panel { position: absolute; z-index: 12; top: 62px; right: 150px; width: min(350px, calc(100% - 24px)); max-height: calc(100% - 126px); overflow: auto; border: 1px solid var(--line-strong); border-radius: 9px; background: color-mix(in srgb, var(--surface) 96%, transparent); box-shadow: 0 18px 48px rgba(0,0,0,.38); backdrop-filter: blur(14px); }
+.view-settings-panel { right: 14px; width: min(310px, calc(100% - 24px)); }
+.view-settings-group + .view-settings-group { margin-top: 16px; padding-top: 2px; border-top: 1px solid var(--line); }
 .cad-tool-panel > header { position: sticky; z-index: 1; top: 0; min-height: 52px; display: flex; align-items: center; justify-content: space-between; padding: 9px 12px; border-bottom: 1px solid var(--line); background: var(--surface); }
 .cad-tool-panel > header strong { display: block; margin-top: 2px; font-size: 12px; }
 .cad-tool-panel > header button { width: 27px; height: 27px; border: 1px solid var(--line); border-radius: 50%; background: transparent; cursor: pointer; }
@@ -299,7 +315,7 @@ summary::-webkit-details-marker { display: none; }
 .tool-button.danger-tool:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); }
 .tool-divider { width: 1px; height: 20px; background: var(--line); margin: 0 3px; }
 .tool-spacer { flex: 1; }
-.cad-help { position: absolute; left: 14px; bottom: 52px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 4px; background: color-mix(in srgb, var(--surface) 88%, transparent); color: var(--muted); font-size: 8px; pointer-events: none; }
+.cad-help { position: absolute; left: 14px; bottom: 52px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 4px; background: color-mix(in srgb, var(--surface) 88%, transparent); color: var(--muted); font: 8px ui-monospace, monospace; pointer-events: none; }
 .workspace-state { position: absolute; z-index: 3; left: 14px; right: 14px; bottom: 12px; min-height: 32px; display: flex; align-items: center; gap: 8px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 6px; background: color-mix(in srgb, var(--surface) 92%, transparent); box-shadow: 0 6px 22px rgba(0,0,0,.15); backdrop-filter: blur(10px); }
 .workspace-state > #status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
 .workspace-state > #status-dot.working { background: var(--amber); animation: pulse 1.2s infinite; }

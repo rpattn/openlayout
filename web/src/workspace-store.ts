@@ -19,9 +19,15 @@ interface StoredWorkspace {
 }
 
 const STORAGE_KEY = "openlayout.workspace.v1";
+const BACKUP_KEY = `${STORAGE_KEY}.backup`;
+const DATABASE_NAME = "openlayout.workspace";
+const DATABASE_STORE = "snapshots";
+const DATABASE_KEY = "workspace.v1";
 
 export class WorkspaceStore {
   private workspace: StoredWorkspace;
+  private loadedFromBrowserStorage = false;
+  private durableWrite: Promise<void> = Promise.resolve();
 
   constructor(private readonly storage: Storage = localStorage) {
     this.workspace = this.load();
@@ -96,21 +102,38 @@ export class WorkspaceStore {
     this.persist();
   }
 
-  private load(): StoredWorkspace {
+  /** Restore a workspace if localStorage was cleared/corrupted or trails the durable mirror. */
+  async recoverDurable(): Promise<boolean> {
+    if (!this.usesBrowserStorage()) return false;
+    const durable = parseWorkspace(await readDurableWorkspace());
+    if (durable && (!this.loadedFromBrowserStorage || workspaceTimestamp(durable) > workspaceTimestamp(this.workspace))) {
+      this.workspace = durable;
+      this.loadedFromBrowserStorage = true;
+      this.persistLocal(JSON.stringify(this.workspace));
+      return true;
+    }
+    this.queueDurableWrite(JSON.stringify(this.workspace));
+    return false;
+  }
+
+  /** Ask the browser not to evict this origin's durable data under storage pressure. */
+  async requestPersistentStorage(): Promise<boolean> {
     try {
-      const parsed = JSON.parse(this.storage.getItem(STORAGE_KEY) ?? "null") as Partial<StoredWorkspace> | null;
-      if (parsed?.version === 1 && Array.isArray(parsed.projects) && parsed.projects.length > 0) {
-        const activeProjectId = parsed.projects.some((project) => project.id === parsed.activeProjectId)
-          ? parsed.activeProjectId! : parsed.projects[0].id;
-        return {
-          version: 1,
-          activeProjectId,
-          theme: parsed.theme === "light" ? "light" : "dark",
-          projects: (parsed.projects as LocalProject[]).map(migrateProject),
-        };
-      }
+      return await navigator.storage?.persist?.() ?? false;
     } catch {
-      // A malformed local record should not prevent the studio from opening.
+      return false;
+    }
+  }
+
+  async flush(): Promise<void> { await this.durableWrite; }
+
+  private load(): StoredWorkspace {
+    for (const key of [STORAGE_KEY, BACKUP_KEY]) {
+      const parsed = parseWorkspace(this.storage.getItem(key));
+      if (parsed) {
+        this.loadedFromBrowserStorage = true;
+        return parsed;
+      }
     }
     const now = new Date().toISOString();
     const project: LocalProject = {
@@ -120,7 +143,30 @@ export class WorkspaceStore {
   }
 
   private persist(): void {
-    this.storage.setItem(STORAGE_KEY, JSON.stringify(this.workspace));
+    const serialized = JSON.stringify(this.workspace);
+    this.persistLocal(serialized);
+    this.queueDurableWrite(serialized);
+  }
+
+  private persistLocal(serialized: string): void {
+    try {
+      this.storage.setItem(STORAGE_KEY, serialized);
+      this.storage.setItem(BACKUP_KEY, serialized);
+      this.loadedFromBrowserStorage = true;
+    } catch {
+      // The IndexedDB mirror still has a chance to save if localStorage is full or unavailable.
+    }
+  }
+
+  private queueDurableWrite(serialized: string): void {
+    if (!this.usesBrowserStorage()) return;
+    this.durableWrite = this.durableWrite
+      .catch(() => undefined)
+      .then(() => writeDurableWorkspace(serialized));
+  }
+
+  private usesBrowserStorage(): boolean {
+    return typeof indexedDB !== "undefined" && typeof localStorage !== "undefined" && this.storage === localStorage;
   }
 
   private nextName(): string {
@@ -131,8 +177,63 @@ export class WorkspaceStore {
   }
 }
 
+function parseWorkspace(raw: string | null): StoredWorkspace | null {
+  try {
+    const parsed = JSON.parse(raw ?? "null") as Partial<StoredWorkspace> | null;
+    if (parsed?.version !== 1 || !Array.isArray(parsed.projects) || parsed.projects.length === 0) return null;
+    const projects = (parsed.projects as LocalProject[]).map(migrateProject);
+    const activeProjectId = projects.some((project) => project.id === parsed.activeProjectId)
+      ? parsed.activeProjectId! : projects[0].id;
+    return { version: 1, activeProjectId, theme: parsed.theme === "light" ? "light" : "dark", projects };
+  } catch {
+    return null;
+  }
+}
+
+function workspaceTimestamp(workspace: StoredWorkspace): number {
+  return Math.max(0, ...workspace.projects.map((project) => Date.parse(project.updatedAt) || 0));
+}
+
+function openWorkspaceDatabase(): Promise<IDBDatabase | null> {
+  if (typeof indexedDB === "undefined") return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const request = indexedDB.open(DATABASE_NAME, 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(DATABASE_STORE)) request.result.createObjectStore(DATABASE_STORE);
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => resolve(null);
+    request.onblocked = () => resolve(null);
+  });
+}
+
+async function readDurableWorkspace(): Promise<string | null> {
+  const database = await openWorkspaceDatabase();
+  if (!database) return null;
+  return new Promise((resolve) => {
+    const transaction = database.transaction(DATABASE_STORE, "readonly");
+    const request = transaction.objectStore(DATABASE_STORE).get(DATABASE_KEY);
+    request.onsuccess = () => resolve(typeof request.result === "string" ? request.result : null);
+    request.onerror = () => resolve(null);
+    transaction.oncomplete = () => database.close();
+    transaction.onabort = () => database.close();
+  });
+}
+
+async function writeDurableWorkspace(serialized: string): Promise<void> {
+  const database = await openWorkspaceDatabase();
+  if (!database) return;
+  await new Promise<void>((resolve) => {
+    const transaction = database.transaction(DATABASE_STORE, "readwrite");
+    transaction.objectStore(DATABASE_STORE).put(serialized, DATABASE_KEY);
+    transaction.oncomplete = () => { database.close(); resolve(); };
+    transaction.onerror = () => { database.close(); resolve(); };
+    transaction.onabort = () => { database.close(); resolve(); };
+  });
+}
+
 function migrateProject(project: LocalProject): LocalProject {
-  const state = project.state as unknown as { containerParts?: unknown[]; items?: unknown[]; exclusions?: Array<{ primitive?: unknown; parts?: unknown[] }>; lockedEntities?: EditorState["lockedEntities"]; drafting?: EditorState["drafting"] & { traceImage?: EditorState["drafting"]["traceImages"][number]; guides?: Array<Partial<EditorState["drafting"]["guides"][number]> & { axis?: "x" | "y"; position?: number }> } };
+  const state = project.state as unknown as { containerParts?: unknown[]; items?: unknown[]; exclusions?: Array<{ primitive?: unknown; parts?: unknown[] }>; lockedEntities?: EditorState["lockedEntities"]; viewSettings?: EditorState["viewSettings"]; dimensions?: EditorState["dimensions"]; dimensionPositions?: EditorState["dimensionPositions"]; dimensionOverrides?: EditorState["dimensionOverrides"]; drafting?: EditorState["drafting"] & { traceImage?: EditorState["drafting"]["traceImages"][number]; guides?: Array<Partial<EditorState["drafting"]["guides"][number]> & { axis?: "x" | "y"; position?: number }> } };
   state.containerParts ??= [];
   state.items ??= [];
   state.exclusions ??= [];
@@ -140,7 +241,7 @@ function migrateProject(project: LocalProject): LocalProject {
     if (!Array.isArray(entry.parts)) entry.parts = entry.primitive ? [entry.primitive] : [];
     delete entry.primitive;
   });
-  state.drafting ??= { gridStep: 0.5, snapToGrid: true, smartSnap: true, defaultOwner: "material", guides: [], traceImages: [], shapes: [] };
+  state.drafting ??= { gridStep: 0.5, snapToGrid: true, smartSnap: true, defaultOwner: "material", guides: [], traceImages: [], texts: [], shapes: [] };
   state.drafting.defaultOwner ??= "material";
   state.drafting.guides ??= [];
   const legacyGuides = state.drafting.guides as unknown as Array<{ id?: string; x?: number; y?: number; rotation?: number; axis?: "x" | "y"; position?: number }>;
@@ -150,9 +251,19 @@ function migrateProject(project: LocalProject): LocalProject {
   }));
   state.drafting.traceImages ??= state.drafting.traceImage ? [{ ...state.drafting.traceImage, rotation: state.drafting.traceImage.rotation ?? 0 }] : [];
   state.drafting.traceImages.forEach((trace) => { trace.id ??= crypto.randomUUID(); trace.rotation ??= 0; });
+  state.drafting.texts ??= [];
+  state.drafting.texts.forEach((entry) => {
+    entry.fontFamily ??= "mono"; entry.align ??= "left"; entry.bold ??= false; entry.italic ??= false; entry.underline ??= false;
+  });
   state.drafting.shapes ??= [];
   delete state.drafting.traceImage;
   state.lockedEntities ??= [];
+  state.viewSettings ??= { showGrid: true, showDimensions: false, showClearance: false, dimensionTextSize: 11, edgeThickness: 1.4, dimensionPrecision: 2, dimensionUnit: "mm" };
+  state.viewSettings.showDimensions ??= false;
+  state.viewSettings.showClearance ??= false;
+  state.dimensions ??= [];
+  state.dimensionPositions ??= {};
+  state.dimensionOverrides ??= {};
   return project as LocalProject;
 }
 

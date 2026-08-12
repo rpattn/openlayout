@@ -46,8 +46,12 @@ export const defaultState = (): EditorState => ({
     quality: "balanced",
     baseline_only: false,
   },
-  drafting: { gridStep: 0.5, snapToGrid: true, smartSnap: true, defaultOwner: "material", guides: [], traceImages: [], shapes: [] },
+  drafting: { gridStep: 0.5, snapToGrid: true, smartSnap: true, defaultOwner: "material", guides: [], traceImages: [], texts: [], shapes: [] },
   lockedEntities: [],
+  viewSettings: { showGrid: true, showDimensions: false, showClearance: false, dimensionTextSize: 11, edgeThickness: 1.4, dimensionPrecision: 2, dimensionUnit: "mm" },
+  dimensions: [],
+  dimensionPositions: {},
+  dimensionOverrides: {},
   study: {
     parameterKey: "part_width:item-a:0",
     start: 3,

@@ -1,24 +1,26 @@
 import { transformPoint } from "./problem";
 import { resolveGeometry } from "./geometry-resolver";
-import type { PackingProblem, Placement, Point, SensitivityResult } from "./types";
+import type { CadDimension, CadViewSettings, PackingProblem, Placement, Point, SensitivityResult } from "./types";
 
 const ITEM_COLORS = ["#4fc3a1", "#f4b860", "#7aa2f7", "#d98adf", "#ef6f6c", "#94c973"];
-export interface LayoutDisplayOptions { dimensions?: boolean; clearance?: boolean }
+export interface LayoutDisplayOptions { dimensions?: boolean; clearance?: boolean; viewSettings?: CadViewSettings; customDimensions?: CadDimension[] }
 
 export function renderLayout(canvas: HTMLCanvasElement, problem: PackingProblem, placements: Placement[] = [], display: LayoutDisplayOptions = {}): void {
   const context = setup(canvas);
   const theme = canvasTheme();
+  const settings = display.viewSettings ?? { showGrid: true, showDimensions: false, showClearance: false, dimensionTextSize: 11, edgeThickness: 1.4, dimensionPrecision: 2, dimensionUnit: "" };
   const geometry = resolveGeometry(problem), regionPolygons = geometry.container;
   context.fillStyle = theme.canvas;
   context.fillRect(0, 0, canvas.width, canvas.height);
   if (!regionPolygons.length) return;
-  const bounds = pointBounds(regionPolygons.flat());
+  const customPoints = display.dimensions ? (display.customDimensions ?? []).flatMap((dimension) => [dimension.start, dimension.end, { x: dimension.start.x + dimension.offset.x, y: dimension.start.y + dimension.offset.y }, { x: dimension.end.x + dimension.offset.x, y: dimension.end.y + dimension.offset.y }]) : [];
+  const bounds = pointBounds([...regionPolygons.flat(), ...customPoints]);
   const padding = Math.max(bounds.width, bounds.height) * 0.08 + 1;
   const viewport = makeViewport(canvas, bounds, padding);
 
-  drawGrid(context, viewport);
-  drawPolygonSet(context, regionPolygons, viewport, theme.region, theme.muted, 2);
-  if (display.dimensions) drawDimensions(context, regionPolygons.flat(), viewport);
+  if (settings.showGrid) drawGrid(context, viewport);
+  drawPolygonSet(context, regionPolygons, viewport, theme.region, theme.muted, settings.edgeThickness);
+  if (display.dimensions) { drawDimensions(context, regionPolygons.flat(), viewport, settings); drawClearanceDimension(context, regionPolygons.flat(), problem.clearance.item_to_boundary, false, viewport, settings); }
   if (display.clearance && problem.clearance.item_to_boundary > 0) regionPolygons.forEach((region) =>
     drawDashedPolygon(context, offsetPolygon(region, contourArea(region) >= 0 ? -problem.clearance.item_to_boundary : problem.clearance.item_to_boundary), viewport, theme.muted));
 
@@ -32,7 +34,7 @@ export function renderLayout(canvas: HTMLCanvasElement, problem: PackingProblem,
     }
     drawPolygonSet(context, exclusionPolygons, viewport, theme.dangerFill, theme.danger, 1.5);
     hatchPolygonSet(context, exclusionPolygons, viewport);
-    if (display.dimensions) drawDimensions(context, exclusionPolygons.flat(), viewport);
+    if (display.dimensions) { drawDimensions(context, exclusionPolygons.flat(), viewport, settings, exclusion.shape.kind === "circle"); drawClearanceDimension(context, exclusionPolygons.flat(), Math.max(problem.clearance.item_to_exclusion, exclusion.clearance), true, viewport, settings); }
   }
 
   const itemIndex = new Map(problem.items.map((item, index) => [item.id, index]));
@@ -46,9 +48,10 @@ export function renderLayout(canvas: HTMLCanvasElement, problem: PackingProblem,
     for (const polygon of placedPolygons) {
       if (display.clearance && problem.clearance.item_to_item > 0) drawDashedPolygon(context, offsetPolygon(polygon, (contourArea(polygon) >= 0 ? 1 : -1) * problem.clearance.item_to_item / 2), viewport, color);
     }
-    drawPolygonSet(context, placedPolygons, viewport, `${color}b8`, placement.fixed ? "#fff4d6" : color, placement.fixed ? 2.5 : 1.1);
-    if (display.dimensions && !dimensionedItems.has(item.id)) { drawDimensions(context, placedPolygons.flat(), viewport); dimensionedItems.add(item.id); }
+    drawPolygonSet(context, placedPolygons, viewport, `${color}b8`, placement.fixed ? "#fff4d6" : color, placement.fixed ? settings.edgeThickness * 1.8 : settings.edgeThickness);
+    if (display.dimensions && !dimensionedItems.has(item.id)) { drawDimensions(context, placedPolygons.flat(), viewport, settings, item.shape.kind === "circle"); drawClearanceDimension(context, placedPolygons.flat(), problem.clearance.item_to_item, true, viewport, settings); dimensionedItems.add(item.id); }
   }
+  if (display.dimensions) (display.customDimensions ?? []).forEach((dimension) => drawLinearDimension(context, dimension, viewport, settings));
 }
 
 export function renderSensitivity(canvas: HTMLCanvasElement, result: SensitivityResult | null, selectedValue: number | null = null): void {
@@ -125,7 +128,7 @@ export function renderPolygonsPreview(canvas: HTMLCanvasElement, shapePolygons: 
   const viewport = makeViewport(canvas, bounds, padding);
   if (options.clearance && options.clearance > 0) shapePolygons.forEach((polygon) => drawDashedPolygon(context, offsetPolygon(polygon, (contourArea(polygon) >= 0 ? 1 : -1) * options.clearance!), viewport, ITEM_COLORS[0]));
   drawPolygonSet(context, shapePolygons, viewport, `${ITEM_COLORS[0]}73`, ITEM_COLORS[0], 1.2);
-  if (options.dimensions) drawDimensions(context, points, viewport);
+  if (options.dimensions) drawDimensions(context, points, viewport, { showGrid: true, showDimensions: false, showClearance: false, dimensionTextSize: 11, edgeThickness: 1.4, dimensionPrecision: 2, dimensionUnit: "" });
 }
 
 function setup(canvas: HTMLCanvasElement): CanvasRenderingContext2D {
@@ -170,16 +173,41 @@ function drawDashedPolygon(context: CanvasRenderingContext2D, points: Point[], v
   context.closePath(); context.strokeStyle = color; context.globalAlpha = .72; context.lineWidth = 1.2 * devicePixelRatio; context.stroke(); context.restore();
 }
 
-function drawDimensions(context: CanvasRenderingContext2D, points: Point[], viewport: ReturnType<typeof makeViewport>): void {
+function drawDimensions(context: CanvasRenderingContext2D, points: Point[], viewport: ReturnType<typeof makeViewport>, settings: CadViewSettings, diameter = false): void {
   if (!points.length) return;
   const bounds = pointBounds(points), topLeft = screen({ x: bounds.minX, y: bounds.maxY }, viewport), bottomRight = screen({ x: bounds.maxX, y: bounds.minY }, viewport);
   const offset = 8 * devicePixelRatio;
   const theme = canvasTheme();
-  context.save(); context.strokeStyle = theme.text; context.fillStyle = theme.text; context.globalAlpha = .82; context.lineWidth = devicePixelRatio; context.font = `${8 * devicePixelRatio}px ui-monospace, monospace`; context.textAlign = "center";
+  const unit = settings.dimensionUnit ? ` ${settings.dimensionUnit}` : "";
+  context.save(); context.strokeStyle = theme.text; context.fillStyle = theme.text; context.globalAlpha = .9; context.lineWidth = Math.max(devicePixelRatio, settings.edgeThickness * .75 * devicePixelRatio); context.font = `650 ${settings.dimensionTextSize * devicePixelRatio}px ui-monospace, monospace`; context.textAlign = "center";
   context.beginPath(); context.moveTo(topLeft.x, topLeft.y - offset); context.lineTo(bottomRight.x, topLeft.y - offset); context.moveTo(topLeft.x, topLeft.y - offset * 1.35); context.lineTo(topLeft.x, topLeft.y - offset * .65); context.moveTo(bottomRight.x, topLeft.y - offset * 1.35); context.lineTo(bottomRight.x, topLeft.y - offset * .65); context.stroke();
-  context.fillText(format(bounds.width), (topLeft.x + bottomRight.x) / 2, topLeft.y - offset - 3 * devicePixelRatio);
+  context.fillText(`${diameter ? "Ø" : ""}${bounds.width.toFixed(settings.dimensionPrecision)}${unit}`, (topLeft.x + bottomRight.x) / 2, topLeft.y - offset - 3 * devicePixelRatio);
+  if (diameter) { context.restore(); return; }
   context.beginPath(); context.moveTo(bottomRight.x + offset, topLeft.y); context.lineTo(bottomRight.x + offset, bottomRight.y); context.moveTo(bottomRight.x + offset * .65, topLeft.y); context.lineTo(bottomRight.x + offset * 1.35, topLeft.y); context.moveTo(bottomRight.x + offset * .65, bottomRight.y); context.lineTo(bottomRight.x + offset * 1.35, bottomRight.y); context.stroke();
-  context.save(); context.translate(bottomRight.x + offset + 9 * devicePixelRatio, (topLeft.y + bottomRight.y) / 2); context.rotate(-Math.PI / 2); context.fillText(format(bounds.height), 0, 0); context.restore(); context.restore();
+  context.save(); context.translate(bottomRight.x + offset + settings.dimensionTextSize * devicePixelRatio, (topLeft.y + bottomRight.y) / 2); context.rotate(-Math.PI / 2); context.fillText(`${bounds.height.toFixed(settings.dimensionPrecision)}${unit}`, 0, 0); context.restore(); context.restore();
+}
+
+function drawClearanceDimension(context: CanvasRenderingContext2D, points: Point[], distance: number, outward: boolean, viewport: ReturnType<typeof makeViewport>, settings: CadViewSettings): void {
+  if (!points.length || distance <= 0) return;
+  const bounds = pointBounds(points), y = (bounds.minY + bounds.maxY) / 2;
+  const start = { x: outward ? bounds.maxX : bounds.minX, y }, end = { x: outward ? bounds.maxX + distance : bounds.minX + distance, y };
+  const a = screen(start, viewport), b = screen(end, viewport), theme = canvasTheme(), unit = settings.dimensionUnit ? ` ${settings.dimensionUnit}` : "";
+  context.save(); context.strokeStyle = theme.text; context.fillStyle = theme.text; context.lineWidth = Math.max(devicePixelRatio, settings.edgeThickness * .75 * devicePixelRatio); context.font = `650 ${settings.dimensionTextSize * devicePixelRatio}px ui-monospace, monospace`; context.textAlign = "center";
+  context.beginPath(); context.moveTo(a.x, a.y); context.lineTo(b.x, b.y); context.stroke();
+  context.fillText(`${distance.toFixed(settings.dimensionPrecision)}${unit} clear`, (a.x + b.x) / 2, a.y - 5 * devicePixelRatio); context.restore();
+}
+
+function drawLinearDimension(context: CanvasRenderingContext2D, dimension: CadDimension, viewport: ReturnType<typeof makeViewport>, settings: CadViewSettings): void {
+  const start = screen(dimension.start, viewport), end = screen(dimension.end, viewport);
+  const lineStart = screen({ x: dimension.start.x + dimension.offset.x, y: dimension.start.y + dimension.offset.y }, viewport);
+  const lineEnd = screen({ x: dimension.end.x + dimension.offset.x, y: dimension.end.y + dimension.offset.y }, viewport);
+  const length = Math.hypot(dimension.end.x - dimension.start.x, dimension.end.y - dimension.start.y); if (length < 1e-8) return;
+  const angle = Math.atan2(lineEnd.y - lineStart.y, lineEnd.x - lineStart.x), normal = { x: -Math.sin(angle), y: Math.cos(angle) };
+  const midpoint = { x: (lineStart.x + lineEnd.x) / 2 + normal.x * 6 * devicePixelRatio, y: (lineStart.y + lineEnd.y) / 2 + normal.y * 6 * devicePixelRatio };
+  const theme = canvasTheme(), unit = settings.dimensionUnit ? ` ${settings.dimensionUnit}` : "", label = dimension.textOverride || `${length.toFixed(settings.dimensionPrecision)}${unit}`;
+  context.save(); context.strokeStyle = theme.text; context.fillStyle = theme.text; context.lineWidth = Math.max(devicePixelRatio, settings.edgeThickness * .75 * devicePixelRatio); context.font = `650 ${settings.dimensionTextSize * devicePixelRatio}px ui-monospace, monospace`; context.textAlign = "center";
+  context.beginPath(); context.moveTo(start.x, start.y); context.lineTo(lineStart.x, lineStart.y); context.moveTo(end.x, end.y); context.lineTo(lineEnd.x, lineEnd.y); context.moveTo(lineStart.x, lineStart.y); context.lineTo(lineEnd.x, lineEnd.y); context.stroke();
+  context.save(); context.translate(midpoint.x, midpoint.y); const readable = angle > Math.PI / 2 || angle < -Math.PI / 2 ? angle + Math.PI : angle; context.rotate(readable); context.fillText(label, 0, 0); context.restore(); context.restore();
 }
 
 function offsetPolygon(points: Point[], distance: number): Point[] {

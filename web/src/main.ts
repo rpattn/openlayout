@@ -46,6 +46,8 @@ await initGeometryResolver();
 const root = document.querySelector<HTMLDivElement>("#app")!;
 const client = new SolverClient();
 const projects = new WorkspaceStore();
+await projects.recoverDurable();
+void projects.requestPersistentStorage();
 const history = new WorkspaceHistory();
 let state = structuredClone(projects.active.state);
 let page: PageName = "packing";
@@ -69,7 +71,8 @@ let resultStale = false;
 let draftingShapeMode = false;
 let activeDraftPathTool: "line" | "polyline" | null = null;
 let activeGuideRotation: number | null = null;
-const display = { dimensions: false, clearance: false };
+let activeDimensionTool = false;
+const display = { dimensions: state.viewSettings.showDimensions, clearance: state.viewSettings.showClearance };
 const studyDisplay = { dimensions: false, clearance: false };
 
 root.innerHTML = `
@@ -82,69 +85,84 @@ root.innerHTML = `
         </header>
         <div id="packing-sidebar" class="problem-panel-scroll"></div>
         <footer class="run-dock">
-          <div class="run-buttons"><button id="validate" class="button ghost">Validate</button><button id="cancel" class="button danger" disabled>Stop</button><button id="solve" class="button primary">Run packing</button></div>
+          <div class="run-buttons"><button id="validate" class="button ghost" title="Validate problem (V)">Validate</button><button id="cancel" class="button danger" disabled>Stop</button><button id="solve" class="button primary" title="Run packing (R)">Run packing</button></div>
           <div id="solve-progress-wrap" class="solve-progress-wrap" hidden><div><strong id="solve-stage">Preparing…</strong><span id="solve-detail"></span></div><progress id="solve-progress" max="100" value="0" aria-label="Packing solve progress"></progress></div>
         </footer>
       </aside>
       <main class="cad-stage-shell">
         <div class="cad-toolbar" aria-label="Workspace tools">
-          <button id="sidebar-toggle" class="tool-button" aria-label="Hide problem panel" title="Hide problem panel">☰</button>
-          <span class="tool-divider"></span>
-          <button id="select-tool" class="tool-button active icon-tool" aria-label="Select tool" title="Select tool">↖</button>
-          <button id="fit-view" class="tool-button icon-tool" aria-label="Fit workspace" title="Fit workspace">⌗</button>
-          <button id="focus-selection" class="tool-button icon-tool" aria-label="Focus selection" title="Zoom to selected geometry (double-click)">◎</button>
-          <button id="zoom-out" class="tool-button" aria-label="Zoom out">−</button>
-          <button id="zoom-in" class="tool-button" aria-label="Zoom in">＋</button>
-          <span class="tool-divider"></span>
-          <button class="tool-button geometry-action icon-tool" data-toolbar-shape="rectangle" aria-label="Add rectangle" title="Add rectangle to the selected object">▭</button>
-          <button class="tool-button geometry-action icon-tool" data-toolbar-shape="circle" aria-label="Add circle" title="Add circle to the selected object">○</button>
+          <div class="toolbar-group" aria-label="Panels"><button id="sidebar-toggle" class="tool-button" aria-label="Hide problem panel" title="Problem panel (P)">☰</button></div>
+          <div class="toolbar-group" aria-label="Geometry">
+          <button class="tool-button geometry-action icon-tool" data-toolbar-shape="rectangle" aria-label="Add rectangle" title="Rectangle">▭</button>
+          <button class="tool-button geometry-action icon-tool" data-toolbar-shape="circle" aria-label="Add circle" title="Circle">○</button>
           ${toolbarPaletteHtml("toolbar-add-shape", "Add other geometry", "⬡", [
-            { value: "triangle", icon: "△", label: "Triangle", detail: "Three-sided primitive" },
-            { value: "polygon", icon: "⬠", label: "Polygon", detail: "Editable vertices" },
-            { value: "bezier", icon: "∿", label: "Bézier", detail: "Editable curve handles" },
+            { value: "triangle", icon: "△", label: "Triangle", detail: "3 vertices" },
+            { value: "polygon", icon: "⬠", label: "Polygon", detail: "Vertex geometry" },
+            { value: "bezier", icon: "∿", label: "Bézier", detail: "Curve geometry" },
           ])}
           ${toolbarPaletteHtml("toolbar-default-owner", "Default new shape role", "◈", [
-            { value: "material", icon: "▧", label: "Material", detail: "Add to the container" },
-            { value: "cutout", icon: "▱", label: "Cut-out", detail: "Subtract from the container" },
-            { value: "item", icon: "◇", label: "Item", detail: "Create a packable shape" },
-            { value: "exclusion", icon: "⊘", label: "Exclusion", detail: "Create a keep-out region" },
+            { value: "material", icon: "▧", label: "Material", detail: "Container add" },
+            { value: "cutout", icon: "▱", label: "Cut-out", detail: "Container subtract" },
+            { value: "item", icon: "◇", label: "Item", detail: "Packable" },
+            { value: "exclusion", icon: "⊘", label: "Exclusion", detail: "Keep-out" },
           ], state.drafting.defaultOwner)}
+          </div>
+          <div class="toolbar-group" aria-label="Selection">
           <label class="toolbar-color" title="Selected part colour"><input id="toolbar-part-color" type="color" aria-label="Selected part colour" value="#51c6a4"></label>
-          <button id="join-material" class="tool-button icon-tool" aria-label="Unify selected material" title="Snap this region into the additive material union">⌁</button>
-          <button id="lock-selection" class="tool-button icon-tool" aria-label="Lock selection" title="Lock selected entities against CAD interaction">⌑</button>
-          <button id="delete-selection" class="tool-button danger-tool" aria-label="Delete selection" title="Delete selected part or object">⌫</button>
-          <span class="tool-divider"></span>
-          <button id="toggle-dimensions" class="tool-button compact-overlay" aria-label="Dimensions" aria-pressed="false" title="Show or hide drawing dimensions">↔</button>
-          <button id="toggle-clearance" class="tool-button compact-overlay" aria-label="Constraints" aria-pressed="false" title="Show or hide clearance boundaries">◌</button>
-          <button id="respect-manual-constraints" class="tool-button compact-overlay active" aria-label="Toggle manual collision guard" aria-pressed="true" title="Move to the closest feasible position while respecting boundaries, clearances, overlaps, and fixed placements">♢</button>
-          <button id="open-drafting-aids" class="tool-button icon-tool" aria-label="Drafting aids" aria-pressed="false" title="Grid, snapping, and construction lines">⌗</button>
-          <button id="add-vertical-guide" class="tool-button icon-tool" aria-label="Add vertical drafting line" aria-pressed="false" title="Place a grid-snapped vertical construction line">┃</button>
-          <button id="add-horizontal-guide" class="tool-button icon-tool" aria-label="Add horizontal drafting line" aria-pressed="false" title="Place a grid-snapped horizontal construction line">━</button>
-          <button id="draw-drafting-line" class="tool-button icon-tool" aria-label="Draw two-point drafting line" aria-pressed="false" title="Click two points in the drawing">╱</button>
-          <button id="draw-drafting-polyline" class="tool-button icon-tool" aria-label="Draw drafting polyline" aria-pressed="false" title="Click points; double-click or press Enter to finish">⌁</button>
-          <button id="drafting-shape-mode" class="tool-button icon-tool" aria-label="Drafting shape mode" aria-pressed="false" title="Make shape buttons create construction geometry">◇</button>
-          <button id="add-trace-image" class="tool-button icon-tool" aria-label="Add trace image" title="Add or replace a transparent tracing image">▧</button>
+          <button id="join-material" class="tool-button icon-tool" aria-label="Unify selected material" title="Unify material">⌁</button>
+          <button id="lock-selection" class="tool-button icon-tool" aria-label="Lock selection" title="Lock">⌑</button>
+          <button id="delete-selection" class="tool-button danger-tool" aria-label="Delete selection" title="Delete (Delete)">⌫</button>
+          <button id="respect-manual-constraints" class="tool-button compact-overlay active" aria-label="Toggle manual collision guard" aria-pressed="true" title="Collision guard">♢</button>
+          </div>
+          <div class="toolbar-group" aria-label="Display">
+          <button id="toggle-dimensions" class="tool-button compact-overlay" aria-label="Dimensions" aria-pressed="false" title="Dimensions (D)">↔</button>
+          <button id="toggle-clearance" class="tool-button compact-overlay" aria-label="Constraints" aria-pressed="false" title="Clearances (G)">◌</button>
+          <button id="open-view-settings" class="tool-button icon-tool" aria-label="View settings" aria-pressed="false" title="View settings">⚙</button>
+          </div>
+          <div class="toolbar-group" aria-label="Drafting">
+          <button id="open-drafting-aids" class="tool-button icon-tool" aria-label="Drafting aids" aria-pressed="false" title="Drafting settings">⌗</button>
+          <button id="add-vertical-guide" class="tool-button icon-tool" aria-label="Add vertical drafting line" aria-pressed="false" title="Vertical guide">┃</button>
+          <button id="add-horizontal-guide" class="tool-button icon-tool" aria-label="Add horizontal drafting line" aria-pressed="false" title="Horizontal guide">━</button>
+          <button id="draw-drafting-line" class="tool-button icon-tool" aria-label="Draw two-point drafting line" aria-pressed="false" title="2-point line">╱</button>
+          <button id="draw-drafting-polyline" class="tool-button icon-tool" aria-label="Draw drafting polyline" aria-pressed="false" title="Polyline · Enter to finish">⌁</button>
+          <button id="draw-dimension" class="tool-button icon-tool" aria-label="Create dimension" aria-pressed="false" title="Dimension between two points">↔</button>
+          <button id="drafting-shape-mode" class="tool-button icon-tool" aria-label="Drafting shape mode" aria-pressed="false" title="Drafting geometry mode">◇</button>
+          <button id="add-trace-image" class="tool-button icon-tool" aria-label="Add trace image" title="Trace image">▧</button>
+          <button id="add-scene-text" class="tool-button icon-tool" aria-label="Add scene text" title="Text annotation">T</button>
+          </div>
           <span class="tool-spacer"></span>
-          <button id="undo" class="tool-button" aria-label="Undo" title="Undo (Ctrl/⌘ Z)" disabled>↶</button>
-          <button id="redo" class="tool-button" aria-label="Redo" title="Redo (Ctrl/⌘ Shift Z)" disabled>↷</button>
+          <div class="toolbar-group" aria-label="History">
+          <button id="undo" class="tool-button" aria-label="Undo" title="Undo (Ctrl/⌘+Z)" disabled>↶</button>
+          <button id="redo" class="tool-button" aria-label="Redo" title="Redo (Ctrl/⌘+Shift+Z)" disabled>↷</button>
+          </div>
+          <div class="toolbar-group" aria-label="Analysis and output">
           <button id="open-diagnostics" class="tool-button icon-tool" aria-label="Diagnostics" title="Diagnostics">⚙</button>
-          <button id="open-sensitivity" class="tool-button icon-tool" aria-label="Sensitivity" title="Sensitivity analysis">∿</button>
-          <button id="open-export" class="tool-button icon-tool" aria-label="Export" title="Export">⇩</button>
+          <button id="open-sensitivity" class="tool-button icon-tool" aria-label="Sensitivity" title="Sensitivity analysis (2)">∿</button>
+          <button id="open-export" class="tool-button icon-tool" aria-label="Export" title="Export (E)">⇩</button>
           <button id="open-shortcuts" class="tool-button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">⌨</button>
           <button id="theme-toggle" class="tool-button" aria-label="Toggle theme">◐</button>
+          </div>
         </div>
         <input id="toolbar-trace-image-input" class="sr-only" type="file" accept="image/*" data-trace-image aria-label="Choose trace image">
         <section id="drafting-panel" class="cad-tool-panel" aria-label="Drafting aids panel" hidden></section>
+        <section id="view-settings-panel" class="cad-tool-panel view-settings-panel" aria-label="View settings panel" hidden></section>
         <svg id="cad-canvas" class="cad-canvas" tabindex="0" aria-label="Interactive packing workspace"></svg>
-        <div class="cad-help">Drag empty space to pan · Ctrl/⌘-drag box-selects · Shift-resize keeps the opposite edge fixed · Alt bypasses snapping</div>
+        <div class="cad-nav-toolbar" aria-label="View navigation">
+          <button id="select-tool" class="tool-button active icon-tool" aria-label="Select tool" title="Select tool">↖</button>
+          <button id="fit-view" class="tool-button icon-tool" aria-label="Fit workspace" title="Fit workspace (F)">⌗</button>
+          <button id="focus-selection" class="tool-button icon-tool" aria-label="Focus selection" title="Zoom to selected geometry (Shift+F)">◎</button>
+          <button id="zoom-in" class="tool-button icon-tool" aria-label="Zoom in" title="Zoom in (+)">＋</button>
+          <button id="zoom-out" class="tool-button icon-tool" aria-label="Zoom out" title="Zoom out (−)">−</button>
+        </div>
+        <div class="cad-help">Ctrl/⌘ drag: marquee · Alt: bypass snap · Shift: opposite-edge resize</div>
         <div class="workspace-state"><span id="status-dot"></span><span id="status" class="status neutral">Saved locally</span><strong id="workspace-summary">Problem definition</strong></div>
-        <div id="cad-context-menu" class="cad-context-menu" hidden><button data-context-action="focus">Focus selection</button><button data-context-action="copy">Copy</button><button data-context-action="duplicate">Duplicate</button><button data-context-action="fixed">Toggle fixed</button><button data-context-action="delete" class="danger-text">Delete</button></div>
+        <div id="cad-context-menu" class="cad-context-menu" hidden><button data-context-action="focus">Focus selection</button><button data-context-action="copy">Copy</button><button data-context-action="duplicate">Duplicate</button><button data-context-action="lock">Lock</button><button data-context-action="front">Bring to front</button><button data-context-action="back">Send to back</button><button data-context-action="reset-rotation">Reset rotation</button><button data-context-action="fixed">Toggle fixed</button><button data-context-action="delete" class="danger-text">Delete</button></div>
       </main>
     </div>
   </section>
 
   <section id="sensitivity-page" class="app-page" hidden>
-    <div class="sensitivity-header"><button id="back-to-workspace" class="button ghost">← Workspace</button><div><small>SENSITIVITY</small><strong>Capacity study</strong></div><span class="sensitivity-header-spacer"></span><button id="edit-study-source" class="button ghost">Edit varied geometry</button><button id="open-export-study" class="button ghost">Export</button><button id="open-shortcuts-study" class="tool-button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">⌨</button><button id="theme-toggle-study" class="tool-button" aria-label="Toggle theme from sensitivity">◐</button></div>
+    <div class="sensitivity-header"><button id="back-to-workspace" class="button ghost" title="Open workspace (1)">← Workspace</button><div><small>SENSITIVITY</small><strong>Capacity study</strong></div><span class="sensitivity-header-spacer"></span><button id="edit-study-source" class="button ghost">Edit varied geometry</button><button id="open-export-study" class="button ghost" title="Export (E)">Export</button><button id="open-shortcuts-study" class="tool-button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">⌨</button><button id="theme-toggle-study" class="tool-button" aria-label="Toggle theme from sensitivity">◐</button></div>
     <div class="page-shell sensitivity-shell">
       <aside id="sensitivity-sidebar" class="side-panel"></aside>
       <main class="sensitivity-content">
@@ -181,12 +199,17 @@ cad = new CadWorkspace(document.getElementById("cad-canvas") as unknown as SVGSV
   onPlacementChange: placementChanged,
   onDraftingPath: (points) => addDraftingPath(points, false),
   onConstructionGuide: placeConstructionGuide,
+  onDimensionCreate: addDimension,
+  onDimensionChange: dimensionChanged,
+  onDimensionPositionChange: automaticDimensionChanged,
   onPlacementRejected: () => setStatus("error", "No feasible position was found near that location"),
   onPlacementAdjusted: () => setStatus("neutral", "Moved to the closest feasible position near the pointer"),
 });
 bindShell();
+syncWorkspaceOverlays();
 renderPackingSidebar();
 renderDraftingPanel();
+renderViewSettingsPanel();
 renderSensitivitySidebar();
 updateHistoryButtons();
 
@@ -215,12 +238,20 @@ function bindShell(): void {
   element<HTMLInputElement>("toolbar-part-color").addEventListener("input", (event) => mutate(() => {
     const color = (event.target as HTMLInputElement).value;
     selectedPrimitivesForColor().forEach((part) => { part.color = color; });
+    selectedTextsForColor().forEach((entry) => { entry.color = color; });
   }));
   element("join-material").addEventListener("click", joinSelectedMaterial);
   element("lock-selection").addEventListener("click", toggleSelectionLock);
   element("delete-selection").addEventListener("click", deleteToolbarSelection);
   element("toggle-dimensions").addEventListener("click", () => toggleOverlay("dimensions"));
   element("toggle-clearance").addEventListener("click", () => toggleOverlay("clearance"));
+  element("draw-dimension").addEventListener("click", () => toggleDimensionTool());
+  element("open-view-settings").addEventListener("click", () => {
+    const panel = element<HTMLElement>("view-settings-panel"), opening = panel.hidden;
+    closeToolbarPalettes(); closeDraftingPanel(); panel.hidden = !opening;
+    const button = element<HTMLButtonElement>("open-view-settings"); button.setAttribute("aria-pressed", String(opening)); button.classList.toggle("active", opening);
+    if (opening) renderViewSettingsPanel();
+  });
   element("respect-manual-constraints").addEventListener("click", () => {
     const button = element<HTMLButtonElement>("respect-manual-constraints"), enabled = button.getAttribute("aria-pressed") !== "true";
     button.setAttribute("aria-pressed", String(enabled)); button.classList.toggle("active", enabled); cad.setRespectFixed(enabled);
@@ -233,6 +264,7 @@ function bindShell(): void {
     element<HTMLButtonElement>("open-drafting-aids").classList.toggle("active", opening);
   });
   element("add-trace-image").addEventListener("click", () => element<HTMLInputElement>("toolbar-trace-image-input").click());
+  element("add-scene-text").addEventListener("click", addSceneText);
   element("add-vertical-guide").addEventListener("click", () => setConstructionGuideTool(90));
   element("add-horizontal-guide").addEventListener("click", () => setConstructionGuideTool(0));
   element("draw-drafting-line").addEventListener("click", () => setDraftPathTool("line"));
@@ -255,20 +287,36 @@ function bindShell(): void {
   canvas.addEventListener("contextmenu", (event) => {
     event.preventDefault();
     const target = (event.target as Element).closest<SVGElement>("[data-cad-kind]");
-    if (target) selectCad({ kind: target.dataset.cadKind as CadSelection["kind"], index: Number(target.dataset.cadIndex), ...(target.dataset.cadPart === undefined ? {} : { partIndex: Number(target.dataset.cadPart) }) } as CadSelection, target.dataset.cadPart === undefined ? undefined : Number(target.dataset.cadPart));
+    if (target) selectCad(target.dataset.cadKind === "auto-dimension"
+      ? { kind: "auto-dimension", index: Number(target.dataset.cadIndex), owner: target.dataset.autoDimensionOwner!, axis: target.dataset.autoDimensionAxis as "width" | "height" | "clearance" }
+      : { kind: target.dataset.cadKind as CadSelection["kind"], index: Number(target.dataset.cadIndex), ...(target.dataset.cadPart === undefined ? {} : { partIndex: Number(target.dataset.cadPart) }) } as CadSelection, target.dataset.cadPart === undefined ? undefined : Number(target.dataset.cadPart));
     contextMenu.style.left = `${event.clientX}px`; contextMenu.style.top = `${event.clientY}px`; contextMenu.hidden = false;
-    contextMenu.querySelector<HTMLButtonElement>('[data-context-action="fixed"]')!.hidden = selection?.kind !== "placement";
+    const kind = selection?.kind, layered = kind === "text" || kind === "trace" || kind === "drafting" || kind === "dimension";
+    contextMenu.querySelector<HTMLButtonElement>('[data-context-action="fixed"]')!.hidden = kind !== "placement";
+    contextMenu.querySelector<HTMLButtonElement>('[data-context-action="copy"]')!.hidden = !(kind === "item" || kind === "placement");
+    contextMenu.querySelector<HTMLButtonElement>('[data-context-action="duplicate"]')!.hidden = !kind || kind === "auto-dimension" || kind === "container" || kind === "exclusion";
+    contextMenu.querySelector<HTMLButtonElement>('[data-context-action="front"]')!.hidden = !layered;
+    contextMenu.querySelector<HTMLButtonElement>('[data-context-action="back"]')!.hidden = !layered;
+    const lockButton = contextMenu.querySelector<HTMLButtonElement>('[data-context-action="lock"]')!;
+    lockButton.hidden = !selection || kind === "dimension" || kind === "auto-dimension"; lockButton.textContent = selection && isLocked(selection) ? "Unlock" : "Lock";
+    contextMenu.querySelector<HTMLButtonElement>('[data-context-action="reset-rotation"]')!.hidden = !selection || kind === "dimension" || kind === "auto-dimension";
+    contextMenu.querySelector<HTMLButtonElement>('[data-context-action="delete"]')!.hidden = kind === "auto-dimension";
   });
   document.addEventListener("pointerdown", (event) => {
     if (!(event.target as Element).closest("#cad-context-menu")) contextMenu.hidden = true;
     if (!(event.target as Element).closest(".tool-popover")) closeToolbarPalettes();
     if (!(event.target as Element).closest("#drafting-panel, #open-drafting-aids")) closeDraftingPanel();
+    if (!(event.target as Element).closest("#view-settings-panel, #open-view-settings")) closeViewSettingsPanel();
   });
   contextMenu.querySelectorAll<HTMLButtonElement>("[data-context-action]").forEach((button) => button.addEventListener("click", () => {
     contextMenu.hidden = true;
     if (button.dataset.contextAction === "focus") cad.focusSelection();
     else if (button.dataset.contextAction === "copy") copySelectedItems();
-    else if (button.dataset.contextAction === "duplicate") { copySelectedItems(); pasteItems(); }
+    else if (button.dataset.contextAction === "duplicate") duplicateContextSelection();
+    else if (button.dataset.contextAction === "lock") toggleSelectionLock();
+    else if (button.dataset.contextAction === "front") reorderContextSelection("front");
+    else if (button.dataset.contextAction === "back") reorderContextSelection("back");
+    else if (button.dataset.contextAction === "reset-rotation") resetSelectionRotation();
     else if (button.dataset.contextAction === "delete") deleteToolbarSelection();
     else if (selection?.kind === "placement" && currentResult?.placements[selection.index]) { currentResult.placements[selection.index].fixed = !currentResult.placements[selection.index].fixed; placementChanged(selection.index, currentResult.placements[selection.index]); }
   }));
@@ -303,8 +351,10 @@ function handleShortcut(event: KeyboardEvent): boolean {
     element("cad-context-menu").hidden = true;
     if (activeGuideRotation !== null) { setConstructionGuideTool(null); return true; }
     if (activeDraftPathTool) { setDraftPathTool(null); return true; }
+    if (activeDimensionTool) { toggleDimensionTool(false); return true; }
     if (closeToolbarPalettes(true)) return true;
     if (!element<HTMLElement>("drafting-panel").hidden) { closeDraftingPanel(); return true; }
+    if (!element<HTMLElement>("view-settings-panel").hidden) { closeViewSettingsPanel(); return true; }
     const open = document.querySelector<HTMLDialogElement>("dialog[open]"); if (open) open.close();
     return !!open;
   }
@@ -339,12 +389,14 @@ function toggleSidebar(): void {
   const hidden = element("cad-shell").classList.toggle("panel-hidden");
   const button = element<HTMLButtonElement>("sidebar-toggle");
   button.setAttribute("aria-label", hidden ? "Show problem panel" : "Hide problem panel");
-  button.title = hidden ? "Show problem panel" : "Hide problem panel";
+  button.title = `${hidden ? "Show" : "Hide"} problem panel (P)`;
   requestAnimationFrame(() => cad.fit());
 }
 
 function toggleOverlay(key: keyof typeof display): void {
   display[key] = !display[key];
+  if (key === "dimensions") state.viewSettings.showDimensions = display[key]; else state.viewSettings.showClearance = display[key];
+  projects.save(state);
   const button = element<HTMLButtonElement>(key === "dimensions" ? "toggle-dimensions" : "toggle-clearance");
   button.classList.toggle("active", display[key]);
   button.setAttribute("aria-pressed", String(display[key]));
@@ -439,24 +491,25 @@ function renderPackingSidebar(): void {
   sidebar.querySelector("#reset-layout")?.addEventListener("click", () => { clearResults(); refreshPacking(true); setStatus("neutral", "Returned to problem definition"); });
   requestAnimationFrame(renderEntityPreviews);
   renderDraftingPanel();
+  renderViewSettingsPanel();
   updateToolbarState();
 }
 
 function entityButton(kind: "container" | "exclusion" | "item", index: number, name: string, meta: string): string {
   const key = `${kind}:${index}`;
   const selected = selections.some((entry) => entry.kind === kind && entry.index === index);
-  return `<button class="entity-row ${selected ? "selected" : ""}" data-cad-select="${key}" title="Select ${kind === "item" ? "this packable shape definition" : kind === "exclusion" ? "this keep-out region" : "this container region"}"><canvas data-entity-preview="${key}" aria-hidden="true"></canvas><span><strong>${escapeHtml(name)}</strong><small>${escapeHtml(meta)}</small></span></button>`;
+  return `<button class="entity-row ${selected ? "selected" : ""}" data-cad-select="${key}" title="${kind === "item" ? "Packable shape" : kind === "exclusion" ? "Exclusion" : "Container region"}"><canvas data-entity-preview="${key}" aria-hidden="true"></canvas><span><strong>${escapeHtml(name)}</strong><small>${escapeHtml(meta)}</small></span></button>`;
 }
 
 function lockedEntityButton(value: CadSelection): string {
   const key = `${value.kind}:${value.index}`, selected = selection ? sameSelection(selection, value) : false;
-  return `<button class="entity-row locked-row ${selected ? "selected" : ""}" data-cad-select="${key}" title="Select this locked entity to inspect or unlock it"><span class="locked-entity-icon" aria-hidden="true">⌑</span><span><strong>${escapeHtml(selectionLabel(value))}</strong><small>${escapeHtml(selectionKindLabel(value))}</small></span></button>`;
+  return `<button class="entity-row locked-row ${selected ? "selected" : ""}" data-cad-select="${key}" title="Locked"><span class="locked-entity-icon" aria-hidden="true">⌑</span><span><strong>${escapeHtml(selectionLabel(value))}</strong><small>${escapeHtml(selectionKindLabel(value))}</small></span></button>`;
 }
 
 function selectionKindLabel(value: CadSelection): string {
   return value.kind === "container" ? (state.containerParts[value.index]?.operation === "subtract" ? "Container cut-out" : "Container material")
     : value.kind === "exclusion" ? "Exclusion" : value.kind === "item" ? "Packable shape"
-    : value.kind === "guide" ? "Drafting guide" : value.kind === "drafting" ? "Drafting shape" : value.kind === "trace" ? "Background image" : "Packed item";
+    : value.kind === "guide" ? "Drafting guide" : value.kind === "drafting" ? "Drafting shape" : value.kind === "dimension" || value.kind === "auto-dimension" ? "Dimension" : value.kind === "text" ? "Scene text" : value.kind === "trace" ? "Background image" : "Packed item";
 }
 
 function selectionLabel(value: CadSelection): string {
@@ -465,10 +518,14 @@ function selectionLabel(value: CadSelection): string {
     : value.kind === "item" ? state.items[value.index]?.id ?? "Shape"
     : value.kind === "guide" ? `Construction line ${value.index + 1}`
     : value.kind === "drafting" ? `${state.drafting.shapes[value.index]?.closed ? "Construction shape" : "Construction path"} ${value.index + 1}`
+    : value.kind === "dimension" ? `Dimension ${value.index + 1}`
+    : value.kind === "auto-dimension" ? `${value.owner} ${value.axis}`
+    : value.kind === "text" ? `Text ${value.index + 1}`
     : value.kind === "trace" ? `Reference image ${value.index + 1}` : currentResult?.placements[value.index]?.item_id ?? "Packed item";
 }
 
 function lockReference(value: CadSelection): EditorState["lockedEntities"][number] | null {
+  if (value.kind === "dimension" || value.kind === "auto-dimension") return null;
   if (value.kind === "placement") {
     const id = currentResult?.placements[value.index]?.item_id;
     return id ? { kind: "item", id } : null;
@@ -478,7 +535,7 @@ function lockReference(value: CadSelection): EditorState["lockedEntities"][numbe
     : value.kind === "item" ? state.items[value.index]?.id
     : value.kind === "guide" ? state.drafting.guides[value.index]?.id
     : value.kind === "drafting" ? state.drafting.shapes[value.index]?.id
-    : state.drafting.traceImages[value.index]?.id;
+    : value.kind === "text" ? state.drafting.texts[value.index]?.id : state.drafting.traceImages[value.index]?.id;
   return id ? { kind: value.kind, id } : null;
 }
 
@@ -488,6 +545,7 @@ function selectionForLock(ref: EditorState["lockedEntities"][number]): CadSelect
     : ref.kind === "item" ? state.items.findIndex((entry) => entry.id === ref.id)
     : ref.kind === "guide" ? state.drafting.guides.findIndex((entry) => entry.id === ref.id)
     : ref.kind === "drafting" ? state.drafting.shapes.findIndex((entry) => entry.id === ref.id)
+    : ref.kind === "text" ? state.drafting.texts.findIndex((entry) => entry.id === ref.id)
     : state.drafting.traceImages.findIndex((entry) => entry.id === ref.id);
   return index >= 0 ? { kind: ref.kind, index } as CadSelection : null;
 }
@@ -515,27 +573,42 @@ function toggleSelectionLock(): void {
 }
 
 function selectionInspector(): string {
-  if (selection && isLocked(selection)) return `<div class="inspector-heading"><div><small>LOCKED ENTITY</small><h2>${escapeHtml(selectionLabel(selection))}</h2></div><span class="selection-badge">Locked</span></div><p class="hint">This entity cannot be selected, moved, resized, rotated, or otherwise edited in the CAD view.</p><button data-toggle-lock class="button full">Unlock entity</button>`;
-  if (selections.length > 1) return `<div class="inspector-empty"><small>MULTI-SELECTION</small><strong>${selections.length} ${selections.every(isPartSelection) ? "parts" : "objects"} selected</strong><p>Drag any selected part to move the group, use Colour to recolour them, or Delete to remove exactly the selected geometry.</p></div>`;
-  if (!selection) return `<div class="inspector-empty"><small>INSPECTOR</small><strong>Nothing selected</strong><p>Click a container region, exclusion, shape definition, or packed item in the drawing.</p></div>`;
+  if (selection && isLocked(selection)) return `<div class="inspector-heading"><div><small>LOCKED ENTITY</small><h2>${escapeHtml(selectionLabel(selection))}</h2></div><span class="selection-badge">Locked</span></div><button data-toggle-lock class="button full">Unlock</button>`;
+  if (selections.length > 1) return `<div class="inspector-empty"><small>MULTI-SELECTION</small><strong>${selections.length} ${selections.every(isPartSelection) ? "parts" : "objects"} selected</strong></div>`;
+  if (!selection) return `<div class="inspector-empty"><small>INSPECTOR</small><strong>Nothing selected</strong></div>`;
   if (selection.kind === "guide") {
     const guide = state.drafting.guides[selection.index];
-    return guide ? `<div class="inspector-heading"><div><small>DRAFTING GUIDE</small><h2>Construction line ${selection.index + 1}</h2></div><span class="selection-badge">${format(guide.rotation)}°</span></div><p class="hint">Drag the line to move it or use the amber handle to rotate it. It remains an infinite snapping reference.</p><button data-delete-object class="button danger full">Delete line</button>` : emptyConstructionHtml("Guide unavailable", "Select another drafting entity.");
+    return guide ? `<div class="inspector-heading"><div><small>DRAFTING GUIDE</small><h2>Construction line ${selection.index + 1}</h2></div><span class="selection-badge">${format(guide.rotation)}°</span></div><button data-delete-object class="button danger full">Delete line</button>` : emptyConstructionHtml("Guide unavailable", "");
   }
   if (selection.kind === "drafting") {
     const shape = state.drafting.shapes[selection.index];
-    return shape ? `<div class="inspector-heading"><div><small>DRAFTING SHAPE</small><h2>${shape.closed ? "Construction shape" : "Construction path"} ${selection.index + 1}</h2></div><span class="selection-badge">${shape.points.length} points</span></div><p class="hint">Drag the amber point grips to edit this path. Points snap to the unit grid; hold Alt for free placement. The whole construction can also be moved, rotated, or resized.</p><button data-delete-object class="button danger full">Delete drafting shape</button>` : emptyConstructionHtml("Drafting shape unavailable", "Select another drafting entity.");
+    return shape ? `<div class="inspector-heading"><div><small>DRAFTING SHAPE</small><h2>${shape.closed ? "Construction shape" : "Construction path"} ${selection.index + 1}</h2></div><span class="selection-badge">${shape.points.length} points</span></div><p class="hint">Grid snap · Alt bypass</p><button data-delete-object class="button danger full">Delete drafting shape</button>` : emptyConstructionHtml("Drafting shape unavailable", "");
+  }
+  if (selection.kind === "dimension") {
+    const dimension = state.dimensions[selection.index];
+    if (!dimension) return emptyConstructionHtml("Dimension unavailable", "");
+    const measured = Math.hypot(dimension.end.x - dimension.start.x, dimension.end.y - dimension.start.y);
+    return `<div class="inspector-heading"><div><small>ENGINEERING DIMENSION</small><h2>Dimension ${selection.index + 1}</h2></div><span class="selection-badge">${format(measured)}</span></div>
+      <div class="field-grid two">${dimensionNumber("Start X", "start.x", dimension.start.x)}${dimensionNumber("Start Y", "start.y", dimension.start.y)}${dimensionNumber("End X", "end.x", dimension.end.x)}${dimensionNumber("End Y", "end.y", dimension.end.y)}${dimensionNumber("Offset X", "offset.x", dimension.offset.x)}${dimensionNumber("Offset Y", "offset.y", dimension.offset.y)}<label class="wide">Text override<input data-dimension-field="textOverride" value="${escapeHtml(dimension.textOverride)}" placeholder="Calculated value"></label></div><p class="hint">Drag the dimension line or text to reposition it.</p><button data-delete-object class="button danger full">Delete dimension</button>`;
+  }
+  if (selection.kind === "auto-dimension") {
+    const position = state.dimensionPositions[selection.owner] ?? { x: 0, y: 0 }, key = `${selection.owner}:${selection.axis}`;
+    return `<div class="inspector-heading"><div><small>GENERATED DIMENSION</small><h2>${escapeHtml(selection.owner)}</h2></div><span class="selection-badge">${escapeHtml(selection.axis)}</span></div><div class="field-grid two">${autoDimensionNumber("Offset X", "x", position.x)}${autoDimensionNumber("Offset Y", "y", position.y)}<label class="wide">Text override<input data-auto-dimension-field="override" value="${escapeHtml(state.dimensionOverrides[key] ?? "")}" placeholder="Calculated value"></label></div><p class="hint">Drag the line or label to move it · Alt bypasses grid snap.</p><button data-reset-auto-dimension class="button ghost full">Reset generated dimension</button>`;
   }
   if (selection.kind === "trace") {
     const trace = state.drafting.traceImages[selection.index];
-    return trace ? `<div class="inspector-heading"><div><small>TRACE IMAGE</small><h2>Reference image ${selection.index + 1}</h2></div><span class="selection-badge">${format(trace.opacity * 100)}%</span></div><p class="hint">Drag, rotate, or resize this image like any other canvas entity. Detailed values are available under Drafting aids.</p><button data-delete-object class="button danger full">Remove image</button>` : emptyConstructionHtml("Trace image unavailable", "Add another image from the CAD toolbar.");
+    return trace ? `<div class="inspector-heading"><div><small>TRACE IMAGE</small><h2>Reference image ${selection.index + 1}</h2></div><span class="selection-badge">${format(trace.opacity * 100)}%</span></div><button data-delete-object class="button danger full">Remove image</button>` : emptyConstructionHtml("Trace image unavailable", "");
+  }
+  if (selection.kind === "text") {
+    const entry = state.drafting.texts[selection.index];
+    return entry ? `<div class="inspector-heading"><div><small>SCENE TEXT</small><h2>Text ${selection.index + 1}</h2></div><span class="selection-badge">Drafting aid</span></div><div class="field-grid two"><label class="wide">Text<textarea rows="4" data-text-field="text">${escapeHtml(entry.text)}</textarea></label>${textNumber("X", "x", entry.x)}${textNumber("Y", "y", entry.y)}${textNumber("Size", "fontSize", entry.fontSize, .25)}${textNumber("Rotation°", "rotation", entry.rotation, 1)}<label>Font<select data-text-field="fontFamily"><option value="mono" ${entry.fontFamily === "mono" ? "selected" : ""}>Monospace</option><option value="sans" ${entry.fontFamily === "sans" ? "selected" : ""}>Sans serif</option><option value="serif" ${entry.fontFamily === "serif" ? "selected" : ""}>Serif</option></select></label><label>Alignment<select data-text-field="align"><option value="left" ${entry.align === "left" ? "selected" : ""}>Left</option><option value="center" ${entry.align === "center" ? "selected" : ""}>Centre</option><option value="right" ${entry.align === "right" ? "selected" : ""}>Right</option></select></label><label class="checkbox-field"><input type="checkbox" data-text-field="bold" ${entry.bold ? "checked" : ""}> Bold</label><label class="checkbox-field"><input type="checkbox" data-text-field="italic" ${entry.italic ? "checked" : ""}> Italic</label><label class="checkbox-field wide"><input type="checkbox" data-text-field="underline" ${entry.underline ? "checked" : ""}> Underline</label><label class="wide">Colour<input type="color" data-text-field="color" value="${escapeHtml(entry.color)}"></label></div><p class="hint">Drag to move · use the corner and top handles to resize and rotate.</p><button data-delete-object class="button danger full">Delete text</button>` : emptyConstructionHtml("Text unavailable", "");
   }
   if (selection.kind === "placement") {
     const placement = currentResult?.placements[selection.index];
     if (!placement) return `<div class="inspector-empty"><strong>Placement unavailable</strong></div>`;
     return `<div class="inspector-heading"><div><small>PACKED ITEM ${selection.index + 1}</small><h2>${escapeHtml(placement.item_id)}</h2></div><span class="selection-badge">Manual edit</span></div>
       <div class="field-grid three">${placementField("X", "x", placement.x, .1)}${placementField("Y", "y", placement.y, .1)}${placementField("Rotation°", "rotation_deg", placement.rotation_deg, 1)}</div>
-      <p class="hint">Drag this item directly in the workspace or use the amber rotation handle. Manual changes are retained in this result but are not solver-validated.</p>
+      <p class="hint">Manual layout · validation stale</p>
       <button id="reset-layout" class="button ghost full">Discard solved layout</button>`;
   }
   if (selection.kind === "container") {
@@ -545,7 +618,6 @@ function selectionInspector(): string {
       <div class="field-grid two"><label>ID<input data-object-field="id" value="${escapeHtml(entry.id)}"></label><label>Boolean operation<select data-object-field="operation"><option value="add" ${entry.operation === "add" ? "selected" : ""}>Add material</option><option value="subtract" ${entry.operation === "subtract" ? "selected" : ""}>Subtract cut-out</option></select></label></div>
       ${primitiveEditorHtml(entry.primitive)}
       ${snapEditorHtml(state.containerParts.map((region) => region.primitive), entry.primitive, "REGION CONNECTION")}
-      <p class="hint">Drag the region in the drawing to move it, use the amber handle to rotate it, or enter exact values here.</p>
       <button data-delete-object class="button danger full">Delete region</button>`;
   }
   if (selection.kind === "exclusion") {
@@ -556,8 +628,7 @@ function selectionInspector(): string {
     return `<div class="inspector-heading"><div><small>EXCLUSION</small><h2>${escapeHtml(entry.id)}</h2></div><span class="selection-badge">${format(entry.clearance)} clear</span></div>
       <div class="field-grid two"><label>ID<input data-object-field="id" value="${escapeHtml(entry.id)}"></label><label>Clearance<input type="number" step=".05" data-object-field="clearance" value="${format(entry.clearance)}"></label></div>
       ${constructionEditorHtml(entry.parts, part, "EXCLUSION PART")}
-      <div class="inline-actions"><button data-delete-part class="button danger" ${part ? "" : "disabled"}>Delete part</button><button data-delete-object class="button danger">Delete exclusion</button></div>
-      <p class="hint">All parts form one unified exclusion. Drag, rotate, or resize the complete construction in the drawing.</p>`;
+      <div class="inline-actions"><button data-delete-part class="button danger" ${part ? "" : "disabled"}>Delete part</button><button data-delete-object class="button danger">Delete exclusion</button></div>`;
   }
   const item = state.items[selection.index];
   if (!item) return emptyConstructionHtml("Shape unavailable", "Select or add a packable shape.");
@@ -566,18 +637,17 @@ function selectionInspector(): string {
   return `<div class="inspector-heading"><div><small>PACKABLE SHAPE</small><h2>${escapeHtml(item.id)}</h2></div><span class="selection-badge">${item.quantity} requested</span></div>
     <div class="field-grid two"><label>ID<input data-object-field="id" value="${escapeHtml(item.id)}"></label><label>Quantity<input type="number" step="1" data-object-field="quantity" value="${item.quantity}"></label><label>Rotation search<select data-object-field="rotationMode"><option value="continuous" ${item.rotationMode === "continuous" ? "selected" : ""}>Adaptive</option><option value="discrete" ${item.rotationMode === "discrete" ? "selected" : ""}>Fixed angles</option></select></label><label>Coupling<select data-object-field="rotationCoupling"><option value="independent" ${item.rotationCoupling === "independent" ? "selected" : ""}>Independent</option><option value="shared_per_item" ${item.rotationCoupling === "shared_per_item" ? "selected" : ""}>Shared</option></select></label>${item.rotationMode === "continuous" ? objectNumber("Minimum°", "minRotation", item.minRotation, 1) + objectNumber("Maximum°", "maxRotation", item.maxRotation, 1) : `<label class="wide">Angles<input data-object-field="rotations" value="${escapeHtml(item.rotations)}"></label>`}</div>
     ${constructionEditorHtml(item.parts, part, "PART CONSTRAINT")}
-    <div class="inline-actions"><button data-delete-part class="button danger" ${part ? "" : "disabled"}>Delete part</button><button data-delete-object class="button danger">Delete item</button></div>
-    <p class="hint">Drag the complete shape to move it. The top handle rotates the whole item; the corner handle scales every part and constraint together.</p>`;
+    <div class="inline-actions"><button data-delete-part class="button danger" ${part ? "" : "disabled"}>Delete part</button><button data-delete-object class="button danger">Delete item</button></div>`;
 }
 
 function constructionEditorHtml(parts: PrimitiveEditor[], part: PrimitiveEditor | undefined, snapTitle: string): string {
   return `<div class="inline-part-heading"><label>Editing part<select id="item-part-select" ${part ? "" : "disabled"}>${parts.map((entry, index) => `<option value="${index}" ${index === selectedPartIndex ? "selected" : ""}>${escapeHtml(entry.id)} · ${entry.kind}</option>`).join("")}</select></label><span>${part ? `${selectedPartIndex + 1}/${parts.length}` : "0/0"}</span></div>
-    ${part ? primitiveEditorHtml(part) + snapEditorHtml(parts, part, snapTitle) : '<div class="inspector-empty compact"><strong>Empty construction</strong><p>Add a primitive below to continue editing.</p></div>'}
+    ${part ? primitiveEditorHtml(part) + snapEditorHtml(parts, part, snapTitle) : '<div class="inspector-empty compact"><strong>Empty construction</strong></div>'}
     <div class="part-add-row">${(["rectangle", "triangle", "circle", "polygon", "bezier"] as const).map((kind) => `<button data-add-part="${kind}">+ ${kind}</button>`).join("")}</div>`;
 }
 
 function emptyConstructionHtml(title: string, message: string): string {
-  return `<div class="inspector-empty"><small>INSPECTOR</small><strong>${escapeHtml(title)}</strong><p>${escapeHtml(message)}</p></div>`;
+  return `<div class="inspector-empty"><small>INSPECTOR</small><strong>${escapeHtml(title)}</strong>${message ? `<p>${escapeHtml(message)}</p>` : ""}</div>`;
 }
 
 function primitiveEditorHtml(part: PrimitiveEditor): string {
@@ -593,11 +663,36 @@ function snapEditorHtml(parts: PrimitiveEditor[], part: PrimitiveEditor, title: 
   const targets = parts.filter((entry) => entry.id !== part.id && !dependsOn(parts, entry.id, part.id));
   return `<div class="inline-snap"><div class="primitive-editor-title"><small>${title}</small><span>${part.snap ? "Anchored" : "Free"}</span></div>
     <label>Snap to<select data-snap-target><option value="">Free position</option>${targets.map((target) => `<option value="${escapeHtml(target.id)}" ${part.snap?.targetId === target.id ? "selected" : ""}>${escapeHtml(target.id)}</option>`).join("")}</select></label>
-    ${part.snap ? `<div class="field-grid two"><label>Own anchor<select data-snap-anchor="ownAnchor">${anchorOptions(part.snap.ownAnchor)}</select></label><label>Target anchor<select data-snap-anchor="targetAnchor">${anchorOptions(part.snap.targetAnchor)}</select></label>${snapNumber("Offset X", "x", part.snap.offset.x)}${snapNumber("Offset Y", "y", part.snap.offset.y)}</div><button id="detach-inline-snap" class="button ghost full">Detach at current position</button>` : '<p class="hint">Choose another part to create a live anchor relationship.</p>'}
+    ${part.snap ? `<div class="field-grid two"><label>Own anchor<select data-snap-anchor="ownAnchor">${anchorOptions(part.snap.ownAnchor)}</select></label><label>Target anchor<select data-snap-anchor="targetAnchor">${anchorOptions(part.snap.targetAnchor)}</select></label>${snapNumber("Offset X", "x", part.snap.offset.x)}${snapNumber("Offset Y", "y", part.snap.offset.y)}</div><button id="detach-inline-snap" class="button ghost full">Detach at current position</button>` : ""}
   </div>`;
 }
 
 function bindInlineInspector(sidebar: HTMLElement): void {
+  sidebar.querySelectorAll<HTMLInputElement>("[data-auto-dimension-field]").forEach((input) => input.addEventListener("change", () => mutate(() => {
+    if (selection?.kind !== "auto-dimension") return;
+    const field = input.dataset.autoDimensionField!;
+    if (field === "override") state.dimensionOverrides[`${selection.owner}:${selection.axis}`] = input.value;
+    else { const position = state.dimensionPositions[selection.owner] ?? { x: 0, y: 0 }; position[field as "x" | "y"] = Number(input.value); state.dimensionPositions[selection.owner] = position; }
+  })));
+  sidebar.querySelector("[data-reset-auto-dimension]")?.addEventListener("click", () => mutate(() => {
+    if (selection?.kind !== "auto-dimension") return;
+    delete state.dimensionOverrides[`${selection.owner}:${selection.axis}`]; delete state.dimensionPositions[selection.owner];
+  }));
+  sidebar.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("[data-text-field]").forEach((input) => input.addEventListener("change", () => mutate(() => {
+    if (selection?.kind !== "text") return;
+    const entry = state.drafting.texts[selection.index]; if (!entry) return;
+    const field = input.dataset.textField!;
+    if (field === "text" || field === "color" || field === "fontFamily" || field === "align") setField(entry, field, input.value);
+    else if (field === "bold" || field === "italic" || field === "underline") setField(entry, field, (input as HTMLInputElement).checked);
+    else setField(entry, field, field === "fontSize" ? Math.max(.05, Number(input.value)) : Number(input.value));
+  })));
+  sidebar.querySelectorAll<HTMLInputElement>("[data-dimension-field]").forEach((input) => input.addEventListener("change", () => mutate(() => {
+    if (selection?.kind !== "dimension") return;
+    const dimension = state.dimensions[selection.index]; if (!dimension) return;
+    const field = input.dataset.dimensionField!;
+    if (field === "textOverride") dimension.textOverride = input.value;
+    else { const [owner, key] = field.split(".") as ["start" | "end" | "offset", "x" | "y"]; dimension[owner][key] = Number(input.value); }
+  })));
   sidebar.querySelector<HTMLSelectElement>("#item-part-select")?.addEventListener("change", (event) => {
     selectedPartIndex = Number((event.target as HTMLSelectElement).value); cad.setSelection(selection, selectedPartIndex, selections); renderPackingSidebar();
   });
@@ -671,10 +766,10 @@ function renderDraftingPanel(): void {
       <div class="field-grid two"><label>Unit grid<input type="number" min=".001" step=".05" data-drafting-field="gridStep" value="${format(state.drafting.gridStep)}"></label><label class="checkbox-field"><input type="checkbox" data-drafting-field="snapToGrid" ${state.drafting.snapToGrid ? "checked" : ""}> Snap to grid</label><label class="checkbox-field wide"><input type="checkbox" data-drafting-field="smartSnap" ${state.drafting.smartSnap ? "checked" : ""}> Smart size & alignment snap</label></div>
       <div class="primitive-editor-title"><small>CONSTRUCTION LINES</small><span>${state.drafting.guides.length}</span></div>
       <div class="guide-add-row"><button data-add-guide="90" class="${activeGuideRotation === 90 ? "active" : ""}">+ Vertical</button><button data-add-guide="0" class="${activeGuideRotation === 0 ? "active" : ""}">+ Horizontal</button></div>
-      ${state.drafting.guides.map((guide, index) => isLocked({ kind: "guide", index }) ? "" : `<div class="drafting-entity-card"><div class="field-grid three">${draftingEntityNumber("X", "guide", index, "x", guide.x)}${draftingEntityNumber("Y", "guide", index, "y", guide.y)}${draftingEntityNumber("Angle°", "guide", index, "rotation", guide.rotation, 1)}</div><button data-delete-guide="${index}" class="text-button danger-text">Delete line</button></div>`).join("") || '<p class="hint">Add lines directly from the CAD toolbar, then drag or rotate them on the canvas.</p>'}
+      ${state.drafting.guides.map((guide, index) => isLocked({ kind: "guide", index }) ? "" : `<div class="drafting-entity-card"><div class="field-grid three">${draftingEntityNumber("X", "guide", index, "x", guide.x)}${draftingEntityNumber("Y", "guide", index, "y", guide.y)}${draftingEntityNumber("Angle°", "guide", index, "rotation", guide.rotation, 1)}</div><button data-delete-guide="${index}" class="text-button danger-text">Delete line</button></div>`).join("") || '<p class="hint">No guides</p>'}
       <div class="primitive-editor-title trace-heading"><small>TRACE IMAGES</small><span>${state.drafting.traceImages.length}</span></div>
       <button type="button" data-choose-trace class="button ghost full">Choose another image…</button>
-      ${state.drafting.traceImages.map((trace, index) => isLocked({ kind: "trace", index }) ? "" : `<div class="drafting-entity-card"><div class="field-grid three trace-fields">${draftingEntityNumber("X", "trace", index, "x", trace.x)}${draftingEntityNumber("Y", "trace", index, "y", trace.y)}${draftingEntityNumber("Width", "trace", index, "width", trace.width)}${draftingEntityNumber("Height", "trace", index, "height", trace.height)}${draftingEntityNumber("Angle°", "trace", index, "rotation", trace.rotation, 1)}${draftingEntityNumber("Opacity", "trace", index, "opacity", trace.opacity, .05)}</div><button data-remove-trace="${index}" class="text-button danger-text">Remove image</button></div>`).join("") || '<p class="hint">PNG, JPEG, WebP, or SVG. Each image can be selected and transformed on the canvas.</p>'}
+      ${state.drafting.traceImages.map((trace, index) => isLocked({ kind: "trace", index }) ? "" : `<div class="drafting-entity-card"><div class="field-grid three trace-fields">${draftingEntityNumber("X", "trace", index, "x", trace.x)}${draftingEntityNumber("Y", "trace", index, "y", trace.y)}${draftingEntityNumber("Width", "trace", index, "width", trace.width)}${draftingEntityNumber("Height", "trace", index, "height", trace.height)}${draftingEntityNumber("Angle°", "trace", index, "rotation", trace.rotation, 1)}${draftingEntityNumber("Opacity", "trace", index, "opacity", trace.opacity, .05)}</div><button data-remove-trace="${index}" class="text-button danger-text">Remove image</button></div>`).join("") || '<p class="hint">No images</p>'}
     </div>`;
   panel.hidden = hidden;
   panel.querySelector("[data-close-drafting]")?.addEventListener("click", closeDraftingPanel);
@@ -685,6 +780,46 @@ function renderDraftingPanel(): void {
 function closeDraftingPanel(): void {
   const panel = element<HTMLElement>("drafting-panel"); panel.hidden = true;
   const button = element<HTMLButtonElement>("open-drafting-aids"); button.setAttribute("aria-pressed", "false"); button.classList.remove("active");
+}
+
+function renderViewSettingsPanel(): void {
+  const panel = element<HTMLElement>("view-settings-panel"), hidden = panel.hidden, view = state.viewSettings;
+  panel.innerHTML = `<header><div><small>DISPLAY</small><strong>View settings</strong></div><button type="button" data-close-view-settings aria-label="Close view settings">×</button></header>
+    <div class="cad-tool-panel-body">
+      <div class="view-settings-group"><div class="primitive-editor-title"><small>OVERLAYS</small><span>Canvas</span></div>
+        <div class="field-grid two"><label class="checkbox-field"><input type="checkbox" data-view-overlay="dimensions" ${display.dimensions ? "checked" : ""}> Dimensions</label><label class="checkbox-field"><input type="checkbox" data-view-field="showGrid" ${view.showGrid ? "checked" : ""}> Grid</label><label class="wide">Grid spacing<input type="number" min=".001" step=".05" data-view-field="gridStep" value="${format(state.drafting.gridStep)}"></label></div>
+      </div>
+      <div class="view-settings-group"><div class="primitive-editor-title"><small>ENGINEERING DIMENSIONS</small><span>Annotation</span></div>
+        <div class="field-grid two"><label>Text size px<input type="number" min="7" max="28" step="1" data-view-field="dimensionTextSize" value="${view.dimensionTextSize}"></label><label>Decimals<input type="number" min="0" max="5" step="1" data-view-field="dimensionPrecision" value="${view.dimensionPrecision}"></label><label class="wide">Units<select data-view-field="dimensionUnit"><option value="" ${view.dimensionUnit === "" ? "selected" : ""}>No unit</option>${["mm", "cm", "m", "in"].map((unit) => `<option value="${unit}" ${view.dimensionUnit === unit ? "selected" : ""}>${unit}</option>`).join("")}</select></label></div>
+      </div>
+      <div class="view-settings-group"><div class="primitive-editor-title"><small>GEOMETRY</small><span>Linework</span></div>
+        <label>Edge thickness px<input type="number" min=".5" max="5" step=".1" data-view-field="edgeThickness" value="${view.edgeThickness}"></label>
+      </div>
+    </div>`;
+  panel.hidden = hidden;
+  panel.querySelector("[data-close-view-settings]")?.addEventListener("click", closeViewSettingsPanel);
+  panel.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-view-field]").forEach((input) => input.addEventListener("change", () => {
+    const before = structuredClone(state), key = input.dataset.viewField!;
+    if (key === "gridStep") state.drafting.gridStep = Math.max(.001, Number(input.value) || .5);
+    else if (key === "showGrid") state.viewSettings.showGrid = (input as HTMLInputElement).checked;
+    else if (key === "dimensionTextSize") state.viewSettings.dimensionTextSize = clampNumber(Number(input.value), 7, 28);
+    else if (key === "edgeThickness") state.viewSettings.edgeThickness = clampNumber(Number(input.value), .5, 5);
+    else if (key === "dimensionPrecision") state.viewSettings.dimensionPrecision = Math.round(clampNumber(Number(input.value), 0, 5));
+    else if (key === "dimensionUnit") state.viewSettings.dimensionUnit = input.value;
+    history.commit(before, state); projects.save(state); updateHistoryButtons(); refreshPacking(); renderDraftingPanel(); renderViewSettingsPanel();
+    setStatus("neutral", "View settings saved");
+  }));
+  panel.querySelector<HTMLInputElement>("[data-view-overlay]")?.addEventListener("change", (event) => {
+    display.dimensions = (event.target as HTMLInputElement).checked;
+    state.viewSettings.showDimensions = display.dimensions; projects.save(state);
+    const button = element<HTMLButtonElement>("toggle-dimensions"); button.classList.toggle("active", display.dimensions); button.setAttribute("aria-pressed", String(display.dimensions));
+    cad.setOverlays(display.dimensions, display.clearance);
+  });
+}
+
+function closeViewSettingsPanel(): void {
+  const panel = element<HTMLElement>("view-settings-panel"); panel.hidden = true;
+  const button = element<HTMLButtonElement>("open-view-settings"); button.setAttribute("aria-pressed", "false"); button.classList.remove("active");
 }
 
 function bindDraftingControls(host: HTMLElement): void {
@@ -728,6 +863,18 @@ function bindTraceImageInput(input: HTMLInputElement): void {
   });
 }
 
+function addSceneText(): void {
+  const points = resolveGeometry(toProblem(state)).container.flat();
+  const centerX = points.length ? (Math.min(...points.map((point) => point.x)) + Math.max(...points.map((point) => point.x))) / 2 : 0;
+  const centerY = points.length ? (Math.min(...points.map((point) => point.y)) + Math.max(...points.map((point) => point.y))) / 2 : 0;
+  const step = Math.max(state.drafting.gridStep, 1e-6), x = state.drafting.snapToGrid ? Math.round(centerX / step) * step : centerX, y = state.drafting.snapToGrid ? Math.round(centerY / step) * step : centerY;
+  mutate(() => {
+    state.drafting.texts.push({ id: crypto.randomUUID(), text: "Annotation", x: roundForEditor(x), y: roundForEditor(y), fontSize: 1.5, rotation: 0, color: "#e8edf3", fontFamily: "mono", align: "left", bold: false, italic: false, underline: false });
+    selection = { kind: "text", index: state.drafting.texts.length - 1 }; selections = [selection];
+  });
+  requestAnimationFrame(() => cad.focusSelection());
+}
+
 function renderEntityPreviews(): void {
   const problem = toProblem(state);
   const geometry = resolveGeometry(problem);
@@ -744,7 +891,7 @@ function renderEntityPreviews(): void {
 }
 
 function selectedObject(): object | null {
-  if (!selection || selection.kind === "placement") return null;
+  if (!selection || selection.kind === "placement" || selection.kind === "auto-dimension" || selection.kind === "dimension" || selection.kind === "guide" || selection.kind === "drafting" || selection.kind === "trace" || selection.kind === "text") return null;
   if (selection.kind === "container") return state.containerParts[selection.index];
   if (selection.kind === "exclusion") return state.exclusions[selection.index];
   return state.items[selection.index];
@@ -754,7 +901,8 @@ function selectedPrimitive(): PrimitiveEditor | null {
   if (!selection || selection.kind === "placement") return null;
   if (selection.kind === "container") return state.containerParts[selection.index]?.primitive ?? null;
   if (selection.kind === "exclusion") return state.exclusions[selection.index]?.parts[selectedPartIndex] ?? null;
-  return state.items[selection.index]?.parts[selectedPartIndex] ?? null;
+  if (selection.kind === "item") return state.items[selection.index]?.parts[selectedPartIndex] ?? null;
+  return null;
 }
 
 function selectedPrimitivesForColor(): PrimitiveEditor[] {
@@ -768,13 +916,18 @@ function selectedPrimitivesForColor(): PrimitiveEditor[] {
       const values = state.exclusions[entry.index]?.parts ?? []; parts.push(...(entry.partIndex === undefined ? values : values[entry.partIndex] ? [values[entry.partIndex]] : []));
     } else if (entry.kind === "item") {
       const values = state.items[entry.index]?.parts ?? []; parts.push(...(entry.partIndex === undefined ? values : values[entry.partIndex] ? [values[entry.partIndex]] : []));
-    } else {
+    } else if (entry.kind === "placement") {
       const itemId = currentResult?.placements[entry.index]?.item_id;
       const item = state.items.find((candidate) => candidate.id === itemId);
       if (item) parts.push(...item.parts);
     }
   });
   return [...new Set(parts)];
+}
+
+function selectedTextsForColor(): EditorState["drafting"]["texts"] {
+  if (selections.some(isLocked)) return [];
+  return selections.flatMap((entry) => entry.kind === "text" && state.drafting.texts[entry.index] ? [state.drafting.texts[entry.index]] : []);
 }
 
 function selectedConstraintParts(): PrimitiveEditor[] | null {
@@ -839,6 +992,36 @@ function setDraftPathTool(tool: "line" | "polyline" | null): void {
     button.classList.toggle("active", next === kind); button.setAttribute("aria-pressed", String(next === kind));
   });
   if (next) setStatus("neutral", next === "line" ? "Click two endpoints for the drafting line" : "Click points; double-click or press Enter to finish");
+}
+
+function toggleDimensionTool(force?: boolean): void {
+  activeDimensionTool = force ?? !activeDimensionTool;
+  if (activeDimensionTool) {
+    activeDraftPathTool = null; clearDraftPathTool(); activeGuideRotation = null; syncConstructionGuideButtons();
+    display.dimensions = true; state.viewSettings.showDimensions = true; projects.save(state); syncWorkspaceOverlays(); setStatus("neutral", "Click two points on objects to create a dimension · Alt bypasses snapping");
+  }
+  cad.setDimensionTool(activeDimensionTool);
+  const button = element<HTMLButtonElement>("draw-dimension"); button.classList.toggle("active", activeDimensionTool); button.setAttribute("aria-pressed", String(activeDimensionTool));
+}
+
+function addDimension(start: Point, end: Point): void {
+  if (Math.hypot(end.x - start.x, end.y - start.y) < 1e-8) { setStatus("error", "Dimension endpoints must be different"); return; }
+  mutate(() => {
+    state.dimensions.push({ id: crypto.randomUUID(), start, end, offset: { x: 0, y: 0 }, textOverride: "" });
+    selection = { kind: "dimension", index: state.dimensions.length - 1 }; selections = [selection];
+  });
+  activeDimensionTool = false;
+}
+
+function dimensionChanged(index: number, previous: EditorState): void {
+  history.commit(previous, state); projects.save(state); updateHistoryButtons();
+  selection = { kind: "dimension", index }; selections = [selection]; renderPackingSidebar(); refreshPacking();
+  setStatus("neutral", "Dimension position saved");
+}
+
+function automaticDimensionChanged(owner: string, previous: EditorState): void {
+  history.commit(previous, state); projects.save(state); updateHistoryButtons(); renderPackingSidebar(); refreshPacking();
+  setStatus("neutral", `${owner.startsWith("clearance:") ? "Clearance dimension" : "Dimension"} position saved`);
 }
 
 function clearDraftPathTool(): void {
@@ -972,8 +1155,8 @@ function joinSelectedMaterial(): void {
 function deleteToolbarSelection(): void {
   if (selections.some(isLocked)) return;
   if (selections.length > 1) { deleteMultipleSelections(); return; }
-  if (!selection || selection.kind === "placement") return;
-  if (selection.kind === "container" || selection.kind === "guide" || selection.kind === "drafting" || selection.kind === "trace" || ((selection.kind === "item" || selection.kind === "exclusion") && selection.partIndex === undefined)) { deleteSelectedObject(); return; }
+  if (!selection || selection.kind === "placement" || selection.kind === "auto-dimension") return;
+  if (selection.kind === "container" || selection.kind === "guide" || selection.kind === "drafting" || selection.kind === "dimension" || selection.kind === "text" || selection.kind === "trace" || ((selection.kind === "item" || selection.kind === "exclusion") && selection.partIndex === undefined)) { deleteSelectedObject(); return; }
   mutate(deleteSelectedPart);
 }
 
@@ -991,7 +1174,9 @@ function deleteMultipleSelections(): void {
       remove("item", state.items);
       remove("guide", state.drafting.guides);
       remove("drafting", state.drafting.shapes);
+      remove("dimension", state.dimensions);
       remove("trace", state.drafting.traceImages);
+      remove("text", state.drafting.texts);
       const removeParts = (kind: "item" | "exclusion", owners: Array<{ parts: PrimitiveEditor[] }>) => selections
         .flatMap((entry) => entry.kind === kind && entry.partIndex !== undefined
           && !selections.some((whole) => whole.kind === kind && whole.index === entry.index && whole.partIndex === undefined)
@@ -1038,13 +1223,13 @@ function updateToolbarState(): void {
   const primitives = state.containerParts.map((entry) => entry.primitive);
   const canJoin = selectedRegion?.operation === "add" && state.containerParts.some((entry) => entry !== selectedRegion && entry.operation === "add" && !dependsOn(primitives, entry.primitive.id, selectedRegion.primitive.id));
   element<HTMLButtonElement>("join-material").disabled = !canJoin;
-  element<HTMLButtonElement>("delete-selection").disabled = selections.length === 0 || selections.some(isLocked) || (selections.length === 1 && selection?.kind === "placement");
+  element<HTMLButtonElement>("delete-selection").disabled = selections.length === 0 || selections.some(isLocked) || (selections.length === 1 && (selection?.kind === "placement" || selection?.kind === "auto-dimension"));
   const lock = element<HTMLButtonElement>("lock-selection"), unlock = selections.length === 1 && !!selection && isLocked(selection);
-  lock.disabled = selections.length === 0; lock.setAttribute("aria-label", unlock ? "Unlock selection" : "Lock selection");
+  lock.disabled = selections.length === 0 || selection?.kind === "auto-dimension"; lock.setAttribute("aria-label", unlock ? "Unlock selection" : "Lock selection");
   lock.title = unlock ? "Unlock this entity for CAD interaction" : "Lock selected entities against CAD interaction";
   lock.classList.toggle("active", unlock);
-  const color = element<HTMLInputElement>("toolbar-part-color"), parts = selectedPrimitivesForColor();
-  color.disabled = parts.length === 0; color.value = partColor(parts[0]);
+  const color = element<HTMLInputElement>("toolbar-part-color"), parts = selectedPrimitivesForColor(), texts = selectedTextsForColor();
+  color.disabled = parts.length === 0 && texts.length === 0; color.value = texts[0]?.color ?? partColor(parts[0]);
   const trace = element<HTMLButtonElement>("add-trace-image"); trace.classList.toggle("has-content", state.drafting.traceImages.length > 0);
   trace.title = state.drafting.traceImages.length ? "Add another tracing image" : "Add a transparent tracing image";
 }
@@ -1059,10 +1244,68 @@ function deleteSelectedObject(): void {
     }
     else if (selection?.kind === "guide") { state.drafting.guides.splice(selection.index, 1); selection = null; }
     else if (selection?.kind === "drafting") { state.drafting.shapes.splice(selection.index, 1); selection = null; }
+    else if (selection?.kind === "dimension") { state.dimensions.splice(selection.index, 1); selection = null; }
     else if (selection?.kind === "trace") { state.drafting.traceImages.splice(selection.index, 1); selection = null; }
+    else if (selection?.kind === "text") { state.drafting.texts.splice(selection.index, 1); selection = null; }
     selections = []; selectedPartIndex = 0;
   });
   refreshPacking(true);
+}
+
+function duplicateContextSelection(): void {
+  if (!selection) return;
+  if (selection.kind === "item" || selection.kind === "placement") { copySelectedItems(); pasteItems(); return; }
+  const step = Math.max(state.drafting.gridStep, .1);
+  mutate(() => {
+    if (!selection) return;
+    const cloneEntry = <T extends { id: string }>(source: T | undefined): T | null => source ? { ...structuredClone(source), id: crypto.randomUUID() } : null;
+    if (selection.kind === "text") {
+      const copy = cloneEntry(state.drafting.texts[selection.index]); if (!copy) return; copy.x += step; copy.y -= step;
+      state.drafting.texts.push(copy); selection = { kind: "text", index: state.drafting.texts.length - 1 };
+    } else if (selection.kind === "trace") {
+      const copy = cloneEntry(state.drafting.traceImages[selection.index]); if (!copy) return; copy.x += step; copy.y -= step;
+      state.drafting.traceImages.push(copy); selection = { kind: "trace", index: state.drafting.traceImages.length - 1 };
+    } else if (selection.kind === "drafting") {
+      const copy = cloneEntry(state.drafting.shapes[selection.index]); if (!copy) return; copy.x += step; copy.y -= step;
+      state.drafting.shapes.push(copy); selection = { kind: "drafting", index: state.drafting.shapes.length - 1 };
+    } else if (selection.kind === "guide") {
+      const copy = cloneEntry(state.drafting.guides[selection.index]); if (!copy) return; copy.x += step; copy.y -= step;
+      state.drafting.guides.push(copy); selection = { kind: "guide", index: state.drafting.guides.length - 1 };
+    } else if (selection.kind === "dimension") {
+      const copy = cloneEntry(state.dimensions[selection.index]); if (!copy) return;
+      copy.start = { x: copy.start.x + step, y: copy.start.y - step }; copy.end = { x: copy.end.x + step, y: copy.end.y - step };
+      state.dimensions.push(copy); selection = { kind: "dimension", index: state.dimensions.length - 1 };
+    }
+    selections = selection ? [selection] : [];
+  });
+}
+
+function reorderContextSelection(direction: "front" | "back"): void {
+  if (!selection) return;
+  mutate(() => {
+    if (!selection) return;
+    const values = selection.kind === "text" ? state.drafting.texts : selection.kind === "trace" ? state.drafting.traceImages
+      : selection.kind === "drafting" ? state.drafting.shapes : selection.kind === "dimension" ? state.dimensions : null;
+    if (!values) return;
+    const entries = values as unknown as unknown[], [entry] = entries.splice(selection.index, 1); if (!entry) return;
+    if (direction === "front") entries.push(entry); else entries.unshift(entry);
+    selection = { ...selection, index: direction === "front" ? entries.length - 1 : 0 } as CadSelection; selections = [selection];
+  });
+}
+
+function resetSelectionRotation(): void {
+  if (!selection) return;
+  if (selection.kind === "placement" && currentResult?.placements[selection.index]) {
+    currentResult.placements[selection.index].rotation_deg = 0; placementChanged(selection.index, currentResult.placements[selection.index]); return;
+  }
+  mutate(() => {
+    if (!selection) return;
+    if (selection.kind === "text") state.drafting.texts[selection.index].rotation = 0;
+    else if (selection.kind === "trace") state.drafting.traceImages[selection.index].rotation = 0;
+    else if (selection.kind === "drafting") state.drafting.shapes[selection.index].rotation = 0;
+    else if (selection.kind === "guide") state.drafting.guides[selection.index].rotation = 0;
+    else { const primitive = selectedPrimitive(); if (primitive) primitive.rotation = 0; }
+  });
 }
 
 function copySelectedItems(): void {
@@ -1162,6 +1405,7 @@ function openProjects(): void {
 function renderProjectDialog(): void {
   const host = element("project-dialog-body");
   host.innerHTML = `<div class="project-dialog-grid"><label>Active project<select id="project-select" aria-label="Local project">${projects.projects.map((project) => `<option value="${project.id}" ${project.id === projects.activeProjectId ? "selected" : ""}>${escapeHtml(project.name)}</option>`).join("")}</select></label><label>Project name<input id="project-name" aria-label="Project name" value="${escapeHtml(projects.active.name)}"></label></div>
+    <p class="dialog-note">Projects are autosaved to two browser stores for restart recovery. Use Problem JSON below for a portable geometry backup.</p>
     <div class="dialog-actions"><button id="new-project" type="button" class="button ghost">New project</button><button id="empty-project" type="button" class="button ghost">New empty</button><button id="duplicate-project" type="button" class="button ghost">Duplicate</button><button id="delete-project" type="button" class="button danger">Delete</button><span></span><button id="save-project" type="button" class="button primary">Save changes</button></div>
     <details class="json-panel"><summary>Problem JSON <span>Import / export</span></summary><div class="details-body"><textarea id="problem-json" rows="11">${escapeHtml(JSON.stringify(toProblem(state), null, 2))}</textarea><div class="inline-actions"><button id="load-json" type="button" class="button ghost">Load JSON</button><button id="copy-problem" type="button" class="button ghost">Copy JSON</button></div></div></details>`;
   host.querySelector<HTMLSelectElement>("#project-select")!.addEventListener("change", (event) => { projects.save(state); loadProject((event.target as HTMLSelectElement).value); renderProjectDialog(); });
@@ -1186,6 +1430,7 @@ function renderProjectDialog(): void {
 function loadProject(id: string): void {
   const project = projects.switch(id);
   state = structuredClone(project.state); history.clear(); clearResults();
+  display.dimensions = state.viewSettings.showDimensions; display.clearance = state.viewSettings.showClearance;
   selection = { kind: "container", index: 0 };
   selections = [selection];
   renderPackingSidebar(); renderSensitivitySidebar(); updateHistoryButtons(); showPage("packing"); refreshPacking(true);
@@ -1209,7 +1454,7 @@ function renderSensitivitySidebar(): void {
       ${studyNumber("Initial step", "initial_step", state.study.initial_step, .05)}${studyNumber("Tolerance", "transition_tolerance", state.study.transition_tolerance, .01)}
       <label>Sampling<select id="study-strategy"><option value="adaptive" ${state.study.strategy === "adaptive" ? "selected" : ""}>Adaptive refinement</option><option value="sampled" ${state.study.strategy === "sampled" ? "selected" : ""}>Sampled sweep</option></select></label>
       <label>Seed policy<select id="seed-policy"><option value="fixed" ${state.study.seed_policy === "fixed" ? "selected" : ""}>Fixed</option><option value="derive_from_value" ${state.study.seed_policy === "derive_from_value" ? "selected" : ""}>Derive per value</option></select></label>
-    </div><button id="run-study" class="button primary full">Run sensitivity study</button></section>`;
+    </div><button id="run-study" class="button primary full" title="Run sensitivity study (R)">Run sensitivity study</button></section>`;
   sidebar.querySelector<HTMLSelectElement>("#study-parameter")!.addEventListener("change", (event) => studyChange(() => { state.study.parameterKey = (event.target as HTMLSelectElement).value; }));
   sidebar.querySelector<HTMLInputElement>("#study-parameter-search")!.addEventListener("input", renderParameterMatches);
   sidebar.querySelector("#suggest-study-range")!.addEventListener("click", suggestStudyRange);
@@ -1507,6 +1752,7 @@ function openExport(): void {
     ${exportCard("Shape library SVG", "All packable definitions as clean vectors", "shapes-svg")}
     ${exportCard("Layout SVG", "Solved placements, container, and exclusions", "layout-svg", !result)}
     ${exportCard("Layout PNG", "High-resolution image with active overlays", "layout-png", !result)}
+    ${exportCard("Scene PNG", "Everything in the fitted workspace scene", "scene-png")}
     ${exportCard("Placements CSV", "Item, position, rotation, and fixed state", "placements-csv", !result)}
     ${exportCard("Solve JSON", "Full result, metrics, and validation", "solve-json", !result)}
     ${exportCard("Sensitivity JSON", "Evaluations, transitions, and representative layouts", "study-json", !sensitivityResult)}
@@ -1531,6 +1777,7 @@ async function runExport(kind: string): Promise<void> {
   else if (kind === "solve-json" && result) downloadText(`${base}-solve.json`, JSON.stringify(result, null, 2), "application/json");
   else if (kind === "study-json" && sensitivityResult) downloadText(`${base}-sensitivity.json`, JSON.stringify(sensitivityResult, null, 2), "application/json");
   else if (kind === "layout-png" && result) await downloadLayoutPng(`${base}-layout.png`, problem, result.placements);
+  else if (kind === "scene-png") { const blob = await cad.exportScenePng(); if (blob) downloadBlob(`${base}-scene.png`, blob); else throw new Error("Scene PNG could not be rendered"); }
   else return;
   setStatus("success", `${kind.replaceAll("-", " ")} exported`);
 }
@@ -1541,7 +1788,7 @@ function downloadBlob(filename: string, blob: Blob): void {
 }
 async function downloadLayoutPng(filename: string, problem: PackingProblem, placements: Placement[]): Promise<void> {
   const canvas = document.createElement("canvas"); canvas.style.width = "1600px"; canvas.style.height = "1000px"; canvas.style.position = "fixed"; canvas.style.left = "-10000px"; document.body.append(canvas);
-  renderLayout(canvas, problem, placements, page === "sensitivity" ? studyDisplay : display);
+  renderLayout(canvas, problem, placements, { ...(page === "sensitivity" ? studyDisplay : display), viewSettings: state.viewSettings, customDimensions: page === "packing" ? state.dimensions : [] });
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png")); canvas.remove(); if (blob) downloadBlob(filename, blob);
 }
 function placementsCsv(placements: Placement[]): string {
@@ -1579,9 +1826,10 @@ function bindOverlay(prefix: string, target: { dimensions: boolean; clearance: b
 function overlayToggles(prefix: string): string { const target = prefix === "study" ? studyDisplay : display; return `<div class="layout-tools"><label><input id="${prefix}-dimensions" type="checkbox" ${target.dimensions ? "checked" : ""}> Dimensions</label><label><input id="${prefix}-clearance" type="checkbox" ${target.clearance ? "checked" : ""}> Clearance</label></div>`; }
 function updateHistoryButtons(): void { element<HTMLButtonElement>("undo").disabled = !history.canUndo; element<HTMLButtonElement>("redo").disabled = !history.canRedo; }
 function normalizeSelection(value: CadSelection | null): CadSelection | null {
+  if (value?.kind === "auto-dimension") return value;
   if (!value || value.kind === "placement") return state.containerParts.length ? { kind: "container", index: 0 } : null;
   const length = value.kind === "container" ? state.containerParts.length : value.kind === "exclusion" ? state.exclusions.length : value.kind === "item" ? state.items.length
-    : value.kind === "guide" ? state.drafting.guides.length : value.kind === "drafting" ? state.drafting.shapes.length : state.drafting.traceImages.length;
+    : value.kind === "guide" ? state.drafting.guides.length : value.kind === "drafting" ? state.drafting.shapes.length : value.kind === "dimension" ? state.dimensions.length : value.kind === "text" ? state.drafting.texts.length : state.drafting.traceImages.length;
   return value.index < length ? value : length ? { kind: value.kind, index: 0 } : null;
 }
 function isEditingText(target: EventTarget | null): boolean {
@@ -1589,7 +1837,7 @@ function isEditingText(target: EventTarget | null): boolean {
   return !!element?.closest("input, textarea, select, [contenteditable='true']");
 }
 function parseSelection(value: string): CadSelection { const [kind, index] = value.split(":"); return { kind: kind as CadSelection["kind"], index: Number(index) } as CadSelection; }
-function sameSelection(a: CadSelection, b: CadSelection): boolean { return a.kind === b.kind && a.index === b.index && ("partIndex" in a ? a.partIndex : undefined) === ("partIndex" in b ? b.partIndex : undefined); }
+function sameSelection(a: CadSelection, b: CadSelection): boolean { return a.kind === b.kind && a.index === b.index && ("partIndex" in a ? a.partIndex : undefined) === ("partIndex" in b ? b.partIndex : undefined) && ("owner" in a ? a.owner : undefined) === ("owner" in b ? b.owner : undefined) && ("axis" in a ? a.axis : undefined) === ("axis" in b ? b.axis : undefined); }
 function isPartSelection(value: CadSelection): value is Extract<CadSelection, { kind: "item" | "exclusion" }> { return (value.kind === "item" || value.kind === "exclusion") && value.partIndex !== undefined; }
 function itemIndexForParameter(key: string): number { const [kind, id] = key.split(":"); return kind.startsWith("part_") || kind.startsWith("item_") ? state.items.findIndex((item) => item.id === id) : -1; }
 function parameterCurrentValue(key: string): number {
@@ -1623,6 +1871,7 @@ function editStudySource(): void {
 }
 
 function syncWorkspaceOverlays(): void {
+  state.viewSettings.showDimensions = display.dimensions; state.viewSettings.showClearance = display.clearance; projects.save(state);
   (["dimensions", "clearance"] as const).forEach((key) => {
     const button = element<HTMLButtonElement>(key === "dimensions" ? "toggle-dimensions" : "toggle-clearance");
     button.classList.toggle("active", display[key]); button.setAttribute("aria-pressed", String(display[key]));
@@ -1650,6 +1899,9 @@ function applySidebarTooltips(sidebar: HTMLElement): void {
   });
 }
 function placementField(label: string, field: keyof Placement, value: number, step: number): string { return `<label>${label}<input type="number" value="${format(value)}" step="${step}" data-placement-field="${field}"></label>`; }
+function dimensionNumber(label: string, field: string, value: number): string { return `<label>${label}<input type="number" value="${format(value)}" step=".1" data-dimension-field="${field}"></label>`; }
+function autoDimensionNumber(label: string, field: "x" | "y", value: number): string { return `<label>${label}<input type="number" value="${format(value)}" step=".1" data-auto-dimension-field="${field}"></label>`; }
+function textNumber(label: string, field: string, value: number, step = .1): string { return `<label>${label}<input type="number" value="${format(value)}" step="${step}" data-text-field="${field}"></label>`; }
 function primitiveNumber(label: string, field: string, value: number, step = .1): string { return `<label>${label}<input type="number" value="${format(value)}" step="${step}" data-primitive-field="${field}"></label>`; }
 function objectNumber(label: string, field: string, value: number, step = .1): string { return `<label>${label}<input type="number" value="${format(value)}" step="${step}" data-object-field="${field}"></label>`; }
 function draftingEntityNumber(label: string, entity: "guide" | "trace", index: number, field: string, value: number, step = .1): string { return `<label>${label}<input type="number" value="${format(value)}" step="${step}" data-${entity}-field="${field}" data-entity-index="${index}"></label>`; }
@@ -1772,6 +2024,7 @@ function metricHtml(label: string, value: string | number): string { return `<di
 function setField(target: object, field: string, value: unknown): void { (target as Record<string, unknown>)[field] = value; }
 function humanStatus(value: string): string { return value.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase()); }
 function format(value: number): string { return Number.isInteger(value) ? String(value) : value.toFixed(3).replace(/0+$/, "").replace(/\.$/, ""); }
+function clampNumber(value: number, min: number, max: number): number { return Math.min(max, Math.max(min, Number.isFinite(value) ? value : min)); }
 function formatDuration(value: number): string { return value >= 1000 ? `${(value / 1000).toFixed(2)} s` : `${Math.round(value)} ms`; }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function escapeHtml(value: unknown): string { return String(value).replace(/[&<>\"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '\"': "&quot;" })[character]!); }

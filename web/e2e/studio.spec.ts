@@ -2,6 +2,9 @@ import { expect, test } from "@playwright/test";
 
 test("keeps projects and diagnostics behind focused dialogs", async ({ page }) => {
   await page.goto("/");
+  const brandBox = await page.locator(".brand-lockup").boundingBox(), projectBox = await page.locator(".project-quick").boundingBox();
+  if (!brandBox || !projectBox) throw new Error("Project header bounds unavailable");
+  expect(Math.abs((brandBox.y + brandBox.height / 2) - (projectBox.y + projectBox.height / 2))).toBeLessThan(3);
   await expect(page.getByText("OpenLayout", { exact: true })).toBeVisible();
   await expect(page.locator("#project-dialog")).not.toBeVisible();
   await expect(page.locator("#diagnostics-dialog")).not.toBeVisible();
@@ -28,6 +31,21 @@ test("keeps projects and diagnostics behind focused dialogs", async ({ page }) =
   await page.getByRole("button", { name: "Toggle theme" }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   expect(await page.evaluate(() => localStorage.getItem("openlayout.workspace.v1"))).toContain("Capsule study");
+  await expect.poll(() => page.evaluate(async () => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("openlayout.workspace", 1);
+      request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+    });
+    const value = await new Promise<unknown>((resolve, reject) => {
+      const request = database.transaction("snapshots", "readonly").objectStore("snapshots").get("workspace.v1");
+      request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+    });
+    database.close(); return String(value);
+  })).toContain("Capsule study");
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Edit projects" })).toContainText("Capsule study");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
 });
 
 test("uses one interactive CAD workspace for definition, editing, pan, zoom, and panel focus", async ({ page }) => {
@@ -45,7 +63,7 @@ test("uses one interactive CAD workspace for definition, editing, pan, zoom, and
   await expect(page.locator('[data-primitive-field="width"]')).toBeVisible();
   await expect(page.locator(".cad-rotate-handle")).toHaveCount(1);
   await expect(page.locator(".cad-geometry-handle")).toHaveCount(8);
-  await expect(page.locator(".cad-edit-dimensions text")).toHaveText(["4", "2.4"]);
+  await expect(page.locator(".cad-edit-dimensions")).toHaveCount(0);
   await expect(page.locator(".cad-selection-handles rect")).toHaveCount(0);
 
   const originalItemPath = await itemShape.getAttribute("d");
@@ -80,9 +98,168 @@ test("uses one interactive CAD workspace for definition, editing, pan, zoom, and
 
   await page.getByRole("button", { name: "Dimensions" }).click();
   await expect(page.locator(".cad-dimensions")).not.toHaveCount(0);
-  await expect(page.locator(".cad-dimensions text").filter({ hasText: "exclusion" })).not.toHaveCount(0);
+  await expect(page.locator('[data-dimension-owner^="exclusion:"]')).toHaveCount(1);
+  await expect(page.locator('[data-dimension-owner^="item:"]')).toHaveCount(1);
   await page.getByRole("button", { name: "Constraints" }).click();
   await expect(page.locator(".cad-clearance")).not.toHaveCount(0);
+});
+
+test("provides engineering dimensions, persistent view settings, and vertical navigation", async ({ page }) => {
+  await page.goto("/");
+  const navigation = page.locator(".cad-nav-toolbar");
+  await expect(navigation).toBeVisible();
+  await expect(navigation.getByRole("button")).toHaveCount(5);
+  expect(await navigation.evaluate((node) => getComputedStyle(node).flexDirection)).toBe("column");
+  const navBox = await navigation.boundingBox(), viewport = page.viewportSize();
+  if (!navBox || !viewport) throw new Error("Navigation toolbar bounds unavailable");
+  expect(viewport.width - (navBox.x + navBox.width)).toBeLessThan(24);
+  await expect(page.locator(".cad-toolbar .toolbar-group")).toHaveCount(7);
+  await expect(page.locator('.cad-toolbar .toolbar-group[aria-label="Geometry"]')).toBeVisible();
+  await expect(page.locator('.cad-toolbar .toolbar-group[aria-label="Drafting"]')).toBeVisible();
+
+  await page.getByRole("button", { name: "View settings" }).click();
+  const panel = page.getByLabel("View settings panel");
+  await expect(panel).toBeVisible();
+  await panel.getByLabel("Dimensions").check();
+  await panel.getByLabel("Text size px").fill("16"); await panel.getByLabel("Text size px").blur();
+  await panel.getByLabel("Edge thickness px").fill("2.5"); await panel.getByLabel("Edge thickness px").blur();
+  await panel.getByLabel("Decimals").fill("1"); await panel.getByLabel("Decimals").blur();
+  await panel.getByLabel("Grid spacing").fill("1"); await panel.getByLabel("Grid spacing").blur();
+  await panel.getByRole("checkbox", { name: "Grid", exact: true }).uncheck();
+
+  await expect(page.locator('[data-dimension-owner="material"] [data-dimension-axis]')).toHaveCount(2);
+  await expect(page.locator('[data-dimension-owner="item:item-a"] [data-dimension-axis]')).toHaveCount(2);
+  await expect(page.locator('[data-dimension-owner="exclusion:exclusion-a"] text')).toContainText("Ø4.2 mm");
+  const materialLabel = await page.locator('[data-dimension-owner="material"] [data-dimension-axis="width"] text').boundingBox();
+  const itemLabel = await page.locator('[data-dimension-owner="item:item-a"] [data-dimension-axis="width"] text').boundingBox();
+  if (!materialLabel || !itemLabel) throw new Error("Generated dimension labels unavailable");
+  expect(Math.abs(materialLabel.y - itemLabel.y)).toBeGreaterThan(5);
+  await expect(page.locator(".cad-grid line")).toHaveCount(0);
+  await expect(page.locator("#cad-canvas")).toHaveCSS("--cad-edge-width", "2.5px");
+
+  await page.reload();
+  await page.getByRole("button", { name: "View settings" }).click();
+  await expect(page.getByLabel("View settings panel").getByLabel("Text size px")).toHaveValue("16");
+  await expect(page.getByLabel("View settings panel").getByLabel("Grid spacing")).toHaveValue("1");
+  await expect(page.getByLabel("View settings panel").getByRole("checkbox", { name: "Grid", exact: true })).not.toBeChecked();
+});
+
+test("creates, moves, overrides, persists, and exports first-class dimensions", async ({ page }) => {
+  await page.goto("/");
+  const item = page.locator('[data-cad-kind="item"][data-cad-part="0"]');
+  const box = await item.boundingBox(); if (!box) throw new Error("Item bounds unavailable");
+  await page.getByRole("button", { name: "Create dimension" }).click();
+  await page.mouse.click(box.x, box.y + box.height / 2);
+  await page.mouse.click(box.x + box.width, box.y + box.height / 2);
+
+  const dimension = page.locator('[data-dimension-owner^="custom:"]');
+  await expect(dimension).toHaveCount(1);
+  await expect(page.locator(".cad-edit-dimensions")).toHaveCount(0);
+  await expect(page.locator('[data-dimension-owner="clearance:boundary"] text')).toContainText("clear");
+  await expect(page.locator('[data-dimension-owner="clearance:item-to-item"] text')).toContainText("0.35 mm clear");
+
+  await dimension.locator(".cad-dimension-line").click({ force: true });
+  const override = page.getByLabel("Text override"); await override.fill("ASSEMBLY GAP"); await override.blur();
+  await expect(dimension.locator("text")).toHaveText("ASSEMBLY GAP");
+  const line = dimension.locator(".cad-dimension-line"), lineBox = await line.boundingBox(); if (!lineBox) throw new Error("Dimension line unavailable");
+  await page.mouse.move(lineBox.x + lineBox.width / 2, lineBox.y + lineBox.height / 2);
+  await page.mouse.down(); await page.mouse.move(lineBox.x + lineBox.width / 2, lineBox.y + lineBox.height / 2 - 35, { steps: 4 }); await page.mouse.up();
+  await expect(page.getByLabel("Offset Y")).not.toHaveValue("0");
+  const snappedOffset = Number(await page.getByLabel("Offset Y").inputValue());
+  expect(snappedOffset / .5).toBeCloseTo(Math.round(snappedOffset / .5), 6);
+  const movedLineBox = await dimension.locator(".cad-dimension-line").boundingBox(); if (!movedLineBox) throw new Error("Moved dimension line unavailable");
+  await page.keyboard.down("Alt"); await page.mouse.move(movedLineBox.x + movedLineBox.width / 2, movedLineBox.y + movedLineBox.height / 2); await page.mouse.down();
+  await page.mouse.move(movedLineBox.x + movedLineBox.width / 2 + 13, movedLineBox.y + movedLineBox.height / 2 - 9, { steps: 3 }); await page.mouse.up(); await page.keyboard.up("Alt");
+  const bypassedOffset = Number(await page.getByLabel("Offset Y").inputValue());
+  expect(Math.abs(bypassedOffset / .5 - Math.round(bypassedOffset / .5))).toBeGreaterThan(.001);
+
+  await page.reload();
+  await expect(page.locator('[data-dimension-owner^="custom:"] text')).toHaveText("ASSEMBLY GAP");
+  const automatic = page.locator('[data-dimension-owner="material"] [data-dimension-axis="width"] .cad-dimension-line');
+  const originalY = Number(await automatic.getAttribute("y1")), automaticBox = await page.locator('[data-dimension-owner="material"] [data-dimension-axis="width"] text').boundingBox(); if (!automaticBox) throw new Error("Automatic dimension unavailable");
+  await page.mouse.move(automaticBox.x + automaticBox.width / 2, automaticBox.y + automaticBox.height / 2);
+  await page.mouse.down(); await page.mouse.move(automaticBox.x + automaticBox.width / 2, automaticBox.y + automaticBox.height / 2 - 24, { steps: 3 }); await page.mouse.up();
+  const movedY = Number(await automatic.getAttribute("y1")); expect(movedY).not.toBe(originalY);
+  await expect(page.locator("#selection-inspector")).toContainText("GENERATED DIMENSION");
+  await page.locator('[data-auto-dimension-field="override"]').fill("STOCK WIDTH"); await page.locator('[data-auto-dimension-field="override"]').blur();
+  await expect(page.locator('[data-dimension-owner="material"] [data-dimension-axis="width"] text')).toHaveText("STOCK WIDTH");
+  await page.reload();
+  expect(Number(await page.locator('[data-dimension-owner="material"] [data-dimension-axis="width"] .cad-dimension-line').getAttribute("y1"))).toBeCloseTo(movedY, 3);
+  await expect(page.locator('[data-dimension-owner="material"] [data-dimension-axis="width"] text')).toHaveText("STOCK WIDTH");
+  await page.getByRole("button", { name: "Export", exact: true }).click();
+  const downloadPromise = page.waitForEvent("download");
+  await page.locator('[data-export="scene-png"]').click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/-scene\.png$/);
+});
+
+test("adds editable scene text and directly moves, resizes, rotates, and persists it", async ({ page }) => {
+  await page.goto("/");
+  const itemStyle = await page.locator(".cad-part-color.item").first().getAttribute("style");
+  await page.getByRole("button", { name: "Add scene text" }).click();
+  const text = page.locator(".cad-scene-text");
+  await expect(text).toHaveText("Annotation");
+  expect(Number(await page.locator('[data-text-field="x"]').inputValue()) / .5).toBeCloseTo(Math.round(Number(await page.locator('[data-text-field="x"]').inputValue()) / .5), 6);
+  await page.locator('[data-text-field="text"]').fill("CUT LINE\nDO NOT CROSS"); await page.locator('[data-text-field="text"]').blur();
+  await expect(text.locator("tspan")).toHaveText(["CUT LINE", "DO NOT CROSS"]);
+  const toolbarColour = page.locator("#toolbar-part-color"); await expect(toolbarColour).toBeEnabled();
+  await toolbarColour.evaluate((input: HTMLInputElement) => { input.value = "#ff00aa"; input.dispatchEvent(new Event("input", { bubbles: true })); });
+  await expect(text).toHaveCSS("fill", "rgb(255, 0, 170)");
+  await expect(page.locator('[data-text-field="color"]')).toHaveValue("#ff00aa");
+  await expect(page.locator(".cad-part-color.item").first()).toHaveAttribute("style", itemStyle!);
+  await page.locator('[data-text-field="fontFamily"]').selectOption("sans");
+  await page.locator('[data-text-field="align"]').selectOption("center");
+  await page.locator('[data-text-field="bold"]').check(); await page.locator('[data-text-field="italic"]').check(); await page.locator('[data-text-field="underline"]').check();
+  await expect(text).toHaveAttribute("text-anchor", "middle"); await expect(text).toHaveCSS("font-weight", "700");
+  await expect(text).toHaveCSS("font-style", "italic"); await expect(text).toHaveCSS("text-decoration-line", "underline");
+
+  const x = page.locator('[data-text-field="x"]'), originalX = Number(await x.inputValue());
+  const hitBox = await page.locator(".cad-text-hit").boundingBox(); if (!hitBox) throw new Error("Text hit area unavailable");
+  await page.mouse.move(hitBox.x + hitBox.width / 2, hitBox.y + hitBox.height / 2); await page.mouse.down();
+  await page.mouse.move(hitBox.x + hitBox.width / 2 + 42, hitBox.y + hitBox.height / 2 - 18, { steps: 4 }); await page.mouse.up();
+  await expect.poll(async () => Number(await page.locator('[data-text-field="x"]').inputValue())).not.toBe(originalX);
+  const snappedTextX = Number(await page.locator('[data-text-field="x"]').inputValue()); expect(snappedTextX / .5).toBeCloseTo(Math.round(snappedTextX / .5), 6);
+  const movedTextBox = await page.locator(".cad-text-hit").boundingBox(); if (!movedTextBox) throw new Error("Moved text hit area unavailable");
+  await page.keyboard.down("Alt"); await page.mouse.move(movedTextBox.x + movedTextBox.width / 2, movedTextBox.y + movedTextBox.height / 2); await page.mouse.down();
+  await page.mouse.move(movedTextBox.x + movedTextBox.width / 2 + 11, movedTextBox.y + movedTextBox.height / 2 - 7, { steps: 3 }); await page.mouse.up(); await page.keyboard.up("Alt");
+  const bypassedTextX = Number(await page.locator('[data-text-field="x"]').inputValue()); expect(Math.abs(bypassedTextX / .5 - Math.round(bypassedTextX / .5))).toBeGreaterThan(.001);
+
+  const size = page.locator('[data-text-field="fontSize"]'), originalSize = Number(await size.inputValue());
+  const resize = page.locator(".cad-global-scale-handle"), resizeBox = await resize.boundingBox(); if (!resizeBox) throw new Error("Text resize handle unavailable");
+  await page.mouse.move(resizeBox.x + resizeBox.width / 2, resizeBox.y + resizeBox.height / 2); await page.mouse.down();
+  await page.mouse.move(resizeBox.x + resizeBox.width / 2 + 35, resizeBox.y + resizeBox.height / 2 + 25, { steps: 4 }); await page.mouse.up();
+  await expect.poll(async () => Number(await page.locator('[data-text-field="fontSize"]').inputValue())).not.toBe(originalSize);
+
+  const rotation = page.locator('[data-text-field="rotation"]');
+  const rotateBox = await page.locator(".cad-rotate-handle").boundingBox(), currentTextBox = await page.locator(".cad-text-hit").boundingBox(); if (!rotateBox || !currentTextBox) throw new Error("Text rotation controls unavailable");
+  await page.mouse.move(rotateBox.x + rotateBox.width / 2, rotateBox.y + rotateBox.height / 2); await page.mouse.down();
+  await page.mouse.move(currentTextBox.x + currentTextBox.width + 30, currentTextBox.y + currentTextBox.height / 2, { steps: 4 }); await page.mouse.up();
+  await expect(rotation).not.toHaveValue("0");
+
+  const savedText = await page.locator('[data-text-field="text"]').inputValue(), savedSize = await size.inputValue();
+  await page.reload();
+  await expect(page.locator(".cad-scene-text")).toContainText("CUT LINE");
+  await page.locator(".cad-text-hit").click();
+  await expect(page.locator('[data-text-field="text"]')).toHaveValue(savedText);
+  await expect(page.locator('[data-text-field="fontSize"]')).toHaveValue(savedSize);
+  await expect(page.locator('[data-text-field="color"]')).toHaveValue("#ff00aa");
+  await expect(page.locator(".cad-scene-text")).toHaveCSS("fill", "rgb(255, 0, 170)");
+  await expect(page.locator('[data-text-field="fontFamily"]')).toHaveValue("sans"); await expect(page.locator('[data-text-field="align"]')).toHaveValue("center");
+  await expect(page.locator('[data-text-field="bold"]')).toBeChecked(); await expect(page.locator('[data-text-field="italic"]')).toBeChecked(); await expect(page.locator('[data-text-field="underline"]')).toBeChecked();
+});
+
+test("offers selection-aware drafting actions from the context menu", async ({ page }) => {
+  await page.goto("/"); await page.getByRole("button", { name: "Add scene text" }).click();
+  await page.locator('[data-text-field="rotation"]').fill("30"); await page.locator('[data-text-field="rotation"]').blur();
+  await page.locator(".cad-text-hit").click({ button: "right" });
+  const menu = page.locator("#cad-context-menu");
+  await expect(menu).toBeVisible();
+  for (const name of ["Focus selection", "Duplicate", "Lock", "Bring to front", "Send to back", "Reset rotation", "Delete"]) await expect(menu.getByRole("button", { name })).toBeVisible();
+  await menu.getByRole("button", { name: "Duplicate" }).click(); await expect(page.locator(".cad-scene-text")).toHaveCount(2);
+  await page.locator(".cad-text-hit").last().click({ button: "right" }); await menu.getByRole("button", { name: "Reset rotation" }).click();
+  await expect(page.locator('[data-text-field="rotation"]')).toHaveValue("0");
+  await page.locator(".cad-text-hit").last().click({ button: "right" }); await menu.getByRole("button", { name: "Send to back" }).click();
+  await expect(page.locator(".cad-scene-text")).toHaveCount(2);
 });
 
 test("edits item, container, cut-out, and exclusion geometry without leaving the workspace", async ({ page }) => {
@@ -170,7 +347,13 @@ test("copies constituent shapes into their construction and removes empty owners
   await expect(page.locator('[data-cad-select^="item:"]')).toHaveCount(1);
   await expect(page.locator("#status")).toContainText("constituent shape");
 
-  await page.evaluate(() => localStorage.clear()); await page.reload();
+  await page.evaluate(async () => {
+    localStorage.clear();
+    await new Promise<void>((resolve) => {
+      const request = indexedDB.deleteDatabase("openlayout.workspace");
+      request.onsuccess = () => resolve(); request.onerror = () => resolve(); request.onblocked = () => resolve();
+    });
+  }); await page.reload();
   await page.locator('[data-cad-kind="item"][data-cad-index="0"][data-cad-part="0"]').click();
   await page.locator('[data-cad-kind="item"][data-cad-index="0"][data-cad-part="1"]').click({ modifiers: ["ControlOrMeta"], force: true });
   await page.locator('[data-cad-kind="item"][data-cad-index="0"][data-cad-part="2"]').click({ modifiers: ["ControlOrMeta"], force: true });
@@ -226,7 +409,9 @@ test("provides persistent drafting guides, trace images, default roles, and bezi
   expect(after[1].point.x).toBe(-before.at(-2).point.x);
 
   await page.getByRole("button", { name: "Dimensions" }).click();
-  await expect(page.locator(".cad-dimensions text").filter({ hasText: /exclusion$/ })).toHaveCount(2);
+  await expect(page.locator('[data-dimension-owner^="exclusion:"] [data-dimension-axis="width"] text')).toHaveCount(2);
+  expect((await page.locator('[data-dimension-owner^="exclusion:"] [data-dimension-axis="width"] text').allTextContents()).every((text) => text.startsWith("Ø"))).toBe(true);
+  await expect(page.locator('[data-dimension-owner^="exclusion:"] [data-dimension-axis="height"]')).toHaveCount(0);
 
   await page.reload();
   await expect(page.locator(".cad-trace-image")).toHaveCount(1);
@@ -306,8 +491,20 @@ test("creates and directly transforms guides, drafting paths, construction shape
   await expect(page.locator(".cad-draft-preview")).toBeVisible();
   await page.mouse.click(canvasBox.x + 330, canvasBox.y + 300);
   await expect(page.locator(".cad-drafting-shape")).toHaveCount(1);
+  await expect(page.locator(".cad-drafting-hit")).toHaveCount(1);
   await expect(page.locator(".cad-drafting-point-handle")).toHaveCount(2);
   const draftingLine = page.locator(".cad-drafting-shape").first(), lineBefore = await draftingLine.getAttribute("d");
+  const forgivingTarget = await page.locator(".cad-drafting-hit").evaluate((path: SVGPathElement) => {
+    const length = path.getTotalLength(), middle = path.getPointAtLength(length / 2), ahead = path.getPointAtLength(Math.min(length, length / 2 + .01));
+    const matrix = path.getScreenCTM(); if (!matrix) throw new Error("Drafting line has no screen transform");
+    const screen = new DOMPoint(middle.x, middle.y).matrixTransform(matrix), next = new DOMPoint(ahead.x, ahead.y).matrixTransform(matrix);
+    const dx = next.x - screen.x, dy = next.y - screen.y, magnitude = Math.hypot(dx, dy) || 1;
+    return { x: screen.x - dy / magnitude * 5, y: screen.y + dx / magnitude * 5 };
+  });
+  await page.locator("[data-cad-background]").click({ position: { x: 20, y: 20 } });
+  await expect(page.locator(".cad-drafting-point-handle")).toHaveCount(0);
+  await page.mouse.click(forgivingTarget.x, forgivingTarget.y);
+  await expect(page.locator(".cad-drafting-point-handle")).toHaveCount(2);
   const pointHandle = page.locator(".cad-drafting-point-handle").first(), pointBox = await pointHandle.boundingBox();
   if (!pointBox) throw new Error("Drafting point handle is unavailable");
   await page.mouse.move(pointBox.x + pointBox.width / 2, pointBox.y + pointBox.height / 2); await page.mouse.down();
@@ -423,7 +620,7 @@ test("builds and transforms a joined multi-region material from the toolbar", as
   await expect(page.locator('[data-cad-kind="container"]')).toHaveCount(2);
   await expect(page.locator("[data-snap-target]")).toHaveValue("container-boundary");
   await expect(page.locator(".cad-snap-constraint")).toHaveCount(0);
-  await expect(page.locator(".cad-edit-dimensions text")).toHaveCount(2);
+  await expect(page.locator(".cad-edit-dimensions")).toHaveCount(0);
 
   await page.getByRole("button", { name: "Unify selected material" }).click();
   await expect(page.locator("#status")).toContainText("unified for packing");
@@ -516,6 +713,12 @@ test("keeps sensitivity as the only separate analysis view", async ({ page }) =>
 
 test("makes sensitivity variables, exports, and shortcuts discoverable", async ({ page }) => {
   await page.goto("/");
+  for (const [selector, shortcut] of [
+    ["#sidebar-toggle", "(P)"], ["#delete-selection", "(Delete)"], ["#toggle-dimensions", "(D)"], ["#toggle-clearance", "(G)"],
+    ["#undo", "(Ctrl/⌘+Z)"], ["#redo", "(Ctrl/⌘+Shift+Z)"], ["#open-sensitivity", "(2)"], ["#open-export", "(E)"],
+    ["#open-shortcuts", "(?)"], ["#fit-view", "(F)"], ["#focus-selection", "(Shift+F)"], ["#zoom-in", "(+)"], ["#zoom-out", "(−)"],
+    ["#validate", "(V)"], ["#solve", "(R)"],
+  ] as const) await expect(page.locator(selector)).toHaveAttribute("title", new RegExp(`${shortcut.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`));
   await page.getByRole("button", { name: "Keyboard shortcuts" }).click();
   await expect(page.locator("#shortcuts-dialog")).toBeVisible();
   await expect(page.locator("#shortcut-list")).toContainText("Toggle dimensions");

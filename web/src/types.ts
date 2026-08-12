@@ -226,6 +226,20 @@ export interface TraceImage {
   opacity: number;
   rotation: number;
 }
+export interface DraftingText {
+  id: string;
+  text: string;
+  x: number;
+  y: number;
+  fontSize: number;
+  rotation: number;
+  color: string;
+  fontFamily: "mono" | "sans" | "serif";
+  align: "left" | "center" | "right";
+  bold: boolean;
+  italic: boolean;
+  underline: boolean;
+}
 export interface DraftingSettings {
   gridStep: number;
   snapToGrid: boolean;
@@ -233,11 +247,29 @@ export interface DraftingSettings {
   defaultOwner: "item" | "material" | "cutout" | "exclusion";
   guides: ConstructionGuide[];
   traceImages: TraceImage[];
+  texts: DraftingText[];
   shapes: DraftingPath[];
 }
 
-export type LockableEntityKind = "container" | "exclusion" | "item" | "guide" | "drafting" | "trace";
+export type LockableEntityKind = "container" | "exclusion" | "item" | "guide" | "drafting" | "trace" | "text";
 export interface LockedEntity { kind: LockableEntityKind; id: string }
+export interface CadViewSettings {
+  showGrid: boolean;
+  showDimensions: boolean;
+  showClearance: boolean;
+  dimensionTextSize: number;
+  edgeThickness: number;
+  dimensionPrecision: number;
+  dimensionUnit: string;
+}
+
+export interface CadDimension {
+  id: string;
+  start: Point;
+  end: Point;
+  offset: Point;
+  textOverride: string;
+}
 
 export interface EditorState {
   containerParts: EditorRegion[];
@@ -248,5 +280,9 @@ export interface EditorState {
   options: SolveOptions;
   drafting: DraftingSettings;
   lockedEntities: LockedEntity[];
+  viewSettings: CadViewSettings;
+  dimensions: CadDimension[];
+  dimensionPositions: Record<string, Point>;
+  dimensionOverrides: Record<string, string>;
   study: Omit<SensitivityStudy, "parameter" | "solve_options"> & { parameterKey: string };
 }

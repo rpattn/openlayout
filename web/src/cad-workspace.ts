@@ -1,6 +1,6 @@
 import { primitiveAnchor, primitiveShape, resolveEditorTranslations, shapePoints, toProblem, transformPoint } from "./problem";
 import { resolveGeometry } from "./geometry-resolver";
-import type { AnchorName, DraftingPath, EditorState, PackingProblem, Placement, Point, PrimitiveEditor, ResolvedProblemGeometry, Shape, ShapePart } from "./types";
+import type { AnchorName, CadDimension, CadViewSettings, DraftingPath, EditorState, PackingProblem, Placement, Point, PrimitiveEditor, ResolvedProblemGeometry, Shape, ShapePart } from "./types";
 
 const ITEM_COLORS = ["#51c6a4", "#f2b65d", "#7ba4f8", "#d98adf", "#ee716f", "#94c973"];
 const ANCHORS: AnchorName[] = ["center", "top", "bottom", "left", "right", "top_left", "top_right", "bottom_left", "bottom_right"];
@@ -13,13 +13,16 @@ export type CadSelection =
   | { kind: "item"; index: number; partIndex?: number }
   | { kind: "guide"; index: number }
   | { kind: "drafting"; index: number }
+  | { kind: "text"; index: number }
+  | { kind: "dimension"; index: number }
+  | { kind: "auto-dimension"; index: number; owner: string; axis: "width" | "height" | "clearance" }
   | { kind: "trace"; index: number }
   | { kind: "placement"; index: number };
 
 interface Bounds { minX: number; minY: number; maxX: number; maxY: number; width: number; height: number }
 interface View { minX: number; minY: number; width: number; height: number }
 interface Drag {
-  mode: "pan" | "marquee" | "placement" | "rotate" | "definition" | "definition-rotate" | "definition-scale" | "geometry" | "draft-point" | "snap-offset" | "part-move" | "anchor-snap" | "group-move" | "group-rotate" | "group-scale";
+  mode: "pan" | "marquee" | "placement" | "rotate" | "definition" | "definition-rotate" | "definition-scale" | "geometry" | "draft-point" | "dimension" | "auto-dimension" | "snap-offset" | "part-move" | "anchor-snap" | "group-move" | "group-rotate" | "group-scale";
   startClient: Point;
   startWorld: Point;
   originalView?: View;
@@ -32,6 +35,7 @@ interface Drag {
   rotation?: number;
   partIndex?: number;
   geometryHandle?: string;
+  dimensionOwner?: string;
   ownAnchor?: AnchorName;
   currentWorld?: Point;
   additive?: boolean;
@@ -47,6 +51,9 @@ export interface CadWorkspaceCallbacks {
   onPlacementChange(index: number, placement: Placement): void;
   onDraftingPath(points: Point[]): void;
   onConstructionGuide(point: Point, rotation: number): void;
+  onDimensionCreate(start: Point, end: Point): void;
+  onDimensionChange(index: number, previous: EditorState): void;
+  onDimensionPositionChange(owner: string, previous: EditorState): void;
   onPlacementRejected?(index: number): void;
   onPlacementAdjusted?(index: number): void;
 }
@@ -70,6 +77,9 @@ export class CadWorkspace {
   private draftHover: Point | null = null;
   private guideTool: number | null = null;
   private guideHover: Point | null = null;
+  private dimensionTool = false;
+  private dimensionPoints: Point[] = [];
+  private dimensionHover: Point | null = null;
   private readonly sampleOffsets = new Map<string, Point>();
 
   constructor(
@@ -129,6 +139,12 @@ export class CadWorkspace {
     this.render();
   }
 
+  setDimensionTool(active: boolean): void {
+    this.dimensionTool = active; this.dimensionPoints = []; this.dimensionHover = null;
+    if (active) { this.setDraftTool(null); this.setGuideTool(null); }
+    this.svg.classList.toggle("placing-dimension", active); this.render();
+  }
+
   finishDraftPath(): boolean {
     if (!this.draftTool) return false;
     if (this.draftPoints.length >= 2) this.callbacks.onDraftingPath(this.draftPoints);
@@ -173,6 +189,21 @@ export class CadWorkspace {
     this.render();
   }
 
+  async exportScenePng(width = 1600, height = 1000): Promise<Blob | null> {
+    this.fit();
+    const clone = this.svg.cloneNode(true) as SVGSVGElement;
+    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg"); clone.setAttribute("width", String(width)); clone.setAttribute("height", String(height));
+    clone.querySelectorAll(".cad-source-hit,.cad-trace-hit,.cad-text-hit,.cad-geometry-handle,.cad-part-move-handle,.cad-definition-handle,.cad-group-handle,.cad-snap-handle,.cad-marquee,.cad-draft-cursor").forEach((node) => node.remove());
+    const css = Array.from(document.styleSheets).flatMap((sheet) => { try { return Array.from(sheet.cssRules).map((rule) => rule.cssText); } catch { return []; } }).join("\n");
+    const computed = getComputedStyle(document.documentElement), variables = ["--canvas", "--surface", "--surface-soft", "--text", "--text-soft", "--muted", "--line", "--accent", "--amber", "--danger", "--constraint", "--constraint-danger", "--container-default"].map((name) => `${name}:${computed.getPropertyValue(name)};`).join("");
+    const style = document.createElementNS("http://www.w3.org/2000/svg", "style"); style.textContent = `:root{${variables}}${css}`; clone.prepend(style);
+    const source = new Blob([new XMLSerializer().serializeToString(clone)], { type: "image/svg+xml" }), url = URL.createObjectURL(source), image = new Image();
+    return await new Promise<Blob | null>((resolve) => {
+      image.onload = () => { const canvas = document.createElement("canvas"); canvas.width = width; canvas.height = height; canvas.getContext("2d")!.drawImage(image, 0, 0, width, height); URL.revokeObjectURL(url); canvas.toBlob(resolve, "image/png"); };
+      image.onerror = () => { URL.revokeObjectURL(url); resolve(null); }; image.src = url;
+    });
+  }
+
   private bind(): void {
     this.svg.addEventListener("pointerdown", (event) => this.pointerDown(event));
     this.svg.addEventListener("pointermove", (event) => this.pointerMove(event));
@@ -195,9 +226,10 @@ export class CadWorkspace {
     const y = -this.view.minY - this.view.height;
     this.svg.setAttribute("viewBox", `${this.view.minX} ${y} ${this.view.width} ${this.view.height}`);
     const scale = this.view.width / Math.max(this.svg.clientWidth, 1);
+    this.svg.style.setProperty("--cad-edge-width", `${this.state.viewSettings.edgeThickness}px`);
     const samples = this.itemSamples();
     this.svg.innerHTML = `<rect class="cad-background" data-cad-background x="${this.view.minX}" y="${y}" width="${this.view.width}" height="${this.view.height}"/>
-      <g class="cad-grid">${gridMarkup(this.view, this.state.drafting.gridStep)}</g>
+      <g class="cad-grid">${this.state.viewSettings.showGrid ? gridMarkup(this.view, this.state.drafting.gridStep) : ""}</g>
       ${this.traceImageMarkup()}
       <g class="cad-container"><defs><clipPath id="container-union-clip"><path fill-rule="evenodd" d="${compoundPath(this.resolved.container)}"/></clipPath></defs>
         ${this.problem.container.parts.map((part, index) => polygons(part.shape, part.rotation_deg, part.translation.x, part.translation.y).map((polygon) => `<path class="cad-part-color container" clip-path="url(#container-union-clip)" style="fill:${containerColor(this.state.containerParts[index]?.primitive)}" d="${path(polygon)}"/>`).join("")).join("")}
@@ -215,11 +247,13 @@ export class CadWorkspace {
       <g class="cad-placements">${this.placements.map((placement, index) => this.placementMarkup(placement, index)).join("")}</g>
       <g class="cad-library">${samples.map((sample, index) => this.itemSampleMarkup(sample, index)).join("")}</g>
       ${this.dimensions ? this.dimensionMarkup() : ""}
+      ${this.dimensions ? this.customDimensionMarkup(scale) : ""}
       ${this.draftingMarkup()}
       ${this.traceImageHitMarkup()}
       ${this.selections.length > 1 ? this.multiSelectionMarkup(scale) : this.selection ? this.selectionHandles(this.selection, scale) : ""}
       ${this.guidePreviewMarkup(scale)}
       ${this.draftPreviewMarkup(scale)}
+      ${this.dimensionPreviewMarkup(scale)}
       ${this.marqueeMarkup()}`;
   }
 
@@ -250,10 +284,20 @@ export class CadWorkspace {
     }).join("");
     const shapes = this.state.drafting.shapes.map((shape, index) => {
       const points = draftingWorldPoints(shape), d = points.map((point, pointIndex) => `${pointIndex ? "L" : "M"}${point.x},${-point.y}`).join(" ") + (shape.closed ? " Z" : "");
-      const locked = this.isLocked({ kind: "drafting", index });
-      return `<path ${locked ? "" : `data-cad-kind="drafting" data-cad-index="${index}"`} class="cad-drafting-shape ${locked ? "locked" : this.isSelected({ kind: "drafting", index }) ? "selected" : ""}" d="${d}"/>`;
+      const locked = this.isLocked({ kind: "drafting", index }), selected = this.isSelected({ kind: "drafting", index });
+      const hit = locked ? "" : `<path data-cad-kind="drafting" data-cad-index="${index}" class="cad-drafting-hit" d="${d}"/>`;
+      return `<path class="cad-drafting-shape ${locked ? "locked" : selected ? "selected" : ""}" d="${d}"/>${hit}`;
     }).join("");
-    return `<g class="cad-construction-guides">${guides}${shapes}</g>`;
+    const texts = this.state.drafting.texts.map((entry, index) => {
+      const bounds = draftingTextLocalBounds(entry), locked = this.isLocked({ kind: "text", index });
+      const lines = entry.text.split("\n");
+      const family = entry.fontFamily === "sans" ? "system-ui, sans-serif" : entry.fontFamily === "serif" ? "Georgia, serif" : 'ui-monospace, "SFMono-Regular", Consolas, monospace';
+      const anchor = entry.align === "center" ? "middle" : entry.align === "right" ? "end" : "start";
+      const visual = `<text class="cad-scene-text" text-anchor="${anchor}" style="font-size:${entry.fontSize}px;fill:${escapeHtml(entry.color)};font-family:${family};font-weight:${entry.bold ? 700 : 400};font-style:${entry.italic ? "italic" : "normal"};text-decoration:${entry.underline ? "underline" : "none"}">${lines.map((line, lineIndex) => `<tspan x="0" dy="${lineIndex ? 1.2 : 0}em">${escapeHtml(line || " ")}</tspan>`).join("")}</text>`;
+      const hit = locked ? "" : `<rect data-cad-kind="text" data-cad-index="${index}" class="cad-text-hit ${this.isSelected({ kind: "text", index }) ? "selected" : ""}" x="${bounds.minX}" y="${-bounds.maxY}" width="${bounds.width}" height="${bounds.height}"/>`;
+      return `<g transform="translate(${entry.x} ${-entry.y}) rotate(${-entry.rotation})">${visual}${hit}</g>`;
+    }).join("");
+    return `<g class="cad-construction-guides">${guides}${shapes}${texts}</g>`;
   }
 
   private draftPreviewMarkup(scale: number): string {
@@ -270,6 +314,12 @@ export class CadWorkspace {
     return `<g class="cad-guide-placement-preview"><line x1="${point.x - vector.x}" y1="${-(point.y - vector.y)}" x2="${point.x + vector.x}" y2="${-(point.y + vector.y)}"/><circle cx="${point.x}" cy="${-point.y}" r="${Math.max(5 * scale, .1)}"/><text x="${point.x + Math.max(9 * scale, .18)}" y="${-point.y - Math.max(9 * scale, .18)}">${format(point.x)}, ${format(point.y)}</text></g>`;
   }
 
+  private dimensionPreviewMarkup(scale: number): string {
+    if (!this.dimensionTool || !this.dimensionHover || !this.dimensionPoints.length) return "";
+    const preview: CadDimension = { id: "preview", start: this.dimensionPoints[0], end: this.dimensionHover, offset: { x: 0, y: 0 }, textOverride: "" };
+    return `<g class="cad-dimension-preview">${linearDimensionMarkup(preview, scale, this.state.viewSettings)}</g>`;
+  }
+
   private snapDraftPoint(point: Point, bypass = false): Point {
     if (bypass || !this.state.drafting.snapToGrid) return { x: round(point.x), y: round(point.y) };
     return { x: round(snapUnit(point.x, this.state.drafting.gridStep)), y: round(snapUnit(point.y, this.state.drafting.gridStep)) };
@@ -277,6 +327,12 @@ export class CadWorkspace {
 
   private pointerDown(event: PointerEvent): void {
     this.svg.focus();
+    if (this.dimensionTool) {
+      const point = this.snapDimensionPoint(this.eventPoint(event), event.altKey); this.dimensionPoints.push(point); this.dimensionHover = point;
+      if (this.dimensionPoints.length === 2) { this.callbacks.onDimensionCreate(this.dimensionPoints[0], this.dimensionPoints[1]); this.setDimensionTool(false); }
+      else this.render();
+      return;
+    }
     if (this.guideTool !== null) {
       const point = this.snapDraftPoint(this.eventPoint(event), event.altKey), rotation = this.guideTool;
       this.callbacks.onConstructionGuide(point, rotation); this.setGuideTool(null); return;
@@ -383,6 +439,21 @@ export class CadWorkspace {
       };
       this.svg.setPointerCapture(event.pointerId); return;
     }
+    const dimensionHit = (event.target as Element).closest<SVGElement>("[data-dimension-index]");
+    if (dimensionHit) {
+      const index = Number(dimensionHit.dataset.dimensionIndex), selected: CadSelection = { kind: "dimension", index };
+      this.selection = selected; this.callbacks.onSelect(selected);
+      this.drag = { mode: "dimension", startClient: { x: event.clientX, y: event.clientY }, startWorld: this.eventPoint(event), originalState: structuredClone(this.state), moved: false };
+      this.drag.partIndex = index; this.svg.setPointerCapture(event.pointerId); this.render(); return;
+    }
+    const automaticDimension = (event.target as Element).closest<SVGElement>("[data-auto-dimension-owner]");
+    if (automaticDimension) {
+      const owner = automaticDimension.dataset.autoDimensionOwner!, axis = automaticDimension.dataset.autoDimensionAxis as "width" | "height" | "clearance";
+      const selected: CadSelection = { kind: "auto-dimension", index: Number(automaticDimension.dataset.cadIndex ?? 0), owner, axis };
+      this.selection = selected; this.callbacks.onSelect(selected);
+      this.drag = { mode: "auto-dimension", startClient: { x: event.clientX, y: event.clientY }, startWorld: this.eventPoint(event), originalState: structuredClone(this.state), dimensionOwner: owner, moved: false };
+      this.svg.setPointerCapture(event.pointerId); return;
+    }
     const scaleHandle = (event.target as Element).closest<SVGElement>("[data-definition-scale]");
     if (scaleHandle) {
       const definition = parseDefinitionKey(scaleHandle.dataset.definitionScale!);
@@ -471,6 +542,7 @@ export class CadWorkspace {
   }
 
   private pointerMove(event: PointerEvent): void {
+    if (this.dimensionTool && !this.drag) { this.dimensionHover = this.snapDimensionPoint(this.eventPoint(event), event.altKey); this.render(); return; }
     if (this.guideTool !== null && !this.drag) { this.guideHover = this.snapDraftPoint(this.eventPoint(event), event.altKey); this.render(); return; }
     if (this.draftTool && !this.drag) { this.draftHover = this.snapDraftPoint(this.eventPoint(event), event.altKey); this.render(); return; }
     if (!this.drag) return;
@@ -501,6 +573,20 @@ export class CadWorkspace {
       const world = this.snapDraftPoint(this.eventPoint(event), event.altKey);
       const local = inverseTransformPoint(world, source.rotation, source.x, source.y);
       shape.points[this.drag.partIndex] = { x: round(local.x), y: round(local.y) };
+      this.drag.moved = true; this.render(); return;
+    }
+    if (this.drag.mode === "dimension") {
+      const index = this.drag.partIndex!, dimension = this.state.dimensions[index], source = this.drag.originalState?.dimensions[index];
+      if (!dimension || !source) return;
+      const current = this.eventPoint(event);
+      const x = source.offset.x + current.x - this.drag.startWorld.x, y = source.offset.y + current.y - this.drag.startWorld.y;
+      dimension.offset = { x: round(this.state.drafting.snapToGrid && !event.altKey ? snapUnit(x, this.state.drafting.gridStep) : x), y: round(this.state.drafting.snapToGrid && !event.altKey ? snapUnit(y, this.state.drafting.gridStep) : y) };
+      this.drag.moved = true; this.render(); return;
+    }
+    if (this.drag.mode === "auto-dimension") {
+      const owner = this.drag.dimensionOwner!, source = this.drag.originalState?.dimensionPositions[owner] ?? { x: 0, y: 0 }, current = this.eventPoint(event);
+      const x = source.x + current.x - this.drag.startWorld.x, y = source.y + current.y - this.drag.startWorld.y;
+      this.state.dimensionPositions[owner] = { x: round(this.state.drafting.snapToGrid && !event.altKey ? snapUnit(x, this.state.drafting.gridStep) : x), y: round(this.state.drafting.snapToGrid && !event.altKey ? snapUnit(y, this.state.drafting.gridStep) : y) };
       this.drag.moved = true; this.render(); return;
     }
     if (this.drag.mode === "group-move" || this.drag.mode === "group-rotate" || this.drag.mode === "group-scale") {
@@ -613,6 +699,8 @@ export class CadWorkspace {
       } else this.callbacks.onPlacementChange(drag.placementIndex, this.placements[drag.placementIndex]);
     }
     if (drag.moved && drag.selection && drag.originalState) this.callbacks.onDefinitionChange(drag.selection, drag.originalState);
+    if (drag.moved && drag.mode === "dimension" && drag.partIndex !== undefined && drag.originalState) this.callbacks.onDimensionChange(drag.partIndex, drag.originalState);
+    if (drag.moved && drag.mode === "auto-dimension" && drag.dimensionOwner && drag.originalState) this.callbacks.onDimensionPositionChange(drag.dimensionOwner, drag.originalState);
     if (drag.moved && (drag.mode === "group-move" || drag.mode === "group-rotate" || drag.mode === "group-scale")) {
       const definition = this.selections.find((entry): entry is Exclude<CadSelection, { kind: "placement" }> => entry.kind !== "placement");
       if (definition && drag.originalState) this.callbacks.onDefinitionChange(definition, drag.originalState);
@@ -647,6 +735,7 @@ export class CadWorkspace {
       ...this.state.drafting.guides.map((_, index) => ({ kind: "guide", index }) as CadSelection),
       ...this.state.drafting.shapes.map((_, index) => ({ kind: "drafting", index }) as CadSelection),
       ...this.state.drafting.traceImages.map((_, index) => ({ kind: "trace", index }) as CadSelection),
+      ...this.state.drafting.texts.map((_, index) => ({ kind: "text", index }) as CadSelection),
       ...this.placements.map((_, index) => ({ kind: "placement", index }) as CadSelection),
     ].filter((entry) => !this.isLocked(entry));
     const selected = candidates.filter((selection) => {
@@ -895,27 +984,7 @@ export class CadWorkspace {
       const point = transformPoint(entry.point, context.rotation, context.center.x, context.center.y);
       return `<circle class="cad-geometry-handle ${entry.className ?? ""}" data-geometry-target="${target}" data-geometry-part="${partIndex}" data-geometry-handle="${entry.key}" cx="${point.x}" cy="${-point.y}" r="${radius}"/>`;
     }).join("");
-    return `${this.editDimensionsMarkup(context, scale)}${guides}${centerHandle}${controls}`;
-  }
-
-  private editDimensionsMarkup(context: { primitive: PrimitiveEditor; center: Point; rotation: number }, scale: number): string {
-    const points = shapePoints(primitiveShape(context.primitive));
-    if (!points.length) return "";
-    const bounds = pointBounds(points), offset = Math.max(18 * scale, .32), tick = Math.max(5 * scale, .09);
-    const world = (point: Point) => transformPoint(point, context.rotation, context.center.x, context.center.y);
-    const topLeft = world({ x: bounds.minX, y: bounds.maxY }), topRight = world({ x: bounds.maxX, y: bounds.maxY }), bottomRight = world({ x: bounds.maxX, y: bounds.minY });
-    const widthA = world({ x: bounds.minX, y: bounds.maxY + offset }), widthB = world({ x: bounds.maxX, y: bounds.maxY + offset });
-    const heightA = world({ x: bounds.maxX + offset, y: bounds.minY }), heightB = world({ x: bounds.maxX + offset, y: bounds.maxY });
-    const widthMid = { x: (widthA.x + widthB.x) / 2, y: (widthA.y + widthB.y) / 2 };
-    const heightMid = { x: (heightA.x + heightB.x) / 2, y: (heightA.y + heightB.y) / 2 };
-    const verticalTick = (point: Point) => {
-      const a = world({ x: inverseTransformPoint(point, context.rotation, context.center.x, context.center.y).x, y: bounds.maxY + offset - tick });
-      const b = world({ x: inverseTransformPoint(point, context.rotation, context.center.x, context.center.y).x, y: bounds.maxY + offset + tick });
-      return `<line x1="${a.x}" y1="${-a.y}" x2="${b.x}" y2="${-b.y}"/>`;
-    };
-    const fontSize = Math.max(10 * scale, .16);
-    const halo = Math.max(2.5 * scale, .04);
-    return `<g class="cad-edit-dimensions"><line class="extension" x1="${topLeft.x}" y1="${-topLeft.y}" x2="${widthA.x}" y2="${-widthA.y}"/><line class="extension" x1="${topRight.x}" y1="${-topRight.y}" x2="${widthB.x}" y2="${-widthB.y}"/><line x1="${widthA.x}" y1="${-widthA.y}" x2="${widthB.x}" y2="${-widthB.y}"/>${verticalTick(widthA)}${verticalTick(widthB)}<text transform="translate(${widthMid.x} ${-widthMid.y}) rotate(${-context.rotation})" y="${-4 * scale}" style="font-size:${fontSize}px;stroke-width:${halo}px">${format(bounds.width)}</text><line class="extension" x1="${topRight.x}" y1="${-topRight.y}" x2="${heightB.x}" y2="${-heightB.y}"/><line class="extension" x1="${bottomRight.x}" y1="${-bottomRight.y}" x2="${heightA.x}" y2="${-heightA.y}"/><line x1="${heightA.x}" y1="${-heightA.y}" x2="${heightB.x}" y2="${-heightB.y}"/><text transform="translate(${heightMid.x} ${-heightMid.y}) rotate(${-context.rotation - 90})" y="${-4 * scale}" style="font-size:${fontSize}px;stroke-width:${halo}px">${format(bounds.height)}</text></g>`;
+    return `${guides}${centerHandle}${controls}`;
   }
 
   private primitiveContext(selection: Exclude<CadSelection, { kind: "placement" }>, partIndex: number): { primitive: PrimitiveEditor; center: Point; rotation: number } | null {
@@ -1157,9 +1226,18 @@ export class CadWorkspace {
       const points = [{ x: -trace.width / 2, y: -trace.height / 2 }, { x: trace.width / 2, y: -trace.height / 2 }, { x: trace.width / 2, y: trace.height / 2 }, { x: -trace.width / 2, y: trace.height / 2 }].map((point) => transformPoint(point, trace.rotation, trace.x, trace.y));
       return pointBounds(points);
     }
+    if (selection.kind === "text") {
+      const entry = this.state.drafting.texts[selection.index]; if (!entry) return null;
+      const bounds = draftingTextLocalBounds(entry), corners = [{ x: bounds.minX, y: bounds.minY }, { x: bounds.maxX, y: bounds.minY }, { x: bounds.maxX, y: bounds.maxY }, { x: bounds.minX, y: bounds.maxY }].map((point) => transformPoint(point, entry.rotation, entry.x, entry.y));
+      return pointBounds(corners);
+    }
     if (selection.kind === "drafting") {
       const shape = this.state.drafting.shapes[selection.index], points = shape ? draftingWorldPoints(shape) : [];
       return points.length ? pointBounds(points) : null;
+    }
+    if (selection.kind === "dimension") {
+      const dimension = this.state.dimensions[selection.index];
+      return dimension ? pointBounds([dimension.start, dimension.end, { x: dimension.start.x + dimension.offset.x, y: dimension.start.y + dimension.offset.y }, { x: dimension.end.x + dimension.offset.x, y: dimension.end.y + dimension.offset.y }]) : null;
     }
     if (selection.kind === "guide") {
       const guide = this.state.drafting.guides[selection.index]; if (!guide) return null;
@@ -1194,24 +1272,49 @@ export class CadWorkspace {
   }
 
   private dimensionMarkup(): string {
-    const scale = this.view.width / Math.max(this.svg.clientWidth, 1), markup: string[] = [];
-    const appendUnique = (polygons: Point[][], suffix = "") => {
-      const shown = new Set<string>();
-      polygons.forEach((polygon) => {
-        const bounds = pointBounds(polygon), width = dimensionKey(bounds.width), height = dimensionKey(bounds.height);
-        const showWidth = !shown.has(width); if (showWidth) shown.add(width);
-        const showHeight = !shown.has(height); if (showHeight) shown.add(height);
-        if (showWidth || showHeight) markup.push(dimensionsFor(bounds, scale, showWidth, showHeight, suffix));
-      });
+    const scale = this.view.width / Math.max(this.svg.clientWidth, 1), markup: string[] = []; let automaticIndex = 0;
+    const append = (points: Point[], owner: string, lane = 0, diameter = false) => {
+      if (points.length) { markup.push(engineeringDimensions(pointBounds(points), scale, owner, this.state.viewSettings, lane, diameter, this.state.dimensionPositions[owner], this.state.dimensionOverrides, automaticIndex)); automaticIndex += diameter ? 1 : 2; }
     };
-    appendUnique(this.resolved.container);
-    this.problem.exclusions.forEach((entry) => {
-      const visible = this.resolved.exclusions.find((geometry) => geometry.id === entry.id)?.polygons ?? [];
-      appendUnique(visible, " exclusion");
-      const clearance = Math.max(this.problem.clearance.item_to_exclusion, entry.clearance);
-      if (clearance > 0) appendUnique(visible.map((polygon) => offsetPolygon(polygon, (contourArea(polygon) >= 0 ? 1 : -1) * clearance)), " incl. clear");
-    });
+    append(this.resolved.container.flat(), "material", 0, this.state.containerParts.length === 1 && this.state.containerParts[0]?.primitive.kind === "circle");
+    this.problem.exclusions.forEach((entry, index) => append((this.resolved.exclusions.find((geometry) => geometry.id === entry.id)?.polygons ?? []).flat(), `exclusion:${entry.id}`, index + 1, this.state.exclusions[index]?.parts.length === 1 && this.state.exclusions[index]?.parts[0]?.kind === "circle"));
+    this.itemSamples().forEach((sample, index) => append(sample.polygons.flat(), `item:${this.problem.items[index]?.id ?? index + 1}`, this.problem.exclusions.length + index + 1, this.state.items[index]?.parts.length === 1 && this.state.items[index]?.parts[0]?.kind === "circle"));
+    if (this.selection?.kind === "placement") {
+      const placement = this.placements[this.selection.index], item = placement && this.problem.items.find((entry) => entry.id === placement.item_id);
+      const editorItem = placement && this.state.items.find((entry) => entry.id === placement.item_id);
+      if (placement && item) append(polygons(item.shape, placement.rotation_deg, placement.x, placement.y).flat(), `placement:${placement.item_id}`, 0, editorItem?.parts.length === 1 && editorItem.parts[0]?.kind === "circle");
+    }
+    if (this.selection?.kind === "drafting") append(draftingWorldPoints(this.state.drafting.shapes[this.selection.index]), `drafting:${this.selection.index + 1}`);
+    const clearance = (points: Point[], distance: number, owner: string, outward: boolean) => {
+      if (!points.length || distance <= 0) return;
+      const bounds = pointBounds(points), y = (bounds.minY + bounds.maxY) / 2;
+      const start = { x: outward ? bounds.maxX : bounds.minX, y }, end = { x: outward ? bounds.maxX + distance : bounds.minX + distance, y };
+      const calculated = `${distance.toFixed(this.state.viewSettings.dimensionPrecision)}${this.state.viewSettings.dimensionUnit ? ` ${this.state.viewSettings.dimensionUnit}` : ""} clear`;
+      markup.push(linearDimensionMarkup({ id: owner, start, end, offset: this.state.dimensionPositions[owner] ?? { x: 0, y: 0 }, textOverride: this.state.dimensionOverrides[`${owner}:clearance`] || calculated }, scale, this.state.viewSettings, undefined, false, owner, owner, automaticIndex++, "clearance"));
+    };
+    clearance(this.resolved.container.flat(), this.problem.clearance.item_to_boundary, "clearance:boundary", false);
+    this.problem.exclusions.forEach((entry) => clearance((this.resolved.exclusions.find((geometry) => geometry.id === entry.id)?.polygons ?? []).flat(), Math.max(this.problem.clearance.item_to_exclusion, entry.clearance), `clearance:exclusion:${entry.id}`, true));
+    const sample = this.itemSamples()[0]; if (sample) clearance(sample.polygons.flat(), this.problem.clearance.item_to_item, "clearance:item-to-item", true);
     return markup.join("");
+  }
+
+  private customDimensionMarkup(scale: number): string {
+    return this.state.dimensions.map((dimension, index) => linearDimensionMarkup(dimension, scale, this.state.viewSettings, index, this.selection?.kind === "dimension" && this.selection.index === index)).join("");
+  }
+
+  private snapDimensionPoint(point: Point, bypass: boolean): Point {
+    if (bypass) return { x: round(point.x), y: round(point.y) };
+    const candidates = this.sceneSnapPoints();
+    const nearest = candidates.reduce<Point | null>((best, candidate) => !best || Math.hypot(candidate.x - point.x, candidate.y - point.y) < Math.hypot(best.x - point.x, best.y - point.y) ? candidate : best, null);
+    const capture = this.view.width / Math.max(this.svg.clientWidth, 1) * 14;
+    return nearest && Math.hypot(nearest.x - point.x, nearest.y - point.y) <= capture ? nearest : this.snapDraftPoint(point);
+  }
+
+  private sceneSnapPoints(): Point[] {
+    const points = [...this.resolved.container.flat(), ...this.resolved.exclusions.flatMap((entry) => entry.polygons.flat())];
+    this.itemSamples().forEach((sample) => points.push(...sample.polygons.flat()));
+    this.placements.forEach((placement) => { const item = this.problem.items.find((entry) => entry.id === placement.item_id); if (item) points.push(...polygons(item.shape, placement.rotation_deg, placement.x, placement.y).flat()); });
+    return points;
   }
 
   private containerClearanceMarkup(): string {
@@ -1271,6 +1374,11 @@ export class CadWorkspace {
       target.x = round(this.state.drafting.snapToGrid && !bypassSnapping ? snapUnit(source.x + dx, this.state.drafting.gridStep) : source.x + dx);
       target.y = round(this.state.drafting.snapToGrid && !bypassSnapping ? snapUnit(source.y + dy, this.state.drafting.gridStep) : source.y + dy); return;
     }
+    if (selection.kind === "text") {
+      const source = original.drafting.texts[selection.index], target = this.state.drafting.texts[selection.index]; if (!source || !target) return;
+      target.x = round(this.state.drafting.snapToGrid && !bypassSnapping ? snapUnit(source.x + dx, this.state.drafting.gridStep) : source.x + dx);
+      target.y = round(this.state.drafting.snapToGrid && !bypassSnapping ? snapUnit(source.y + dy, this.state.drafting.gridStep) : source.y + dy); return;
+    }
     if (selection.kind === "drafting") {
       const source = original.drafting.shapes[selection.index], target = this.state.drafting.shapes[selection.index]; if (!source || !target) return;
       target.x = round(this.state.drafting.snapToGrid && !bypassSnapping ? snapUnit(source.x + dx, this.state.drafting.gridStep) : source.x + dx);
@@ -1299,6 +1407,7 @@ export class CadWorkspace {
   private rotateDefinition(selection: Exclude<CadSelection, { kind: "placement" }>, original: EditorState, delta: number): void {
     if (selection.kind === "guide") { const source = original.drafting.guides[selection.index], target = this.state.drafting.guides[selection.index]; if (source && target) target.rotation = round(source.rotation + delta, 1); return; }
     if (selection.kind === "trace") { const source = original.drafting.traceImages[selection.index], target = this.state.drafting.traceImages[selection.index]; if (source && target) target.rotation = round(source.rotation + delta, 1); return; }
+    if (selection.kind === "text") { const source = original.drafting.texts[selection.index], target = this.state.drafting.texts[selection.index]; if (source && target) target.rotation = round(source.rotation + delta, 1); return; }
     if (selection.kind === "drafting") { const source = original.drafting.shapes[selection.index], target = this.state.drafting.shapes[selection.index]; if (source && target) target.rotation = round(source.rotation + delta, 1); return; }
     if (selection.kind === "container") {
       const indices = containerComponentIndices(original, selection.index), center = containerGeometryCenter(original, indices), radians = delta * Math.PI / 180;
@@ -1340,6 +1449,7 @@ export class CadWorkspace {
   private scaleDefinition(selection: Exclude<CadSelection, { kind: "placement" }>, original: EditorState, factor: number): void {
     if (selection.kind === "guide") return;
     if (selection.kind === "trace") { const source = original.drafting.traceImages[selection.index], target = this.state.drafting.traceImages[selection.index]; if (source && target) { target.width = round(source.width * factor); target.height = round(source.height * factor); } return; }
+    if (selection.kind === "text") { const source = original.drafting.texts[selection.index], target = this.state.drafting.texts[selection.index]; if (source && target) target.fontSize = round(Math.max(.05, source.fontSize * factor)); return; }
     if (selection.kind === "drafting") { const source = original.drafting.shapes[selection.index], target = this.state.drafting.shapes[selection.index]; if (source && target) target.points = source.points.map((point) => ({ x: round(point.x * factor), y: round(point.y * factor) })); return; }
     if (selection.kind === "container") {
       const indices = containerComponentIndices(original, selection.index), center = containerGeometryCenter(original, indices);
@@ -1384,7 +1494,9 @@ export class CadWorkspace {
       if (item) points.push(...polygons(item.shape, placement.rotation_deg, placement.x, placement.y).flat());
     });
     this.state.drafting.traceImages.forEach((_, index) => { const bounds = this.selectionBounds({ kind: "trace", index }); if (bounds) points.push({ x: bounds.minX, y: bounds.minY }, { x: bounds.maxX, y: bounds.maxY }); });
+    this.state.drafting.texts.forEach((_, index) => { const bounds = this.selectionBounds({ kind: "text", index }); if (bounds) points.push({ x: bounds.minX, y: bounds.minY }, { x: bounds.maxX, y: bounds.maxY }); });
     this.state.drafting.shapes.forEach((shape) => points.push(...draftingWorldPoints(shape)));
+    this.state.dimensions.forEach((dimension) => points.push(dimension.start, dimension.end, { x: dimension.start.x + dimension.offset.x, y: dimension.start.y + dimension.offset.y }, { x: dimension.end.x + dimension.offset.x, y: dimension.end.y + dimension.offset.y }));
     return points.length ? pointBounds(points) : this.containerBounds();
   }
 }
@@ -1393,6 +1505,13 @@ interface ItemSample { polygons: Point[][]; sourcePolygons: Point[][][]; bounds:
 
 function draftingWorldPoints(shape: DraftingPath): Point[] {
   return shape.points.map((point) => transformPoint(point, shape.rotation, shape.x, shape.y));
+}
+
+function draftingTextLocalBounds(entry: EditorState["drafting"]["texts"][number]): Bounds {
+  const lines = entry.text.split("\n"), longest = Math.max(1, ...lines.map((line) => [...line].length));
+  const width = Math.max(entry.fontSize * .62 * longest, entry.fontSize * .5), minY = -(lines.length - 1) * entry.fontSize * 1.2 - entry.fontSize * .25, maxY = entry.fontSize;
+  const minX = entry.align === "center" ? -width / 2 : entry.align === "right" ? -width : 0, maxX = minX + width;
+  return { minX, minY, maxX, maxY, width, height: maxY - minY };
 }
 
 function primitiveFor(state: EditorState, selection: Exclude<CadSelection, { kind: "placement" }>, partIndex: number): PrimitiveEditor | null {
@@ -1514,14 +1633,16 @@ function rotateAround(point: Point, center: Point, rotation: number): Point {
 
 function selectionFrom(element: SVGElement): CadSelection {
   const partIndex = element.dataset.cadPart === undefined ? undefined : Number(element.dataset.cadPart);
+  if (element.dataset.cadKind === "auto-dimension") return { kind: "auto-dimension", index: Number(element.dataset.cadIndex), owner: element.dataset.autoDimensionOwner!, axis: element.dataset.autoDimensionAxis as "width" | "height" | "clearance" };
   return { kind: element.dataset.cadKind as CadSelection["kind"], index: Number(element.dataset.cadIndex), ...(partIndex === undefined ? {} : { partIndex }) } as CadSelection;
 }
 
 function sameSelection(a: CadSelection, b: CadSelection): boolean {
-  return a.kind === b.kind && a.index === b.index && ("partIndex" in a ? a.partIndex : undefined) === ("partIndex" in b ? b.partIndex : undefined);
+  return a.kind === b.kind && a.index === b.index && ("partIndex" in a ? a.partIndex : undefined) === ("partIndex" in b ? b.partIndex : undefined) && ("owner" in a ? a.owner : undefined) === ("owner" in b ? b.owner : undefined) && ("axis" in a ? a.axis : undefined) === ("axis" in b ? b.axis : undefined);
 }
 
 function lockReference(state: EditorState, selection: CadSelection, placements: Placement[]): EditorState["lockedEntities"][number] | null {
+  if (selection.kind === "dimension" || selection.kind === "auto-dimension") return null;
   if (selection.kind === "placement") {
     const id = placements[selection.index]?.item_id;
     return id ? { kind: "item", id } : null;
@@ -1531,6 +1652,7 @@ function lockReference(state: EditorState, selection: CadSelection, placements: 
     : selection.kind === "item" ? state.items[selection.index]?.id
     : selection.kind === "guide" ? state.drafting.guides[selection.index]?.id
     : selection.kind === "drafting" ? state.drafting.shapes[selection.index]?.id
+    : selection.kind === "text" ? state.drafting.texts[selection.index]?.id
     : state.drafting.traceImages[selection.index]?.id;
   return id ? { kind: selection.kind, id } : null;
 }
@@ -1694,13 +1816,42 @@ function gridMarkup(view: View, unitStep: number): string {
   return lines.join("");
 }
 
-function dimensionsFor(bounds: Bounds, scale: number, showWidth = true, showHeight = true, suffix = ""): string {
-  const offset = Math.max(scale * 18, .35);
-  const top = bounds.maxY + offset, right = bounds.maxX + offset;
-  return `<g class="cad-dimensions">${showWidth ? `<line x1="${bounds.minX}" y1="${-top}" x2="${bounds.maxX}" y2="${-top}"/><text x="${(bounds.minX + bounds.maxX) / 2}" y="${-top - offset * .25}">${format(bounds.width)}${suffix}</text>` : ""}${showHeight ? `<line x1="${right}" y1="${-bounds.minY}" x2="${right}" y2="${-bounds.maxY}"/><text transform="translate(${right + offset * .4} ${-(bounds.minY + bounds.maxY) / 2}) rotate(-90)">${format(bounds.height)}${suffix}</text>` : ""}</g>`;
+function engineeringDimensions(bounds: Bounds, scale: number, owner: string, settings: CadViewSettings, lane = 0, diameter = false, position: Point = { x: 0, y: 0 }, overrides: Record<string, string> = {}, indexStart = 0): string {
+  const offset = scale * (25 + lane * 8), gap = scale * 4, overshoot = scale * 5, arrow = scale * 7, arrowHalf = scale * 2.5;
+  const fontSize = scale * settings.dimensionTextSize, halo = scale * Math.max(3, settings.dimensionTextSize * .32);
+  const top = bounds.maxY + offset + position.y, right = bounds.maxX + offset + position.x;
+  const widthText = escapeHtml(overrides[`${owner}:width`] || `${diameter ? "Ø" : ""}${bounds.width.toFixed(settings.dimensionPrecision)}${settings.dimensionUnit ? ` ${settings.dimensionUnit}` : ""}`);
+  const heightText = escapeHtml(overrides[`${owner}:height`] || `${bounds.height.toFixed(settings.dimensionPrecision)}${settings.dimensionUnit ? ` ${settings.dimensionUnit}` : ""}`);
+  const horizontalArrows = `<path class="cad-dimension-arrow" d="M${bounds.minX},${-top} L${bounds.minX + arrow},${-top - arrowHalf} L${bounds.minX + arrow},${-top + arrowHalf} Z M${bounds.maxX},${-top} L${bounds.maxX - arrow},${-top - arrowHalf} L${bounds.maxX - arrow},${-top + arrowHalf} Z"/>`;
+  const verticalArrows = `<path class="cad-dimension-arrow" d="M${right},${-bounds.minY} L${right - arrowHalf},${-bounds.minY - arrow} L${right + arrowHalf},${-bounds.minY - arrow} Z M${right},${-bounds.maxY} L${right - arrowHalf},${-bounds.maxY + arrow} L${right + arrowHalf},${-bounds.maxY + arrow} Z"/>`;
+  const selectionAttributes = (axis: "width" | "height", index: number) => `data-cad-kind="auto-dimension" data-cad-index="${index}" data-auto-dimension-owner="${escapeHtml(owner)}" data-auto-dimension-axis="${axis}"`;
+  return `<g class="cad-dimensions cad-auto-dimension" data-dimension-owner="${escapeHtml(owner)}">
+    <g ${selectionAttributes("width", indexStart)} data-dimension-axis="width"><line class="cad-dimension-hit" x1="${bounds.minX}" y1="${-top}" x2="${bounds.maxX}" y2="${-top}"/><line class="cad-dimension-extension" x1="${bounds.minX}" y1="${-(bounds.maxY + gap)}" x2="${bounds.minX}" y2="${-(top + overshoot)}"/><line class="cad-dimension-extension" x1="${bounds.maxX}" y1="${-(bounds.maxY + gap)}" x2="${bounds.maxX}" y2="${-(top + overshoot)}"/><line class="cad-dimension-line" x1="${bounds.minX}" y1="${-top}" x2="${bounds.maxX}" y2="${-top}"/>${horizontalArrows}<text x="${(bounds.minX + bounds.maxX) / 2}" y="${-top}" dy="${-scale * 5}" style="font-size:${fontSize}px;stroke-width:${halo}px">${widthText}</text></g>
+    ${diameter ? "" : `<g ${selectionAttributes("height", indexStart + 1)} data-dimension-axis="height"><line class="cad-dimension-hit" x1="${right}" y1="${-bounds.minY}" x2="${right}" y2="${-bounds.maxY}"/><line class="cad-dimension-extension" x1="${bounds.maxX + gap}" y1="${-bounds.minY}" x2="${right + overshoot}" y2="${-bounds.minY}"/><line class="cad-dimension-extension" x1="${bounds.maxX + gap}" y1="${-bounds.maxY}" x2="${right + overshoot}" y2="${-bounds.maxY}"/><line class="cad-dimension-line" x1="${right}" y1="${-bounds.minY}" x2="${right}" y2="${-bounds.maxY}"/>${verticalArrows}<text transform="translate(${right} ${-(bounds.minY + bounds.maxY) / 2}) rotate(-90)" y="${-scale * 5}" style="font-size:${fontSize}px;stroke-width:${halo}px">${heightText}</text></g>`}
+  </g>`;
 }
 
-function dimensionKey(value: number): string { return value.toFixed(4); }
+function linearDimensionMarkup(dimension: CadDimension, scale: number, settings: CadViewSettings, index?: number, selected = false, owner = `custom:${dimension.id}`, automaticOwner?: string, automaticIndex?: number, automaticAxis: "clearance" = "clearance"): string {
+  const a = dimension.start, b = dimension.end;
+  const dx = b.x - a.x, dy = b.y - a.y, length = Math.hypot(dx, dy);
+  if (length < 1e-8) return "";
+  const lineA = { x: a.x + dimension.offset.x, y: a.y + dimension.offset.y };
+  const lineB = { x: b.x + dimension.offset.x, y: b.y + dimension.offset.y };
+  const ux = dx / length, uy = dy / length, normal = { x: -uy, y: ux };
+  const arrow = Math.min(scale * 7, length * .22), half = scale * 2.5;
+  const arrowPath = (tip: Point, direction: number) => {
+    const base = { x: tip.x + ux * arrow * direction, y: tip.y + uy * arrow * direction };
+    return `M${tip.x},${-tip.y} L${base.x + normal.x * half},${-(base.y + normal.y * half)} L${base.x - normal.x * half},${-(base.y - normal.y * half)} Z`;
+  };
+  const mid = { x: (lineA.x + lineB.x) / 2 + normal.x * scale * 6, y: (lineA.y + lineB.y) / 2 + normal.y * scale * 6 };
+  const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+  const readableAngle = angle > 90 || angle < -90 ? angle + 180 : angle;
+  const unit = settings.dimensionUnit ? ` ${escapeHtml(settings.dimensionUnit)}` : "";
+  const label = dimension.textOverride ? escapeHtml(dimension.textOverride) : `${length.toFixed(settings.dimensionPrecision)}${unit}`;
+  const fontSize = scale * settings.dimensionTextSize, halo = scale * Math.max(3, settings.dimensionTextSize * .32);
+  const hit = index !== undefined ? `data-cad-kind="dimension" data-cad-index="${index}" data-dimension-index="${index}"` : automaticOwner ? `data-cad-kind="auto-dimension" data-cad-index="${automaticIndex ?? 0}" data-auto-dimension-owner="${escapeHtml(automaticOwner)}" data-auto-dimension-axis="${automaticAxis}"` : "";
+  return `<g class="cad-dimensions cad-linear-dimension ${selected ? "selected" : ""}" data-dimension-owner="${escapeHtml(owner)}" ${hit}><line class="cad-dimension-hit" x1="${lineA.x}" y1="${-lineA.y}" x2="${lineB.x}" y2="${-lineB.y}"/><line class="cad-dimension-extension" x1="${a.x}" y1="${-a.y}" x2="${lineA.x}" y2="${-lineA.y}"/><line class="cad-dimension-extension" x1="${b.x}" y1="${-b.y}" x2="${lineB.x}" y2="${-lineB.y}"/><line class="cad-dimension-line" x1="${lineA.x}" y1="${-lineA.y}" x2="${lineB.x}" y2="${-lineB.y}"/><path class="cad-dimension-arrow" d="${arrowPath(lineA, 1)} ${arrowPath(lineB, -1)}"/><text transform="translate(${mid.x} ${-mid.y}) rotate(${-readableAngle})" style="font-size:${fontSize}px;stroke-width:${halo}px">${label}</text></g>`;
+}
 
 function offsetPolygon(points: Point[], distance: number): Point[] {
   if (points.length < 3 || distance === 0) return points;
