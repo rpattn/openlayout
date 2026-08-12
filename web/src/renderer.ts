@@ -116,13 +116,16 @@ export function sensitivityValueAt(canvas: HTMLCanvasElement, result: Sensitivit
   return result.evaluations.reduce((best, entry) => Math.abs(entry.value - target) < Math.abs(best.value - target) ? entry : best).value;
 }
 
-export function renderPolygonsPreview(canvas: HTMLCanvasElement, shapePolygons: Point[][], options: { transparent?: boolean } = {}): void {
+export function renderPolygonsPreview(canvas: HTMLCanvasElement, shapePolygons: Point[][], options: { transparent?: boolean; dimensions?: boolean; clearance?: number } = {}): void {
   const context = setup(canvas), theme = canvasTheme();
   if (options.transparent) context.clearRect(0, 0, canvas.width, canvas.height);
   else { context.fillStyle = theme.canvas; context.fillRect(0, 0, canvas.width, canvas.height); }
   const points = shapePolygons.flat(); if (!points.length) return;
   const bounds = pointBounds(points), padding = Math.max(bounds.width, bounds.height) * .18 + .25;
-  drawPolygonSet(context, shapePolygons, makeViewport(canvas, bounds, padding), `${ITEM_COLORS[0]}73`, ITEM_COLORS[0], 1.2);
+  const viewport = makeViewport(canvas, bounds, padding);
+  if (options.clearance && options.clearance > 0) shapePolygons.forEach((polygon) => drawDashedPolygon(context, offsetPolygon(polygon, (contourArea(polygon) >= 0 ? 1 : -1) * options.clearance!), viewport, ITEM_COLORS[0]));
+  drawPolygonSet(context, shapePolygons, viewport, `${ITEM_COLORS[0]}73`, ITEM_COLORS[0], 1.2);
+  if (options.dimensions) drawDimensions(context, points, viewport);
 }
 
 function setup(canvas: HTMLCanvasElement): CanvasRenderingContext2D {

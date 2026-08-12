@@ -272,8 +272,53 @@ test("keeps sensitivity as the only separate analysis view", async ({ page }) =>
   await page.getByRole("button", { name: "Run sensitivity study" }).click();
   await expect(page.locator("#study-progress")).toContainText("points complete", { timeout: 30_000 });
   await expect(page.locator("#sensitivity-layout-title")).toContainText("items at");
+  await page.getByRole("button", { name: "Export", exact: true }).click();
+  await expect(page.locator('[data-export="layout-svg"]')).toBeEnabled();
+  const layoutDownload = page.waitForEvent("download");
+  await page.locator('[data-export="layout-svg"]').click();
+  expect((await layoutDownload).suggestedFilename()).toMatch(/-layout\.svg$/);
+  await page.getByRole("button", { name: "Close export options" }).click();
+  await expect(page.getByRole("button", { name: "Edit layout" })).toBeEnabled();
+  await page.getByRole("button", { name: "Edit layout" }).click();
+  await expect(page.locator("#workspace-summary")).toContainText("manual layout");
+  await page.getByRole("button", { name: "Sensitivity" }).click();
   await page.getByRole("button", { name: "Workspace" }).click();
   await expect(page.locator("#cad-canvas")).toBeVisible();
+});
+
+test("makes sensitivity variables, exports, and shortcuts discoverable", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Keyboard shortcuts" }).click();
+  await expect(page.locator("#shortcuts-dialog")).toBeVisible();
+  await expect(page.locator("#shortcut-list")).toContainText("Toggle dimensions");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("d");
+  await expect(page.getByRole("button", { name: "Dimensions" })).toHaveAttribute("aria-pressed", "true");
+  await page.keyboard.press("2");
+  await expect(page.locator("#sensitivity-page")).toBeVisible();
+
+  await page.locator("#study-parameter-search").fill("radius");
+  await expect(page.locator("#study-parameter-matches button")).toHaveCount(2);
+  await page.locator("#study-parameter-matches button").first().click();
+  await expect(page.locator("#study-parameter-summary")).toContainText("radius");
+  const plainPreview = await canvasData(page, '[data-study-preview="0"]');
+  await page.locator("#study-dimensions").check();
+  await page.locator("#study-clearance").check();
+  expect(await canvasData(page, '[data-study-preview="0"]')).not.toBe(plainPreview);
+  await page.getByRole("button", { name: "Set a useful range" }).click();
+  await expect(page.locator('[data-study-field="start"]')).not.toHaveValue("3");
+  await page.getByRole("button", { name: "Edit varied geometry" }).click();
+  await expect(page.locator("#packing-page")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Dimensions" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "Constraints" })).toHaveAttribute("aria-pressed", "true");
+
+  await page.getByRole("button", { name: "Export", exact: true }).click();
+  await expect(page.locator("#export-dialog")).toBeVisible();
+  await expect(page.locator("#export-options")).toContainText("Shape library SVG");
+  const shapeDownload = page.waitForEvent("download");
+  await page.locator('[data-export="shapes-svg"]').click();
+  expect((await shapeDownload).suggestedFilename()).toMatch(/-shapes\.svg$/);
+  await expect(page.locator('[data-export="layout-svg"]')).toBeDisabled();
 });
 
 test("stops an active worker and starts a clean replacement", async ({ page }) => {

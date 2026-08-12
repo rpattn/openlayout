@@ -13,7 +13,32 @@ import type {
 
 type PageName = "packing" | "sensitivity";
 type StatusTone = "neutral" | "working" | "success" | "error";
+type ShortcutGroup = "Navigate" | "Edit" | "View" | "Run";
+interface Shortcut { keys: string[]; label: string; group: ShortcutGroup }
 const ANCHORS: AnchorName[] = ["center", "top", "bottom", "left", "right", "top_left", "top_right", "bottom_left", "bottom_right"];
+const SHORTCUTS: Shortcut[] = [
+  { keys: ["?"], label: "Show keyboard shortcuts", group: "Navigate" },
+  { keys: ["1"], label: "Open workspace", group: "Navigate" },
+  { keys: ["2"], label: "Open sensitivity", group: "Navigate" },
+  { keys: ["Esc"], label: "Close menu or dialog", group: "Navigate" },
+  { keys: ["Ctrl/⌘", "Z"], label: "Undo", group: "Edit" },
+  { keys: ["Ctrl/⌘", "Shift", "Z"], label: "Redo", group: "Edit" },
+  { keys: ["Ctrl/⌘", "C"], label: "Copy selection", group: "Edit" },
+  { keys: ["Ctrl/⌘", "V"], label: "Paste selection", group: "Edit" },
+  { keys: ["Ctrl/⌘", "D"], label: "Duplicate selection", group: "Edit" },
+  { keys: ["Delete"], label: "Delete selection", group: "Edit" },
+  { keys: ["F"], label: "Fit workspace", group: "View" },
+  { keys: ["Shift", "F"], label: "Focus selection", group: "View" },
+  { keys: ["D"], label: "Toggle dimensions", group: "View" },
+  { keys: ["G"], label: "Toggle constraints", group: "View" },
+  { keys: ["P"], label: "Toggle problem panel", group: "View" },
+  { keys: ["+"], label: "Zoom in", group: "View" },
+  { keys: ["−"], label: "Zoom out", group: "View" },
+  { keys: ["R"], label: "Run packing or study", group: "Run" },
+  { keys: ["V"], label: "Validate problem", group: "Run" },
+  { keys: ["E"], label: "Open export options", group: "Run" },
+  { keys: ["Ctrl/⌘", "S"], label: "Save project", group: "Run" },
+];
 
 await initGeometryResolver();
 
@@ -77,6 +102,8 @@ root.innerHTML = `
           <button id="redo" class="tool-button" aria-label="Redo" title="Redo (Ctrl/⌘ Shift Z)" disabled>↷</button>
           <button id="open-diagnostics" class="tool-button">Diagnostics</button>
           <button id="open-sensitivity" class="tool-button">Sensitivity</button>
+          <button id="open-export" class="tool-button" aria-label="Export">Export</button>
+          <button id="open-shortcuts" class="tool-button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">⌨</button>
           <button id="theme-toggle" class="tool-button" aria-label="Toggle theme">◐</button>
         </div>
         <svg id="cad-canvas" class="cad-canvas" tabindex="0" aria-label="Interactive packing workspace"></svg>
@@ -88,7 +115,7 @@ root.innerHTML = `
   </section>
 
   <section id="sensitivity-page" class="app-page" hidden>
-    <div class="sensitivity-header"><button id="back-to-workspace" class="button ghost">← Workspace</button><div><small>SENSITIVITY</small><strong>Capacity study</strong></div><span class="sensitivity-header-spacer"></span><button id="theme-toggle-study" class="tool-button" aria-label="Toggle theme from sensitivity">◐</button></div>
+    <div class="sensitivity-header"><button id="back-to-workspace" class="button ghost">← Workspace</button><div><small>SENSITIVITY</small><strong>Capacity study</strong></div><span class="sensitivity-header-spacer"></span><button id="edit-study-source" class="button ghost">Edit varied geometry</button><button id="open-export-study" class="button ghost">Export</button><button id="open-shortcuts-study" class="tool-button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">⌨</button><button id="theme-toggle-study" class="tool-button" aria-label="Toggle theme from sensitivity">◐</button></div>
     <div class="page-shell sensitivity-shell">
       <aside id="sensitivity-sidebar" class="side-panel"></aside>
       <main class="sensitivity-content">
@@ -103,7 +130,7 @@ root.innerHTML = `
             <div id="transitions" class="transition-list"></div>
           </div>
           <div class="panel sensitivity-layout-panel">
-            <div class="panel-heading"><div><small>SELECTED RESULT</small><h2 id="sensitivity-layout-title">No result selected</h2></div><div id="sensitivity-layout-id" class="layout-id">—</div></div>
+            <div class="panel-heading"><div><small>SELECTED RESULT</small><h2 id="sensitivity-layout-title">No result selected</h2></div><div class="selected-layout-actions"><button id="edit-selected-layout" class="button ghost" disabled>Edit layout</button><div id="sensitivity-layout-id" class="layout-id">—</div></div></div>
             <canvas id="sensitivity-layout-canvas" aria-label="Selected sensitivity layout"></canvas>
             <div id="sensitivity-metrics" class="metrics"></div>
           </div>
@@ -113,7 +140,9 @@ root.innerHTML = `
   </section>
 
   <dialog id="project-dialog" class="studio-dialog"><form method="dialog"><header><div><small>LOCAL WORKSPACE</small><h2>Projects</h2></div><button class="dialog-close" value="cancel" aria-label="Close projects">×</button></header><div id="project-dialog-body"></div></form></dialog>
-  <dialog id="diagnostics-dialog" class="studio-dialog diagnostics-dialog"><form method="dialog"><header><div><small>ENGINE OUTPUT</small><h2>Diagnostics & metrics</h2></div><button class="dialog-close" value="cancel" aria-label="Close diagnostics">×</button></header><div id="diagnostics" class="diagnostics"><p>Run a solve to inspect validation and search statistics.</p></div><footer><button id="copy-result" type="button" class="button ghost">Copy result JSON</button><button class="button" value="cancel">Done</button></footer></form></dialog>`;
+  <dialog id="diagnostics-dialog" class="studio-dialog diagnostics-dialog"><form method="dialog"><header><div><small>ENGINE OUTPUT</small><h2>Diagnostics & metrics</h2></div><button class="dialog-close" value="cancel" aria-label="Close diagnostics">×</button></header><div id="diagnostics" class="diagnostics"><p>Run a solve to inspect validation and search statistics.</p></div><footer><button id="copy-result" type="button" class="button ghost">Copy result JSON</button><button class="button" value="cancel">Done</button></footer></form></dialog>
+  <dialog id="export-dialog" class="studio-dialog export-dialog"><form method="dialog"><header><div><small>DOWNLOADS</small><h2>Export workspace</h2></div><button class="dialog-close" value="cancel" aria-label="Close export options">×</button></header><div id="export-options" class="export-options"></div></form></dialog>
+  <dialog id="shortcuts-dialog" class="studio-dialog shortcuts-dialog"><form method="dialog"><header><div><small>QUICK REFERENCE</small><h2>Keyboard shortcuts</h2></div><button class="dialog-close" value="cancel" aria-label="Close keyboard shortcuts">×</button></header><div id="shortcut-list" class="shortcut-list"></div></form></dialog>`;
 
 applyTheme(projects.theme);
 cad = new CadWorkspace(document.getElementById("cad-canvas") as unknown as SVGSVGElement, state, toProblem(state), {
@@ -135,6 +164,10 @@ function bindShell(): void {
   element("open-diagnostics").addEventListener("click", () => element<HTMLDialogElement>("diagnostics-dialog").showModal());
   element("open-sensitivity").addEventListener("click", () => showPage("sensitivity"));
   element("back-to-workspace").addEventListener("click", () => showPage("packing"));
+  element("edit-study-source").addEventListener("click", editStudySource);
+  element("edit-selected-layout").addEventListener("click", editSelectedLayout);
+  ["open-export", "open-export-study"].forEach((id) => element(id).addEventListener("click", openExport));
+  ["open-shortcuts", "open-shortcuts-study"].forEach((id) => element(id).addEventListener("click", openShortcuts));
   element("sidebar-toggle").addEventListener("click", toggleSidebar);
   element("fit-view").addEventListener("click", () => cad.fit());
   element("focus-selection").addEventListener("click", () => cad.focusSelection());
@@ -191,16 +224,49 @@ function bindShell(): void {
   }, { passive: false });
   window.addEventListener("resize", () => refreshCurrentPage());
   window.addEventListener("keydown", (event) => {
+    if (handleShortcut(event)) return;
     if ((event.key === "Delete" || event.key === "Backspace") && !isEditingText(event.target)) {
       event.preventDefault(); deleteToolbarSelection(); return;
     }
     if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
     if (event.key.toLowerCase() === "c" && !isEditingText(event.target)) { event.preventDefault(); copySelectedItems(); return; }
     if (event.key.toLowerCase() === "v" && !isEditingText(event.target)) { event.preventDefault(); pasteItems(); return; }
+    if (event.key.toLowerCase() === "d" && !isEditingText(event.target)) { event.preventDefault(); copySelectedItems(); pasteItems(); return; }
     if (event.key.toLowerCase() === "z") { event.preventDefault(); event.shiftKey ? redo() : undo(); }
     if (event.key.toLowerCase() === "y") { event.preventDefault(); redo(); }
     if (event.key.toLowerCase() === "s") { event.preventDefault(); projects.save(state); setStatus("success", "Project saved on this device"); }
   });
+}
+
+function handleShortcut(event: KeyboardEvent): boolean {
+  const key = event.key.toLowerCase();
+  if (key === "escape") {
+    element("cad-context-menu").hidden = true;
+    const open = document.querySelector<HTMLDialogElement>("dialog[open]"); if (open) open.close();
+    return !!open;
+  }
+  if (isEditingText(event.target) || event.ctrlKey || event.metaKey || event.altKey) return false;
+  const act = (action: () => void) => { event.preventDefault(); action(); return true; };
+  if (event.key === "?" || (event.key === "/" && event.shiftKey)) return act(openShortcuts);
+  if (key === "1") return act(() => showPage("packing"));
+  if (key === "2") return act(() => showPage("sensitivity"));
+  if (key === "e") return act(openExport);
+  if (key === "r") return act(() => void (page === "packing" ? solve() : runStudy()));
+  if (key === "v") return act(() => void validate());
+  if (page !== "packing") return false;
+  if (key === "f") return act(() => event.shiftKey ? cad.focusSelection() : cad.fit());
+  if (key === "d") return act(() => toggleOverlay("dimensions"));
+  if (key === "g") return act(() => toggleOverlay("clearance"));
+  if (key === "p") return act(toggleSidebar);
+  if (event.key === "+" || event.key === "=") return act(() => cad.zoom(.8));
+  if (event.key === "-" || event.key === "_") return act(() => cad.zoom(1.25));
+  return false;
+}
+
+function openShortcuts(): void {
+  const host = element("shortcut-list");
+  host.innerHTML = (["Navigate", "Edit", "View", "Run"] as ShortcutGroup[]).map((group) => `<section><h3>${group}</h3>${SHORTCUTS.filter((entry) => entry.group === group).map((entry) => `<div><span>${escapeHtml(entry.label)}</span><kbd>${entry.keys.map(escapeHtml).join("</kbd><kbd>")}</kbd></div>`).join("")}</section>`).join("");
+  element<HTMLDialogElement>("shortcuts-dialog").showModal();
 }
 
 function toggleTheme(): void { applyTheme(projects.theme === "dark" ? "light" : "dark"); }
@@ -756,20 +822,50 @@ function loadProject(id: string): void {
 
 function renderSensitivitySidebar(): void {
   const sidebar = element("sensitivity-sidebar");
+  const optionsHtml = parameterOptions();
+  const selectedParameter = parameterCatalog().find((entry) => entry.key === state.study.parameterKey);
   sidebar.innerHTML = `<div class="side-heading"><div><small>SENSITIVITY</small><h2>Study configuration</h2></div><span>${state.study.strategy}</span></div>
-    <section class="sidebar-section"><div class="field-grid two">
-      <label class="wide">Parameter<select id="study-parameter">${parameterOptions()}</select></label>
+    <section class="sidebar-section parameter-picker"><small>1 · CHOOSE WHAT CHANGES</small>
+      <label class="wide parameter-search">Find a variable<input id="study-parameter-search" type="search" placeholder="Try width, clearance, radius…" autocomplete="off"></label>
+      <div id="study-parameter-matches" class="parameter-matches"></div>
+      <label class="wide">Selected variable<select id="study-parameter">${optionsHtml}</select></label>
+      <div id="study-parameter-summary" class="parameter-summary"><span>${escapeHtml(selectedParameter?.group ?? "Geometry")}</span><strong>${escapeHtml(selectedParameter?.label ?? state.study.parameterKey)}</strong><small>Current value ${format(parameterCurrentValue(state.study.parameterKey))}</small></div>
+      <button id="suggest-study-range" type="button" class="button ghost full">Set a useful range around current value</button>
+    </section>
+    <section class="sidebar-section"><small>2 · SET RANGE & METHOD</small><div class="field-grid two study-range-grid">
       ${studyNumber("Start", "start", state.study.start, .1)}${studyNumber("End", "end", state.study.end, .1)}
       ${studyNumber("Initial step", "initial_step", state.study.initial_step, .05)}${studyNumber("Tolerance", "transition_tolerance", state.study.transition_tolerance, .01)}
       <label>Sampling<select id="study-strategy"><option value="adaptive" ${state.study.strategy === "adaptive" ? "selected" : ""}>Adaptive refinement</option><option value="sampled" ${state.study.strategy === "sampled" ? "selected" : ""}>Sampled sweep</option></select></label>
       <label>Seed policy<select id="seed-policy"><option value="fixed" ${state.study.seed_policy === "fixed" ? "selected" : ""}>Fixed</option><option value="derive_from_value" ${state.study.seed_policy === "derive_from_value" ? "selected" : ""}>Derive per value</option></select></label>
     </div><button id="run-study" class="button primary full">Run sensitivity study</button></section>`;
   sidebar.querySelector<HTMLSelectElement>("#study-parameter")!.addEventListener("change", (event) => studyChange(() => { state.study.parameterKey = (event.target as HTMLSelectElement).value; }));
+  sidebar.querySelector<HTMLInputElement>("#study-parameter-search")!.addEventListener("input", renderParameterMatches);
+  sidebar.querySelector("#suggest-study-range")!.addEventListener("click", suggestStudyRange);
   sidebar.querySelector<HTMLSelectElement>("#study-strategy")!.addEventListener("change", (event) => studyChange(() => { state.study.strategy = (event.target as HTMLSelectElement).value as EditorState["study"]["strategy"]; }));
   sidebar.querySelector<HTMLSelectElement>("#seed-policy")!.addEventListener("change", (event) => studyChange(() => { state.study.seed_policy = (event.target as HTMLSelectElement).value as EditorState["study"]["seed_policy"]; }));
   sidebar.querySelectorAll<HTMLInputElement>("[data-study-field]").forEach((input) => input.addEventListener("change", () => studyChange(() => setField(state.study, input.dataset.studyField!, Number(input.value)))));
   sidebar.querySelector("#run-study")!.addEventListener("click", () => void runStudy());
   requestAnimationFrame(renderStudyGeometryPreview);
+}
+
+function renderParameterMatches(event: Event): void {
+  const query = (event.target as HTMLInputElement).value.trim().toLowerCase();
+  const host = element("study-parameter-matches");
+  if (!query) { host.innerHTML = ""; return; }
+  const matches = parameterCatalog().filter((entry) => `${entry.group} ${entry.label}`.toLowerCase().includes(query)).slice(0, 8);
+  host.innerHTML = matches.map((entry) => `<button type="button" data-parameter-key="${escapeHtml(entry.key)}"><span>${escapeHtml(entry.group)}</span><strong>${escapeHtml(entry.label)}</strong><small>${format(parameterCurrentValue(entry.key))}</small></button>`).join("") || '<p class="empty-state">No variables match that search.</p>';
+  host.querySelectorAll<HTMLButtonElement>("[data-parameter-key]").forEach((button) => button.addEventListener("click", () => studyChange(() => { state.study.parameterKey = button.dataset.parameterKey!; })));
+}
+
+function suggestStudyRange(): void {
+  studyChange(() => {
+    const current = parameterCurrentValue(state.study.parameterKey);
+    const quantity = state.study.parameterKey.startsWith("item_quantity:");
+    const delta = quantity ? Math.max(2, Math.round(current * .25)) : Math.max(Math.abs(current) * .25, .25);
+    state.study.start = quantity ? Math.max(0, Math.round(current - delta)) : Number((current - delta).toPrecision(6));
+    state.study.end = quantity ? Math.round(current + delta) : Number((current + delta).toPrecision(6));
+    state.study.initial_step = quantity ? Math.max(1, Math.round(delta / 2)) : Number(Math.max(delta / 3, .01).toPrecision(4));
+  });
 }
 
 function studyChange(change: () => void): void { mutate(change, false); renderSensitivitySidebar(); refreshSensitivityPage(); setStatus("neutral", "Study configuration changed"); }
@@ -782,7 +878,7 @@ function renderStudyGeometryPreview(): void {
   host.querySelectorAll<HTMLCanvasElement>("[data-study-preview]").forEach((canvas, index) => {
     const previewState = stateAtParameter(values[index]);
     const previewProblem = toProblem(previewState);
-    if (itemIndex >= 0) renderPolygonsPreview(canvas, resolveGeometry(previewProblem).items[itemIndex]?.polygons ?? []);
+    if (itemIndex >= 0) renderPolygonsPreview(canvas, resolveGeometry(previewProblem).items[itemIndex]?.polygons ?? [], { dimensions: studyDisplay.dimensions, clearance: studyDisplay.clearance ? previewProblem.clearance.item_to_item / 2 : 0 });
     else renderLayout(canvas, previewProblem, [], studyDisplay);
   });
 }
@@ -906,6 +1002,7 @@ function selectSensitivityEvaluation(value: number, side: string): void {
   renderLayout(element("sensitivity-layout-canvas"), evaluation.problem, evaluation.result.placements, studyDisplay);
   element("sensitivity-layout-title").textContent = `${evaluation.capacity} items at ${format(evaluation.value)}`;
   element("sensitivity-layout-id").textContent = evaluation.result.layout_id;
+  element<HTMLButtonElement>("edit-selected-layout").disabled = false;
   element("sensitivity-metrics").innerHTML = metricsHtml(evaluation.result);
   element("transitions").querySelectorAll<HTMLButtonElement>("button").forEach((button) => button.classList.toggle("selected", Number(button.dataset.value) === evaluation.value));
   setStatus("neutral", `Viewing ${side} point ${format(evaluation.value)} · ${evaluation.capacity} items`);
@@ -936,10 +1033,12 @@ function clearResults(): void {
   currentResult = null; sensitivityResult = null; sensitivitySelection = null; manualLayout = false; resultStale = false;
   element("workspace-summary").textContent = "Problem definition";
   element("diagnostics").innerHTML = "<p>Run a solve to inspect validation and search statistics.</p>";
+  element<HTMLButtonElement>("edit-selected-layout").disabled = true;
   const progress = document.getElementById("study-progress"); if (progress) progress.hidden = true;
 }
 function markResultStale(): void {
   sensitivityResult = null; sensitivitySelection = null;
+  element<HTMLButtonElement>("edit-selected-layout").disabled = true;
   if (currentResult) { resultStale = true; element("workspace-summary").textContent = `${currentResult.packed_item_count} packed items · stale`; updateDiagnostics(); }
   const progress = document.getElementById("study-progress"); if (progress) progress.hidden = true;
 }
@@ -952,21 +1051,27 @@ function refreshPacking(refit = false): void {
 }
 function refreshSensitivityPage(): void { renderStudyGeometryPreview(); renderSensitivityResults(); if (sensitivityResult && sensitivitySelection !== null) selectSensitivityEvaluation(sensitivitySelection, "selected"); }
 
-function parameterOptions(): string {
-  const options: Array<[string, string]> = [];
+interface ParameterChoice { key: string; label: string; group: string }
+function parameterCatalog(): ParameterChoice[] {
+  const options: ParameterChoice[] = [];
+  const add = (key: string, label: string, group: string) => options.push({ key, label, group });
   state.items.forEach((item) => {
-    options.push([`item_scale:${item.id}`, `${item.id} · whole shape scale`], [`item_quantity:${item.id}`, `${item.id} · quantity`]);
+    add(`item_scale:${item.id}`, `${item.id} · whole shape scale`, "Packable shapes"); add(`item_quantity:${item.id}`, `${item.id} · quantity`, "Packable shapes");
     item.parts.forEach((part, index) => {
-      options.push([`part_scale:${item.id}:${index}`, `${item.id} · ${part.id} scale`]);
-      if (part.kind === "rectangle" || part.kind === "triangle" || part.kind === "polygon" || part.kind === "bezier") options.push([`part_width:${item.id}:${index}`, `${item.id} · ${part.id} width/base`], [`part_height:${item.id}:${index}`, `${item.id} · ${part.id} height`]);
-      if (part.kind === "circle") options.push([`part_radius:${item.id}:${index}`, `${item.id} · ${part.id} radius`]);
+      add(`part_scale:${item.id}:${index}`, `${item.id} · ${part.id} scale`, "Packable shapes");
+      if (part.kind === "rectangle" || part.kind === "triangle" || part.kind === "polygon" || part.kind === "bezier") { add(`part_width:${item.id}:${index}`, `${item.id} · ${part.id} width/base`, "Packable shapes"); add(`part_height:${item.id}:${index}`, `${item.id} · ${part.id} height`, "Packable shapes"); }
+      if (part.kind === "circle") add(`part_radius:${item.id}:${index}`, `${item.id} · ${part.id} radius`, "Packable shapes");
     });
   });
-  state.containerParts.forEach((part) => options.push([`container_part_scale:${part.id}`, `${part.id} · scale`], [`container_part_width:${part.id}`, `${part.id} · width`], [`container_part_height:${part.id}`, `${part.id} · height`]));
-  options.push(["clearance_item_to_item", "Item-to-item clearance"], ["clearance_item_to_boundary", "Boundary clearance"], ["container_width", "Container width"], ["container_height", "Container height"]);
-  state.exclusions.forEach((entry) => options.push([`exclusion_scale:${entry.id}`, `${entry.id} · scale`]));
-  if (!options.some(([value]) => value === state.study.parameterKey)) state.study.parameterKey = options[0]?.[0] ?? "container_width";
-  return options.map(([value, label]) => `<option value="${escapeHtml(value)}" ${value === state.study.parameterKey ? "selected" : ""}>${escapeHtml(label)}</option>`).join("");
+  state.containerParts.forEach((part) => { add(`container_part_scale:${part.id}`, `${part.id} · scale`, "Container"); add(`container_part_width:${part.id}`, `${part.id} · width`, "Container"); add(`container_part_height:${part.id}`, `${part.id} · height`, "Container"); });
+  add("clearance_item_to_item", "Item-to-item clearance", "Constraints"); add("clearance_item_to_boundary", "Boundary clearance", "Constraints"); add("container_width", "Container width", "Container"); add("container_height", "Container height", "Container");
+  state.exclusions.forEach((entry) => add(`exclusion_scale:${entry.id}`, `${entry.id} · scale`, "Keep-out regions"));
+  return options;
+}
+function parameterOptions(): string {
+  const options = parameterCatalog();
+  if (!options.some((entry) => entry.key === state.study.parameterKey)) state.study.parameterKey = options[0]?.key ?? "container_width";
+  return [...new Set(options.map((entry) => entry.group))].map((group) => `<optgroup label="${escapeHtml(group)}">${options.filter((entry) => entry.group === group).map((entry) => `<option value="${escapeHtml(entry.key)}" ${entry.key === state.study.parameterKey ? "selected" : ""}>${escapeHtml(entry.label)}</option>`).join("")}</optgroup>`).join("");
 }
 
 function buildStudy(): SensitivityStudy { return { parameter: decodeParameter(state.study.parameterKey), start: state.study.start, end: state.study.end, initial_step: state.study.initial_step, transition_tolerance: state.study.transition_tolerance, strategy: state.study.strategy, solve_options: state.options, seed_policy: state.study.seed_policy, increasing_is_harder: state.study.increasing_is_harder }; }
@@ -1006,6 +1111,90 @@ function setStatus(tone: StatusTone, message: string): void { const node = eleme
 function handleRunError(error: unknown): void { if (errorMessage(error) !== "Run cancelled") setStatus("error", errorMessage(error)); }
 async function copyResult(): Promise<void> { await navigator.clipboard.writeText(JSON.stringify(currentResult ?? sensitivityResult ?? {}, null, 2)); setStatus("success", "Output copied"); }
 
+function selectedEvaluation(): SensitivityResult["evaluations"][number] | null {
+  if (!sensitivityResult?.evaluations.length) return null;
+  if (sensitivitySelection === null) return sensitivityResult.evaluations[0];
+  return sensitivityResult.evaluations.reduce((best, entry) => Math.abs(entry.value - sensitivitySelection!) < Math.abs(best.value - sensitivitySelection!) ? entry : best);
+}
+
+function editSelectedLayout(): void {
+  const evaluation = selectedEvaluation(); if (!evaluation) return;
+  const options = state.options, study = state.study;
+  state = fromProblem(evaluation.problem); state.options = options; state.study = study;
+  currentResult = structuredClone(evaluation.result); manualLayout = true; resultStale = false;
+  history.clear(); projects.save(state); selection = currentResult.placements.length ? { kind: "placement", index: 0 } : null; selections = selection ? [selection] : [];
+  renderPackingSidebar(); renderSensitivitySidebar(); updateHistoryButtons(); showPage("packing"); refreshPacking(true); updateDiagnostics(); element("workspace-summary").textContent = `${currentResult.packed_item_count} items · manual layout`;
+  setStatus("neutral", "Sensitivity result opened as an editable layout");
+}
+
+function openExport(): void {
+  const evaluation = selectedEvaluation();
+  const result = page === "sensitivity" ? evaluation?.result ?? null : currentResult;
+  element("export-options").innerHTML = `<p class="export-intro">Choose a ready-to-use format. Vector exports preserve geometry; CSV is convenient for fabrication and downstream tools.</p><div class="export-grid">
+    ${exportCard("Problem JSON", "Complete editable geometry and constraints", "problem-json")}
+    ${exportCard("Shape library SVG", "All packable definitions as clean vectors", "shapes-svg")}
+    ${exportCard("Layout SVG", "Solved placements, container, and exclusions", "layout-svg", !result)}
+    ${exportCard("Layout PNG", "High-resolution image with active overlays", "layout-png", !result)}
+    ${exportCard("Placements CSV", "Item, position, rotation, and fixed state", "placements-csv", !result)}
+    ${exportCard("Solve JSON", "Full result, metrics, and validation", "solve-json", !result)}
+    ${exportCard("Sensitivity JSON", "Evaluations, transitions, and representative layouts", "study-json", !sensitivityResult)}
+  </div>`;
+  element("export-options").querySelectorAll<HTMLButtonElement>("[data-export]").forEach((button) => button.addEventListener("click", () => void runExport(button.dataset.export!)));
+  element<HTMLDialogElement>("export-dialog").showModal();
+}
+
+function exportCard(title: string, description: string, kind: string, disabled = false): string {
+  return `<article><div><strong>${title}</strong><p>${description}</p></div><button type="button" class="button ghost" data-export="${kind}" ${disabled ? "disabled" : ""}>Download</button></article>`;
+}
+
+async function runExport(kind: string): Promise<void> {
+  const evaluation = selectedEvaluation();
+  const problem = page === "sensitivity" && evaluation ? evaluation.problem : toProblem(state);
+  const result = page === "sensitivity" ? evaluation?.result ?? null : currentResult;
+  const base = safeFilename(projects.active.name);
+  if (kind === "problem-json") downloadText(`${base}-problem.json`, JSON.stringify(problem, null, 2), "application/json");
+  else if (kind === "shapes-svg") downloadText(`${base}-shapes.svg`, shapesToSvg(problem), "image/svg+xml");
+  else if (kind === "layout-svg" && result) downloadText(`${base}-layout.svg`, layoutToSvg(problem, result.placements), "image/svg+xml");
+  else if (kind === "placements-csv" && result) downloadText(`${base}-placements.csv`, placementsCsv(result.placements), "text/csv");
+  else if (kind === "solve-json" && result) downloadText(`${base}-solve.json`, JSON.stringify(result, null, 2), "application/json");
+  else if (kind === "study-json" && sensitivityResult) downloadText(`${base}-sensitivity.json`, JSON.stringify(sensitivityResult, null, 2), "application/json");
+  else if (kind === "layout-png" && result) await downloadLayoutPng(`${base}-layout.png`, problem, result.placements);
+  else return;
+  setStatus("success", `${kind.replaceAll("-", " ")} exported`);
+}
+
+function downloadText(filename: string, content: string, type: string): void { downloadBlob(filename, new Blob([content], { type })); }
+function downloadBlob(filename: string, blob: Blob): void {
+  const url = URL.createObjectURL(blob), anchor = document.createElement("a"); anchor.href = url; anchor.download = filename; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+async function downloadLayoutPng(filename: string, problem: PackingProblem, placements: Placement[]): Promise<void> {
+  const canvas = document.createElement("canvas"); canvas.style.width = "1600px"; canvas.style.height = "1000px"; canvas.style.position = "fixed"; canvas.style.left = "-10000px"; document.body.append(canvas);
+  renderLayout(canvas, problem, placements, page === "sensitivity" ? studyDisplay : display);
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png")); canvas.remove(); if (blob) downloadBlob(filename, blob);
+}
+function placementsCsv(placements: Placement[]): string {
+  return ["item_id,x,y,rotation_deg,fixed", ...placements.map((entry) => [csvCell(entry.item_id), entry.x, entry.y, entry.rotation_deg, entry.fixed].join(","))].join("\n");
+}
+function csvCell(value: string): string { return `"${value.replaceAll('"', '""')}"`; }
+function safeFilename(value: string): string { return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "openlayout"; }
+
+function layoutToSvg(problem: PackingProblem, placements: Placement[]): string {
+  const geometry = resolveGeometry(problem); const itemMap = new Map(geometry.items.map((entry) => [entry.id, entry.polygons]));
+  const placed = placements.flatMap((placement) => (itemMap.get(placement.item_id) ?? []).map((polygon) => polygon.map((point) => transformPoint(point, placement.rotation_deg, placement.x, placement.y))));
+  const all = [...geometry.container, ...geometry.exclusions.flatMap((entry) => entry.polygons), ...placed].flat();
+  if (!all.length) return '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>';
+  const xs = all.map((point) => point.x), ys = all.map((point) => point.y), minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys), padding = Math.max(maxX - minX, maxY - minY) * .035 + .25;
+  const view = `${format(minX - padding)} ${format(-maxY - padding)} ${format(maxX - minX + padding * 2)} ${format(maxY - minY + padding * 2)}`;
+  const paths = (polygons: typeof geometry.container, className: string) => polygons.map((polygon) => `<polygon class="${className}" points="${polygon.map((point) => `${format(point.x)},${format(-point.y)}`).join(" ")}"/>`).join("");
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${view}"><style>.container{fill:#202b36;stroke:#82909f}.exclusion{fill:#ee716f55;stroke:#ee716f}.item{fill:#51c6a4aa;stroke:#168b70}polygon{stroke-width:.08;vector-effect:non-scaling-stroke}</style>${paths(geometry.container, "container")}${geometry.exclusions.map((entry) => paths(entry.polygons, "exclusion")).join("")}${paths(placed, "item")}</svg>`;
+}
+
+function shapesToSvg(problem: PackingProblem): string {
+  const items = resolveGeometry(problem).items; let cursor = 0; const groups: string[] = []; let maxHeight = 1;
+  items.forEach((item) => { const points = item.polygons.flat(); if (!points.length) return; const xs = points.map((point) => point.x), ys = points.map((point) => point.y), minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys); const width = maxX - minX, height = maxY - minY; maxHeight = Math.max(maxHeight, height); groups.push(`<g transform="translate(${format(cursor - minX)} ${format(maxY)})"><title>${escapeHtml(item.id)}</title>${item.polygons.map((polygon) => `<polygon points="${polygon.map((point) => `${format(point.x)},${format(-point.y)}`).join(" ")}"/>`).join("")}</g>`); cursor += width + Math.max(width * .2, 1); });
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="-0.5 -0.5 ${format(Math.max(cursor, 1))} ${format(maxHeight + 1)}"><style>polygon{fill:#51c6a488;stroke:#168b70;stroke-width:.06;vector-effect:non-scaling-stroke}</style>${groups.join("")}</svg>`;
+}
+
 function applyTheme(theme: "light" | "dark"): void {
   document.documentElement.dataset.theme = theme; projects.setTheme(theme);
   element("theme-toggle").textContent = theme === "dark" ? "☀" : "☾"; element("theme-toggle-study").textContent = theme === "dark" ? "☀" : "☾";
@@ -1015,7 +1204,7 @@ function bindOverlay(prefix: string, target: { dimensions: boolean; clearance: b
   element<HTMLInputElement>(`${prefix}-dimensions`).addEventListener("change", (event) => { target.dimensions = (event.target as HTMLInputElement).checked; refreshCurrentPage(); });
   element<HTMLInputElement>(`${prefix}-clearance`).addEventListener("change", (event) => { target.clearance = (event.target as HTMLInputElement).checked; refreshCurrentPage(); });
 }
-function overlayToggles(prefix: string): string { return `<div class="layout-tools"><label><input id="${prefix}-dimensions" type="checkbox"> Dimensions</label><label><input id="${prefix}-clearance" type="checkbox"> Clearance</label></div>`; }
+function overlayToggles(prefix: string): string { const target = prefix === "study" ? studyDisplay : display; return `<div class="layout-tools"><label><input id="${prefix}-dimensions" type="checkbox" ${target.dimensions ? "checked" : ""}> Dimensions</label><label><input id="${prefix}-clearance" type="checkbox" ${target.clearance ? "checked" : ""}> Clearance</label></div>`; }
 function updateHistoryButtons(): void { element<HTMLButtonElement>("undo").disabled = !history.canUndo; element<HTMLButtonElement>("redo").disabled = !history.canRedo; }
 function normalizeSelection(value: CadSelection | null): CadSelection | null {
   if (!value || value.kind === "placement") return state.containerParts.length ? { kind: "container", index: 0 } : null;
@@ -1030,6 +1219,43 @@ function parseSelection(value: string): CadSelection { const [kind, index] = val
 function sameSelection(a: CadSelection, b: CadSelection): boolean { return a.kind === b.kind && a.index === b.index && ("partIndex" in a ? a.partIndex : undefined) === ("partIndex" in b ? b.partIndex : undefined); }
 function isPartSelection(value: CadSelection): value is Extract<CadSelection, { kind: "item" | "exclusion" }> { return (value.kind === "item" || value.kind === "exclusion") && value.partIndex !== undefined; }
 function itemIndexForParameter(key: string): number { const [kind, id] = key.split(":"); return kind.startsWith("part_") || kind.startsWith("item_") ? state.items.findIndex((item) => item.id === id) : -1; }
+function parameterCurrentValue(key: string): number {
+  const [kind, id, rawIndex] = key.split(":");
+  if (kind === "clearance_item_to_item") return state.clearance.item_to_item;
+  if (kind === "clearance_item_to_boundary") return state.clearance.item_to_boundary;
+  if (kind === "item_quantity") return state.items.find((item) => item.id === id)?.quantity ?? 0;
+  if (kind === "item_scale" || kind === "part_scale" || kind === "container_part_scale" || kind === "exclusion_scale") return 1;
+  let part: PrimitiveEditor | undefined;
+  if (kind.startsWith("part_")) part = state.items.find((item) => item.id === id)?.parts[Number(rawIndex)];
+  else if (kind.startsWith("container_part_")) part = state.containerParts.find((entry) => entry.id === id)?.primitive;
+  else if (kind === "container_width" || kind === "container_height") part = state.containerParts.find((entry) => entry.operation === "add")?.primitive;
+  if (!part) return 0;
+  if (kind.endsWith("radius") && part.kind === "circle") return part.radius;
+  const points = shapePoints(primitiveShape(part));
+  const xs = points.map((point) => point.x), ys = points.map((point) => point.y);
+  const width = xs.length ? Math.max(...xs) - Math.min(...xs) : 0, height = ys.length ? Math.max(...ys) - Math.min(...ys) : 0;
+  return kind.endsWith("height") ? height : width;
+}
+
+function editStudySource(): void {
+  const [kind, id, rawIndex] = state.study.parameterKey.split(":");
+  let next: CadSelection | null = null; let partIndex = Number(rawIndex) || 0;
+  if (kind.startsWith("part_") || kind.startsWith("item_")) { const index = state.items.findIndex((item) => item.id === id); if (index >= 0) next = { kind: "item", index, partIndex }; }
+  else if (kind.startsWith("container_part_")) { const index = state.containerParts.findIndex((entry) => entry.id === id); if (index >= 0) next = { kind: "container", index }; }
+  else if (kind === "container_width" || kind === "container_height") { const index = state.containerParts.findIndex((entry) => entry.operation === "add"); if (index >= 0) next = { kind: "container", index }; }
+  else if (kind === "exclusion_scale") { const index = state.exclusions.findIndex((entry) => entry.id === id); if (index >= 0) next = { kind: "exclusion", index, partIndex: 0 }; }
+  showPage("packing");
+  if (next) { selectCad(next, partIndex); display.dimensions = true; display.clearance = true; syncWorkspaceOverlays(); requestAnimationFrame(() => cad.focusSelection()); }
+  else { display.clearance = true; syncWorkspaceOverlays(); setStatus("neutral", "Clearance constraints are highlighted in the workspace"); }
+}
+
+function syncWorkspaceOverlays(): void {
+  (["dimensions", "clearance"] as const).forEach((key) => {
+    const button = element<HTMLButtonElement>(key === "dimensions" ? "toggle-dimensions" : "toggle-clearance");
+    button.classList.toggle("active", display[key]); button.setAttribute("aria-pressed", String(display[key]));
+  });
+  cad.setOverlays(display.dimensions, display.clearance);
+}
 function studyValues(start: number, end: number, step: number): number[] { const values = [start]; if (step > 0) for (let value = start + step; value < end && values.length < 6; value += step) values.push(value); if (end !== start) values.push(end); return values; }
 function numberField(label: string, scope: string, field: string, value: number, step: number): string { return `<label title="${escapeHtml(optionHelp(field))}">${label}<input type="number" value="${value}" step="${step}" data-pack-scope="${scope}" data-field="${field}"></label>`; }
 function optionHelp(field: string): string {
