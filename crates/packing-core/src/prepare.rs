@@ -1,3 +1,4 @@
+use crate::clock::Clock;
 use crate::geometry::{
     Bounds, PolygonSet, area, bounds, container_region, equivalent_geometry,
     guaranteed_occupied_area, shape_to_polygons, transform, union_set,
@@ -35,7 +36,7 @@ pub struct PreparedProblem {
 }
 
 pub fn prepare_problem(problem: &PackingProblem) -> Result<PreparedProblem, PackingError> {
-    let started = preparation_clock_start();
+    let started = Clock::start();
     validate_problem(problem)?;
     let container = container_region(&problem.container.parts)?;
     let container_bounds = bounds(&container);
@@ -133,7 +134,7 @@ pub fn prepare_problem(problem: &PackingProblem) -> Result<PreparedProblem, Pack
         simple_upper_bound,
         region_upper_bound,
         projection_upper_bound,
-        preparation_ms: preparation_elapsed_ms(started),
+        preparation_ms: started.elapsed_ms(),
         minimum_item_area,
         usable_area,
         container,
@@ -215,24 +216,6 @@ fn prepare_item(
         by_item.entry(item.id.clone()).or_default().push(index);
     }
     Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn preparation_clock_start() -> std::time::Instant {
-    std::time::Instant::now()
-}
-
-#[cfg(target_arch = "wasm32")]
-fn preparation_clock_start() {}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn preparation_elapsed_ms(started: std::time::Instant) -> u64 {
-    started.elapsed().as_millis() as u64
-}
-
-#[cfg(target_arch = "wasm32")]
-fn preparation_elapsed_ms(_: ()) -> u64 {
-    0
 }
 
 fn rotation_candidates(

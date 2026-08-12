@@ -1,6 +1,8 @@
+mod clock;
 mod error;
 mod geometry;
 mod model;
+mod numeric;
 mod overlap;
 mod prepare;
 mod search;

@@ -47,14 +47,9 @@ impl PackingEngine {
     ) -> Result<String, JsError> {
         let options = parse_options(options_json)?;
         let prepared = self.prepare(input_json)?;
-        let mut observer = JavaScriptObserver {
-            callback,
-            callback_error: None,
-        };
+        let mut observer = ProgressCallback::new(callback);
         let result = solve_with_observer(prepared, &options, &mut observer).map_err(core_error)?;
-        if let Some(error) = observer.callback_error {
-            return Err(JsError::new(&error));
-        }
+        observer.finish()?;
         encode(&result)
     }
 
@@ -66,15 +61,10 @@ impl PackingEngine {
     ) -> Result<String, JsError> {
         let options = parse_options(options_json)?;
         let prepared = self.prepare(input_json)?;
-        let mut observer = JavaScriptObserver {
-            callback,
-            callback_error: None,
-        };
+        let mut observer = ProgressCallback::new(callback);
         let result =
             solve_with_observer_direct(prepared, &options, &mut observer).map_err(core_error)?;
-        if let Some(error) = observer.callback_error {
-            return Err(JsError::new(&error));
-        }
+        observer.finish()?;
         encode(&result)
     }
 
@@ -86,15 +76,10 @@ impl PackingEngine {
     ) -> Result<String, JsError> {
         let options = parse_options(options_json)?;
         let prepared = self.prepare(input_json)?;
-        let mut observer = JavaScriptObserver {
-            callback,
-            callback_error: None,
-        };
+        let mut observer = ProgressCallback::new(callback);
         let result = solve_with_observer_clearance_continuation(prepared, &options, &mut observer)
             .map_err(core_error)?;
-        if let Some(error) = observer.callback_error {
-            return Err(JsError::new(&error));
-        }
+        observer.finish()?;
         encode(&result)
     }
 
@@ -131,10 +116,7 @@ impl PackingEngine {
     ) -> Result<String, JsError> {
         self.prepare(input_json)?;
         let study: SensitivityStudy = parse(study_json, "sensitivity study")?;
-        let mut observer = JavaScriptSensitivityObserver {
-            callback,
-            callback_error: None,
-        };
+        let mut observer = ProgressCallback::new(callback);
         let result = run_sensitivity_with_observer(
             self.cached_problem
                 .as_ref()
@@ -143,9 +125,7 @@ impl PackingEngine {
             &mut observer,
         )
         .map_err(core_error)?;
-        if let Some(error) = observer.callback_error {
-            return Err(JsError::new(&error));
-        }
+        observer.finish()?;
         encode(&result)
     }
 }
@@ -172,20 +152,27 @@ impl PackingEngine {
     }
 }
 
-struct JavaScriptObserver {
+struct ProgressCallback {
     callback: Function,
     callback_error: Option<String>,
 }
 
-impl SolveObserver for JavaScriptObserver {
-    fn on_progress(&mut self, progress: &SolveProgress) {
+impl ProgressCallback {
+    fn new(callback: Function) -> Self {
+        Self {
+            callback,
+            callback_error: None,
+        }
+    }
+
+    fn emit<T: Serialize>(&mut self, progress: &T, label: &str) {
         if self.callback_error.is_some() {
             return;
         }
         let json = match serde_json::to_string(progress) {
             Ok(json) => json,
             Err(error) => {
-                self.callback_error = Some(format!("failed to serialise progress: {error}"));
+                self.callback_error = Some(format!("failed to serialise {label}: {error}"));
                 return;
             }
         };
@@ -193,35 +180,25 @@ impl SolveObserver for JavaScriptObserver {
             .callback
             .call1(&JsValue::NULL, &JsValue::from_str(&json))
         {
-            self.callback_error = Some(format!("progress callback failed: {error:?}"));
+            self.callback_error = Some(format!("{label} callback failed: {error:?}"));
         }
+    }
+
+    fn finish(self) -> Result<(), JsError> {
+        self.callback_error
+            .map_or(Ok(()), |error| Err(JsError::new(&error)))
     }
 }
 
-struct JavaScriptSensitivityObserver {
-    callback: Function,
-    callback_error: Option<String>,
+impl SolveObserver for ProgressCallback {
+    fn on_progress(&mut self, progress: &SolveProgress) {
+        self.emit(progress, "progress");
+    }
 }
 
-impl SensitivityObserver for JavaScriptSensitivityObserver {
+impl SensitivityObserver for ProgressCallback {
     fn on_progress(&mut self, progress: &SensitivityProgress) {
-        if self.callback_error.is_some() {
-            return;
-        }
-        let json = match serde_json::to_string(progress) {
-            Ok(json) => json,
-            Err(error) => {
-                self.callback_error =
-                    Some(format!("failed to serialise sensitivity progress: {error}"));
-                return;
-            }
-        };
-        if let Err(error) = self
-            .callback
-            .call1(&JsValue::NULL, &JsValue::from_str(&json))
-        {
-            self.callback_error = Some(format!("sensitivity progress callback failed: {error:?}"));
-        }
+        self.emit(progress, "sensitivity progress");
     }
 }
 

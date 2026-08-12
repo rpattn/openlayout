@@ -1,6 +1,8 @@
+use crate::clock::Clock;
 use crate::geometry::{
     Bounds, EPSILON, PolygonSet, bounds, set_distance, set_inside, sets_overlap, transform,
 };
+use crate::numeric::{angular_distance, same_rotation};
 use crate::prepare::PreparedVariant;
 use crate::solver::SolveObserver;
 use crate::{
@@ -49,7 +51,7 @@ pub(crate) fn repair_one_more(
     observer: &mut dyn SolveObserver,
 ) -> OverlapRepairOutcome {
     let mut metrics = OverlapRepairMetrics::default();
-    let started = repair_clock_start();
+    let started = Clock::start();
     if options.quality == SolveQuality::Fast
         || incumbent.is_empty()
         || incumbent.len() >= total_requested(prepared)
@@ -316,7 +318,7 @@ fn minimize_overlap(
     evaluation_limit: u64,
     metrics: &mut OverlapRepairMetrics,
     observer: &mut dyn SolveObserver,
-    started: RepairInstant,
+    started: Clock,
 ) {
     let max_weight_rounds = match options.quality {
         SolveQuality::Fast => 0,
@@ -677,184 +679,12 @@ fn hard_valid(
     true
 }
 
-fn state_penalties(
-    prepared: &PreparedProblem,
-    state: &RepairState,
-    metrics: &mut OverlapRepairMetrics,
-) -> (f64, f64) {
-    let mut original = 0.0;
-    let mut weighted = 0.0;
-    let count = state.pieces.len();
-    for first in 0..count {
-        for second in (first + 1)..count {
-            let penalty = pair_penalty(
-                &state.pieces[first],
-                &state.pieces[second],
-                prepared.problem.clearance.item_to_item,
-                metrics,
-            );
-            original += penalty;
-            weighted += state.weights[first * count + second] * penalty;
-        }
-    }
-    (original, weighted)
-}
-
-fn piece_weighted_penalty(
-    prepared: &PreparedProblem,
-    state: &RepairState,
-    moving_index: usize,
-    candidate: &RepairPiece,
-    metrics: &mut OverlapRepairMetrics,
-) -> f64 {
-    let count = state.pieces.len();
-    state
-        .pieces
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| *index != moving_index)
-        .map(|(index, other)| {
-            state.weights[moving_index * count + index]
-                * pair_penalty(
-                    candidate,
-                    other,
-                    prepared.problem.clearance.item_to_item,
-                    metrics,
-                )
-        })
-        .sum()
-}
-
-fn pair_penalty(
-    first: &RepairPiece,
-    second: &RepairPiece,
-    required: f64,
-    metrics: &mut OverlapRepairMetrics,
-) -> f64 {
-    if !pieces_conflict(first, second, required, metrics) {
-        return 0.0;
-    }
-    let epsilon_gap = required + EPSILON * 10.0;
-    let directions = [
-        (
-            second.bounds.max_x + epsilon_gap - first.bounds.min_x,
-            1.0,
-            0.0,
-        ),
-        (
-            first.bounds.max_x + epsilon_gap - second.bounds.min_x,
-            -1.0,
-            0.0,
-        ),
-        (
-            second.bounds.max_y + epsilon_gap - first.bounds.min_y,
-            0.0,
-            1.0,
-        ),
-        (
-            first.bounds.max_y + epsilon_gap - second.bounds.min_y,
-            0.0,
-            -1.0,
-        ),
-    ];
-    directions
-        .into_iter()
-        .map(|(upper, dx, dy)| {
-            directional_penetration(first, second, required, upper.max(EPSILON), dx, dy, metrics)
-        })
-        .fold(f64::INFINITY, f64::min)
-}
-
-fn directional_penetration(
-    moving: &RepairPiece,
-    fixed: &RepairPiece,
-    required: f64,
-    upper: f64,
-    dx: f64,
-    dy: f64,
-    metrics: &mut OverlapRepairMetrics,
-) -> f64 {
-    let mut low = 0.0;
-    let mut high = upper + EPSILON * 100.0;
-    for _ in 0..14 {
-        let middle = (low + high) / 2.0;
-        let moved = RepairPiece {
-            placement: Placement {
-                x: moving.placement.x + dx * middle,
-                y: moving.placement.y + dy * middle,
-                ..moving.placement.clone()
-            },
-            variant_id: moving.variant_id,
-            geometry: transform(&moving.geometry, 0.0, dx * middle, dy * middle),
-            bounds: moving.bounds.translated(dx * middle, dy * middle),
-        };
-        if pieces_conflict(&moved, fixed, required, metrics) {
-            low = middle;
-        } else {
-            high = middle;
-        }
-    }
-    high
-}
-
-fn pieces_conflict(
-    first: &RepairPiece,
-    second: &RepairPiece,
-    required: f64,
-    metrics: &mut OverlapRepairMetrics,
-) -> bool {
-    if !first.bounds.overlaps(second.bounds, required) {
-        return false;
-    }
-    metrics.exact_geometry_checks += 1;
-    sets_overlap(&first.geometry, &second.geometry)
-        || set_distance(&first.geometry, &second.geometry) + EPSILON < required
-}
-
-fn conflicting_neighbours(
-    prepared: &PreparedProblem,
-    state: &RepairState,
-    index: usize,
-    metrics: &mut OverlapRepairMetrics,
-) -> Vec<usize> {
-    state
-        .pieces
-        .iter()
-        .enumerate()
-        .filter(|(other, _)| *other != index)
-        .filter(|(_, piece)| {
-            pieces_conflict(
-                &state.pieces[index],
-                piece,
-                prepared.problem.clearance.item_to_item,
-                metrics,
-            )
-        })
-        .map(|(other, _)| other)
-        .collect()
-}
-
-fn conflict_penalties(
-    prepared: &PreparedProblem,
-    state: &RepairState,
-    metrics: &mut OverlapRepairMetrics,
-) -> Vec<(usize, usize, f64)> {
-    let mut conflicts = Vec::new();
-    for first in 0..state.pieces.len() {
-        for second in (first + 1)..state.pieces.len() {
-            let penalty = pair_penalty(
-                &state.pieces[first],
-                &state.pieces[second],
-                prepared.problem.clearance.item_to_item,
-                metrics,
-            );
-            if penalty > EPSILON {
-                conflicts.push((first, second, penalty));
-            }
-        }
-    }
-    conflicts
-}
+mod penalty;
+#[cfg(test)]
+use penalty::pair_penalty;
+use penalty::{
+    conflict_penalties, conflicting_neighbours, piece_weighted_penalty, state_penalties,
+};
 
 fn independently_valid(prepared: &PreparedProblem, state: &RepairState) -> bool {
     crate::validate_placements(
@@ -892,18 +722,6 @@ fn piece_distance(candidate: &RepairPiece, original: &RepairPiece) -> f64 {
         ) / 360.0
 }
 
-fn angular_distance(first: f64, second: f64) -> f64 {
-    let difference = (first - second).abs().rem_euclid(360.0);
-    difference.min(360.0 - difference)
-}
-
-fn same_rotation(first: f64, second: f64) -> bool {
-    (first - second)
-        .rem_euclid(360.0)
-        .min((second - first).rem_euclid(360.0))
-        <= EPSILON
-}
-
 fn placement_key(piece: &RepairPiece) -> (usize, u64, u64) {
     (
         piece.variant_id,
@@ -927,34 +745,11 @@ fn update_best_penalty(metrics: &mut OverlapRepairMetrics, penalty: f64) {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-type RepairInstant = std::time::Instant;
-
-#[cfg(target_arch = "wasm32")]
-#[derive(Clone, Copy)]
-struct RepairInstant;
-
-#[cfg(not(target_arch = "wasm32"))]
-fn repair_clock_start() -> RepairInstant {
-    std::time::Instant::now()
-}
-
-#[cfg(target_arch = "wasm32")]
-fn repair_clock_start() -> RepairInstant {
-    RepairInstant
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn repair_time_limit_reached(options: &SolveOptions, started: RepairInstant) -> bool {
+fn repair_time_limit_reached(options: &SolveOptions, started: Clock) -> bool {
     !options.deterministic
         && options
             .time_limit_ms
-            .is_some_and(|limit| started.elapsed().as_millis() as u64 >= limit)
-}
-
-#[cfg(target_arch = "wasm32")]
-fn repair_time_limit_reached(_: &SolveOptions, _: RepairInstant) -> bool {
-    false
+            .is_some_and(|limit| started.elapsed_ms() >= limit)
 }
 
 #[cfg(test)]
@@ -1033,7 +828,7 @@ mod tests {
             100,
             &mut metrics,
             &mut Observer,
-            repair_clock_start(),
+            Clock::start(),
         );
 
         assert!(metrics.weight_updates > 0);

@@ -7,9 +7,10 @@ const result = spawnSync(
   { stdio: "inherit" },
 );
 
-// wasm-pack writes a wildcard .gitignore into every output directory. The generated bindings are
-// checked in for deployment, so remove only that tool-owned file after generation.
+// The generated bindings are checked in directly rather than published as an npm package, so
+// remove wasm-pack's output-directory metadata after generation.
 rmSync("src/wasm/.gitignore", { force: true });
+rmSync("src/wasm/package.json", { force: true });
 
 if (result.error) {
   console.error(result.error);

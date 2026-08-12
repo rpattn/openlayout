@@ -2,6 +2,7 @@ use crate::geometry::{
     EPSILON, bounds, container_region, set_distance, set_inside, sets_overlap, shape_to_polygons,
     transform, union_set,
 };
+use crate::numeric::same_rotation;
 use crate::{PackingError, PackingProblem, Placement, PreparedProblem, ValidationReport};
 use std::collections::BTreeMap;
 
@@ -292,9 +293,6 @@ fn validate_rotation_policy(item: &crate::Item) -> Result<(), PackingError> {
         }
         _ => Ok(()),
     }
-}
-fn same_rotation(a: f64, b: f64) -> bool {
-    (a - b).rem_euclid(360.0).min((b - a).rem_euclid(360.0)) < EPSILON
 }
 fn close(a: f64, b: f64) -> bool {
     (a - b).abs() < EPSILON
