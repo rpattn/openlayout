@@ -65,7 +65,7 @@ body { margin: 0; min-width: 760px; overflow: hidden; background: var(--bg); col
 button, input, select, textarea { font: inherit; }
 button { color: inherit; }
 h1, h2, h3, p { margin-top: 0; }
-small { color: var(--accent); font: 650 9px ui-monospace, monospace; letter-spacing: .13em; text-transform: uppercase; }
+small { color: var(--accent); font: 650 9px ui-sans-serif, system-ui, sans-serif; letter-spacing: .02em; }
 
 .button { border: 1px solid var(--line); background: var(--surface-raised); border-radius: var(--radius-sm); padding: 8px 13px; cursor: pointer; font-size: 11px; font-weight: 650; transition: border-color .15s, transform .15s, background .15s; }
 .button:hover:not(:disabled) { border-color: var(--line-strong); transform: translateY(-1px); }
@@ -77,10 +77,11 @@ small { color: var(--accent); font: 650 9px ui-monospace, monospace; letter-spac
 .text-button { border: 0; background: none; color: var(--accent); font-size: 10px; font-weight: 650; cursor: pointer; padding: 3px; }
 .danger-text { color: var(--danger) !important; }
 
-label { display: grid; gap: 5px; min-width: 0; color: var(--muted); font-size: 9px; font-weight: 650; letter-spacing: .045em; text-transform: uppercase; }
+label { display: grid; gap: 5px; min-width: 0; color: var(--text-soft); font-size: 9px; font-weight: 650; letter-spacing: .015em; }
 input, select, textarea { width: 100%; min-width: 0; color: var(--text); background: var(--input); border: 1px solid var(--line); border-radius: var(--radius-sm); outline: none; padding: 7px 8px; font: 11px ui-monospace, monospace; text-transform: none; letter-spacing: 0; }
 textarea { resize: vertical; line-height: 1.5; }
 input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+button:focus-visible, summary:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 input:disabled { opacity: .45; }
 .field-grid { display: grid; gap: 9px; }
 .field-grid.two { grid-template-columns: 1fr 1fr; }
@@ -88,4 +89,3 @@ input:disabled { opacity: .45; }
 .wide { grid-column: 1 / -1; }
 .hint, .empty-state { color: var(--muted); font-size: 10px; line-height: 1.55; margin: 10px 0 0; }
 .inline-actions { display: flex; gap: 7px; margin-top: 10px; }
-

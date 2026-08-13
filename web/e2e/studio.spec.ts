@@ -1,4 +1,36 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+
+async function clickMoreTool(page: Page, name: string): Promise<void> {
+  const drafting: Record<string, string> = {
+    "Drafting aids": "Drafting settings", "Add trace image": "Trace image", "Add scene text": "Text",
+    "Add vertical drafting line": "Vertical guide", "Add horizontal drafting line": "Horizontal guide",
+    "Draw two-point drafting line": "Two-point line", "Draw drafting polyline": "Polyline", "Drafting shape mode": "Rectangle",
+  };
+  if (drafting[name]) {
+    await page.locator("#add-drafting").hover();
+    await page.locator("#add-drafting-menu").getByRole("menuitemradio", { name: new RegExp(drafting[name]) }).click();
+    await page.mouse.move(700, 500);
+    return;
+  }
+  if (name === "Create dimension") {
+    await page.locator("#toggle-dimensions").hover();
+    await page.locator("#toggle-dimensions-menu").getByRole("menuitem", { name: /Dimension between two points/ }).click();
+    await page.mouse.move(700, 500);
+    return;
+  }
+  const promoted: Record<string, string> = { "Toggle manual collision guard": "#respect-manual-constraints" };
+  if (promoted[name]) { await page.locator(promoted[name]).click(); return; }
+  const direct = page.getByRole("button", { name, exact: true });
+  if (await direct.count() === 1 && await direct.isVisible()) { await direct.click(); return; }
+  const more = page.locator(".toolbar-more");
+  if (!(await more.evaluate((node) => (node as HTMLDetailsElement).open))) await more.locator(":scope > summary").click();
+  await more.getByRole("button", { name, exact: true }).click();
+}
+
+async function openInspectorDetails(page: Page, key: string): Promise<void> {
+  const details = page.locator(`#selection-inspector details[data-inspector-detail="${key}"]`);
+  if (!(await details.evaluate((node) => (node as HTMLDetailsElement).open))) await details.locator(":scope > summary").click();
+}
 
 test("keeps projects and diagnostics behind focused dialogs", async ({ page }) => {
   await page.goto("/");
@@ -28,7 +60,7 @@ test("keeps projects and diagnostics behind focused dialogs", async ({ page }) =
   await page.getByRole("button", { name: "Redo" }).click();
   await expect(page.getByLabel("Item ↔ item")).toHaveValue("0.8");
 
-  await page.getByRole("button", { name: "Toggle theme" }).click();
+  await clickMoreTool(page, "Toggle theme");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   expect(await page.evaluate(() => localStorage.getItem("openlayout.workspace.v1"))).toContain("Capsule study");
   await expect.poll(() => page.evaluate(async () => {
@@ -59,7 +91,12 @@ test("uses one interactive CAD workspace for definition, editing, pan, zoom, and
 
   const itemShape = page.locator('[data-cad-kind="item"]').first();
   await itemShape.click();
-  await expect(page.locator("#selection-inspector")).toContainText("PACKABLE SHAPE");
+  await expect(page.locator("#selection-inspector")).toContainText("Selected item");
+  await expect(page.locator("#packing-sidebar > #selection-inspector")).toHaveCount(1);
+  await expect(page.locator("[data-primitive-kind]")).toBeVisible();
+  await expect(page.locator('[data-object-field="quantity"]')).toBeVisible();
+  await expect(page.locator('[data-primitive-field="width"]')).not.toBeVisible();
+  await openInspectorDetails(page, "geometry-precision");
   await expect(page.locator('[data-primitive-field="width"]')).toBeVisible();
   await expect(page.locator(".cad-rotate-handle")).toHaveCount(1);
   await expect(page.locator(".cad-geometry-handle")).toHaveCount(8);
@@ -100,7 +137,7 @@ test("uses one interactive CAD workspace for definition, editing, pan, zoom, and
   await expect(page.locator(".cad-dimensions")).not.toHaveCount(0);
   await expect(page.locator('[data-dimension-owner^="exclusion:"]')).toHaveCount(1);
   await expect(page.locator('[data-dimension-owner^="item:"]')).toHaveCount(1);
-  await page.getByRole("button", { name: "Constraints" }).click();
+  await page.getByRole("button", { name: "Spacing", exact: true }).click();
   await expect(page.locator(".cad-clearance")).not.toHaveCount(0);
 });
 
@@ -109,13 +146,22 @@ test("provides engineering dimensions, persistent view settings, and vertical na
   const navigation = page.locator(".cad-nav-toolbar");
   await expect(navigation).toBeVisible();
   await expect(navigation.getByRole("button")).toHaveCount(5);
+  await expect(navigation.getByRole("button", { name: "Select tool" })).toBeVisible();
   expect(await navigation.evaluate((node) => getComputedStyle(node).flexDirection)).toBe("column");
   const navBox = await navigation.boundingBox(), viewport = page.viewportSize();
   if (!navBox || !viewport) throw new Error("Navigation toolbar bounds unavailable");
   expect(viewport.width - (navBox.x + navBox.width)).toBeLessThan(24);
-  await expect(page.locator(".cad-toolbar .toolbar-group")).toHaveCount(7);
-  await expect(page.locator('.cad-toolbar .toolbar-group[aria-label="Geometry"]')).toBeVisible();
-  await expect(page.locator('.cad-toolbar .toolbar-group[aria-label="Drafting"]')).toBeVisible();
+  await expect(page.locator(".cad-toolbar .toolbar-group")).toHaveCount(6);
+  await expect(page.locator('.cad-toolbar .toolbar-group[aria-label="Draw"]')).toBeVisible();
+  await expect(page.locator(".toolbar-more")).toBeVisible();
+  await expect(page.locator("#toggle-grid-snap")).toBeVisible();
+  await expect(page.locator("#respect-manual-constraints")).toBeVisible();
+  await expect(page.locator("#add-drafting")).toBeVisible();
+  await expect(page.locator("#theme-toggle")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Dimensions" })).toBeVisible();
+  await page.locator("#toggle-dimensions").hover();
+  await expect(page.getByRole("menuitem", { name: /Dimension between two points/ })).toBeVisible();
+  await page.mouse.move(700, 500);
 
   await page.getByRole("button", { name: "View settings" }).click();
   const panel = page.getByLabel("View settings panel");
@@ -144,11 +190,53 @@ test("provides engineering dimensions, persistent view settings, and vertical na
   await expect(page.getByLabel("View settings panel").getByRole("checkbox", { name: "Grid", exact: true })).not.toBeChecked();
 });
 
+test("uses remembered hover-menu shapes for material, cut-out, item, and exclusion", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator("#add-material")).toHaveAttribute("data-value", "rectangle");
+  await expect(page.locator("#add-cutout")).toHaveAttribute("data-value", "rectangle");
+  await expect(page.locator("#add-item")).toHaveAttribute("data-value", "rectangle");
+  await expect(page.locator("#add-exclusion")).toHaveAttribute("data-value", "rectangle");
+
+  await page.locator("#add-material").hover();
+  await page.locator("#add-material-menu").getByRole("menuitemradio", { name: /Circle/ }).click();
+  await expect(page.locator('[data-cad-select^="container:"]')).toHaveCount(2);
+  await expect(page.locator("#add-material")).toHaveAttribute("data-value", "circle");
+  await expect(page.locator("[data-primitive-kind]")).toHaveValue("circle");
+  await openInspectorDetails(page, "geometry-precision");
+  await expect(page.locator('[data-primitive-field="radius"]')).toBeVisible();
+  await page.locator("#add-material").click();
+  await expect(page.locator('[data-cad-select^="container:"]')).toHaveCount(3);
+
+  await page.locator("#add-cutout").hover();
+  await page.locator("#add-cutout-menu").getByRole("menuitemradio", { name: /Bézier/ }).click();
+  await expect(page.locator('[data-cad-select^="container:"]')).toHaveCount(4);
+  await expect(page.locator("#add-cutout")).toHaveAttribute("data-value", "bezier");
+
+  await page.locator("#add-item").hover();
+  await page.locator("#add-item-menu").getByRole("menuitemradio", { name: /Triangle/ }).click();
+  await expect(page.locator('[data-cad-select^="item:"]')).toHaveCount(2);
+  await expect(page.locator("#add-item")).toHaveAttribute("data-value", "triangle");
+
+  await page.locator("#add-exclusion").hover();
+  await page.locator("#add-exclusion-menu").getByRole("menuitemradio", { name: /Polygon/ }).click();
+  await expect(page.locator('[data-cad-select^="exclusion:"]')).toHaveCount(2);
+  await expect(page.locator("#add-exclusion")).toHaveAttribute("data-value", "polygon");
+  await expect(page.locator("#add-exclusion [data-split-icon]")).toHaveText("⊘");
+  await expect(page.locator(".palette-check, .split-toggle")).toHaveCount(0);
+
+  await page.reload();
+  await expect(page.locator("#add-material")).toHaveAttribute("data-value", "circle");
+  await expect(page.locator("#add-cutout")).toHaveAttribute("data-value", "bezier");
+  await expect(page.locator("#add-item")).toHaveAttribute("data-value", "triangle");
+  await expect(page.locator("#add-exclusion")).toHaveAttribute("data-value", "polygon");
+});
+
 test("creates, moves, overrides, persists, and exports first-class dimensions", async ({ page }) => {
   await page.goto("/");
   const item = page.locator('[data-cad-kind="item"][data-cad-part="0"]');
+  await expect(item).toBeVisible();
   const box = await item.boundingBox(); if (!box) throw new Error("Item bounds unavailable");
-  await page.getByRole("button", { name: "Create dimension" }).click();
+  await clickMoreTool(page, "Create dimension");
   await page.mouse.click(box.x, box.y + box.height / 2);
   await page.mouse.click(box.x + box.width, box.y + box.height / 2);
 
@@ -196,7 +284,7 @@ test("creates, moves, overrides, persists, and exports first-class dimensions", 
 test("adds editable scene text and directly moves, resizes, rotates, and persists it", async ({ page }) => {
   await page.goto("/");
   const itemStyle = await page.locator(".cad-part-color.item").first().getAttribute("style");
-  await page.getByRole("button", { name: "Add scene text" }).click();
+  await clickMoreTool(page, "Add scene text");
   const text = page.locator(".cad-scene-text");
   await expect(text).toHaveText("Annotation");
   expect(Number(await page.locator('[data-text-field="x"]').inputValue()) / .5).toBeCloseTo(Math.round(Number(await page.locator('[data-text-field="x"]').inputValue()) / .5), 6);
@@ -249,7 +337,7 @@ test("adds editable scene text and directly moves, resizes, rotates, and persist
 });
 
 test("offers selection-aware drafting actions from the context menu", async ({ page }) => {
-  await page.goto("/"); await page.getByRole("button", { name: "Add scene text" }).click();
+  await page.goto("/"); await clickMoreTool(page, "Add scene text");
   await page.locator('[data-text-field="rotation"]').fill("30"); await page.locator('[data-text-field="rotation"]').blur();
   await page.locator(".cad-text-hit").click({ button: "right" });
   const menu = page.locator("#cad-context-menu");
@@ -270,8 +358,10 @@ test("edits item, container, cut-out, and exclusion geometry without leaving the
   if (!initialCircleBox) throw new Error("Snapped circle has no bounding box");
   await initialCircle.click({ position: { x: initialCircleBox.width * .2, y: initialCircleBox.height / 2 } });
   await expect(page.locator("#item-part-select")).toHaveValue("1");
+  await openInspectorDetails(page, "geometry-precision");
   await expect(page.locator('[data-primitive-field="radius"]')).toBeVisible();
   await page.locator("#item-part-select").selectOption("0");
+  await openInspectorDetails(page, "geometry-precision");
   const width = page.locator('[data-primitive-field="width"]');
   const originalWidth = await width.inputValue();
   const widthHandle = page.locator('[data-geometry-handle="resize:right"]');
@@ -300,6 +390,7 @@ test("edits item, container, cut-out, and exclusion geometry without leaving the
   await circle.click({ position: { x: circleBox.width * .2, y: circleBox.height / 2 } });
   await expect(page.locator("[data-snap-target]")).toHaveValue("body");
   await expect(page.locator(".cad-snap-constraint")).toHaveCount(0);
+  await openInspectorDetails(page, "snap-offset");
   await page.locator('[data-snap-offset="x"]').fill("1"); await page.locator('[data-snap-offset="x"]').blur();
   const rotateHandle = page.locator(".cad-rotate-handle");
   const rotateBox = await rotateHandle.boundingBox();
@@ -320,15 +411,16 @@ test("edits item, container, cut-out, and exclusion geometry without leaving the
 
   await page.locator('[data-add-part="bezier"]').click();
   await expect(page.locator("#item-part-select")).toHaveValue("3");
+  await openInspectorDetails(page, "geometry-precision");
   await expect(page.locator("[data-bezier-knots]")).toBeVisible();
   await expect(page.locator(".cad-bezier-tangent")).toHaveCount(4);
   await expect(page.locator(".cad-geometry-handle.control")).toHaveCount(8);
   await page.locator('[data-add-object="cutout"]').click();
   await expect(page.locator("#selection-inspector")).toContainText("Subtract cut-out");
   await page.locator('[data-add-object="exclusion"]').click();
-  await expect(page.locator("#selection-inspector")).toContainText("EXCLUSION");
+  await expect(page.locator("#selection-inspector")).toContainText("Exclusion");
   await page.locator('[data-add-object="item"]').click();
-  await expect(page.locator("#selection-inspector")).toContainText("PACKABLE SHAPE");
+  await expect(page.locator("#selection-inspector")).toContainText("Selected item");
   await expect(page.locator('[data-cad-kind="container"]')).toHaveCount(2);
   await expect(page.locator('[data-cad-kind="exclusion"]')).toHaveCount(2);
   await expect(page.locator('[data-cad-select^="item:"]')).toHaveCount(2);
@@ -373,20 +465,19 @@ test("copies constituent shapes into their construction and removes empty owners
 test("provides persistent drafting guides, trace images, default roles, and bezier mirroring", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator("#packing-sidebar")).not.toContainText("Drafting aids");
-  await expect(page.getByRole("button", { name: "Add trace image" })).toBeVisible();
-  await page.getByRole("button", { name: "Drafting aids" }).click();
+  await clickMoreTool(page, "Drafting aids");
   await expect(page.getByLabel("Drafting aids panel")).toBeVisible();
   await page.getByRole("button", { name: "+ Vertical" }).click();
   await page.locator("#cad-canvas").hover({ position: { x: 610, y: 390 } });
   await expect(page.locator(".cad-guide-placement-preview")).toBeVisible();
   await page.locator("#cad-canvas").click({ position: { x: 610, y: 390 } });
   await expect(page.locator('[data-cad-kind="guide"]')).toHaveCount(1);
-  await page.getByRole("button", { name: "Drafting aids" }).click();
+  await clickMoreTool(page, "Drafting aids");
   await page.locator('[data-guide-field="x"]').fill("1.24"); await page.locator('[data-guide-field="x"]').blur();
   await expect(page.locator('[data-guide-field="x"]')).toHaveValue("1");
 
   const imageChooser = page.waitForEvent("filechooser");
-  await page.getByRole("button", { name: "Add trace image" }).click();
+  await clickMoreTool(page, "Add trace image");
   await (await imageChooser).setFiles({
     name: "trace.svg", mimeType: "image/svg+xml",
     buffer: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50"><rect width="100" height="50" fill="red"/></svg>'),
@@ -395,14 +486,14 @@ test("provides persistent drafting guides, trace images, default roles, and bezi
   await expect(page.locator('[data-trace-field="opacity"]')).toHaveValue("0.35");
 
   await page.locator("[data-cad-background]").click({ position: { x: 20, y: 200 } });
-  await page.getByRole("button", { name: /Default new shape role/ }).click();
-  await page.getByRole("menuitemradio", { name: /Exclusion/ }).click();
-  await page.getByRole("button", { name: "Add circle" }).click();
+  await page.locator("#add-exclusion").hover();
+  await page.locator("#add-exclusion-menu").getByRole("menuitemradio", { name: /Circle/ }).click();
   await expect(page.locator('[data-cad-select^="exclusion:"]')).toHaveCount(2);
   await expect(page.locator('[data-cad-kind="exclusion"][data-cad-index="1"]')).toHaveCount(1);
 
   await page.locator('[data-cad-kind="item"][data-cad-part="0"]').click();
   await page.locator('[data-add-part="bezier"]').click();
+  await openInspectorDetails(page, "geometry-precision");
   const knots = page.locator("[data-bezier-knots]");
   const before = JSON.parse(await knots.inputValue());
   await page.getByRole("button", { name: "Mirror left ↔ right" }).click();
@@ -418,16 +509,17 @@ test("provides persistent drafting guides, trace images, default roles, and bezi
   await page.reload();
   await expect(page.locator(".cad-trace-image")).toHaveCount(1);
   await expect(page.locator('[data-cad-kind="guide"]')).toHaveCount(1);
-  await expect(page.getByRole("button", { name: /Default new shape role/ })).toHaveAttribute("data-value", "exclusion");
+  await expect(page.locator("#toolbar-default-owner")).toHaveCount(0);
 });
 
 test("smart-snaps a circle radius to a related rectangle dimension", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "Drafting aids" }).click();
+  await clickMoreTool(page, "Drafting aids");
   const grid = page.locator('[data-drafting-field="gridStep"]');
   await grid.fill("0.3"); await grid.blur();
   await page.keyboard.press("Escape");
   await page.locator('[data-cad-kind="item"][data-cad-part="1"]').click();
+  await openInspectorDetails(page, "geometry-precision");
   const radius = page.locator('[data-primitive-field="radius"]');
   await expect(radius).toHaveValue("1.1");
   const handle = page.locator('[data-geometry-handle^="radius:"]').first();
@@ -457,7 +549,7 @@ test("snaps polygon vertices to the unit grid while dragging", async ({ page }) 
 
 test("creates and directly transforms guides, drafting paths, construction shapes, and multiple images", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "Add vertical drafting line" }).click();
+  await clickMoreTool(page, "Add vertical drafting line");
   await expect(page.locator("#cad-canvas")).toHaveClass(/placing-guide/);
   const initialCanvasBox = await page.locator("#cad-canvas").boundingBox();
   if (!initialCanvasBox) throw new Error("CAD canvas is unavailable");
@@ -485,7 +577,7 @@ test("creates and directly transforms guides, drafting paths, construction shape
 
   const canvas = page.locator("#cad-canvas"), canvasBox = await canvas.boundingBox();
   if (!canvasBox) throw new Error("CAD canvas is unavailable");
-  await page.getByRole("button", { name: "Draw two-point drafting line" }).click();
+  await clickMoreTool(page, "Draw two-point drafting line");
   await expect(canvas).toHaveClass(/placing-draft/);
   await page.mouse.move(canvasBox.x + 240, canvasBox.y + 250);
   await expect(page.locator(".cad-draft-cursor")).toBeVisible();
@@ -515,18 +607,17 @@ test("creates and directly transforms guides, drafting paths, construction shape
   const movedCoordinates = (await draftingLine.getAttribute("d"))!.match(/-?\d+(?:\.\d+)?/g)!.map(Number);
   expect(Math.abs(movedCoordinates[0] * 2 - Math.round(movedCoordinates[0] * 2))).toBeLessThan(.001);
   expect(Math.abs(movedCoordinates[1] * 2 - Math.round(movedCoordinates[1] * 2))).toBeLessThan(.001);
-  await page.getByRole("button", { name: "Draw drafting polyline" }).click();
+  await clickMoreTool(page, "Draw drafting polyline");
   await page.mouse.click(canvasBox.x + 380, canvasBox.y + 260); await page.mouse.click(canvasBox.x + 430, canvasBox.y + 320); await page.mouse.click(canvasBox.x + 490, canvasBox.y + 270);
   await page.keyboard.press("Enter");
   await expect(page.locator(".cad-drafting-shape")).toHaveCount(2);
 
-  await page.getByRole("button", { name: "Drafting shape mode" }).click();
-  await page.getByRole("button", { name: "Add rectangle" }).click();
+  await clickMoreTool(page, "Drafting shape mode");
   await expect(page.locator(".cad-drafting-shape")).toHaveCount(3);
   await expect(page.locator('[data-cad-kind="container"]')).toHaveCount(1);
 
   for (const color of ["red", "blue"]) {
-    const chooser = page.waitForEvent("filechooser"); await page.getByRole("button", { name: "Add trace image" }).click();
+    const chooser = page.waitForEvent("filechooser"); await clickMoreTool(page, "Add trace image");
     await (await chooser).setFiles({ name: `${color}.svg`, mimeType: "image/svg+xml", buffer: Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="60"><rect width="100" height="60" fill="${color}"/></svg>`) });
   }
   await expect(page.locator(".cad-trace-image")).toHaveCount(2);
@@ -547,37 +638,37 @@ test("creates and directly transforms guides, drafting paths, construction shape
 
 test("locks every CAD entity type and exposes locked entities only in the sidebar", async ({ page }) => {
   await page.goto("/");
-  const lock = page.getByRole("button", { name: "Lock selection" });
+  const lock = async (): Promise<void> => clickMoreTool(page, "Lock selection");
 
-  await lock.click();
+  await lock();
   await expect(page.locator(".locked-entity-group")).toBeVisible();
   await expect(page.locator('.locked-entity-group [data-cad-select="container:0"]')).toContainText("stock");
   await expect(page.locator('[data-cad-kind="container"][data-cad-index="0"]')).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Unlock selection" })).toBeEnabled();
+  await expect(page.locator("#lock-selection")).toHaveAttribute("aria-label", "Unlock selection");
   await page.locator("[data-toggle-lock]").click();
   await expect(page.locator(".locked-entity-group")).toHaveCount(0);
   await expect(page.locator('[data-cad-kind="container"][data-cad-index="0"]')).toHaveCount(1);
 
-  await page.locator('[data-cad-select="exclusion:0"]').click(); await lock.click();
-  await page.locator('[data-cad-select="item:0"]').click(); await lock.click();
+  await page.locator('[data-cad-select="exclusion:0"]').click(); await lock();
+  await page.locator('[data-cad-select="item:0"]').click(); await lock();
   await expect(page.locator('[data-cad-kind="exclusion"][data-cad-index="0"]')).toHaveCount(0);
   await expect(page.locator('[data-cad-kind="item"][data-cad-index="0"]')).toHaveCount(0);
 
   const canvasBox = await page.locator("#cad-canvas").boundingBox();
   if (!canvasBox) throw new Error("CAD canvas is unavailable");
-  await page.getByRole("button", { name: "Draw two-point drafting line" }).click();
+  await clickMoreTool(page, "Draw two-point drafting line");
   await page.mouse.click(canvasBox.x + 700, canvasBox.y + 250); await page.mouse.click(canvasBox.x + 790, canvasBox.y + 310);
-  await lock.click();
+  await lock();
   await expect(page.locator(".cad-drafting-shape.locked")).toHaveCount(1);
   await expect(page.locator('[data-cad-kind="drafting"]')).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Add vertical drafting line" }).click();
-  await page.mouse.click(canvasBox.x + 820, canvasBox.y + 260); await lock.click();
+  await clickMoreTool(page, "Add vertical drafting line");
+  await page.mouse.click(canvasBox.x + 820, canvasBox.y + 260); await lock();
   await expect(page.locator('[data-cad-kind="guide"]')).toHaveCount(0);
 
-  const chooser = page.waitForEvent("filechooser"); await page.getByRole("button", { name: "Add trace image" }).click();
+  const chooser = page.waitForEvent("filechooser"); await clickMoreTool(page, "Add trace image");
   await (await chooser).setFiles({ name: "locked.svg", mimeType: "image/svg+xml", buffer: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50"><rect width="100" height="50" fill="purple"/></svg>') });
-  await lock.click();
+  await lock();
   await expect(page.locator(".cad-trace-image")).toHaveCount(1);
   await expect(page.locator('[data-cad-kind="trace"]')).toHaveCount(0);
   await expect(page.locator(".locked-entity-group .locked-row")).toHaveCount(5);
@@ -618,13 +709,14 @@ test("keeps oriented snap anchors attached through rotation", async ({ page }) =
 test("builds and transforms a joined multi-region material from the toolbar", async ({ page }) => {
   await page.goto("/");
   await page.locator('[data-cad-select="container:0"]').click();
-  await page.getByRole("button", { name: "Add circle" }).click();
+  await page.locator("#add-material").hover();
+  await page.locator("#add-material-menu").getByRole("menuitemradio", { name: /Circle/ }).click();
+  await page.mouse.move(700, 500);
   await expect(page.locator('[data-cad-kind="container"]')).toHaveCount(2);
-  await expect(page.locator("[data-snap-target]")).toHaveValue("container-boundary");
   await expect(page.locator(".cad-snap-constraint")).toHaveCount(0);
   await expect(page.locator(".cad-edit-dimensions")).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Unify selected material" }).click();
+  await clickMoreTool(page, "Unify selected material");
   await expect(page.locator("#status")).toContainText("unified for packing");
   const before = await page.locator('[data-cad-kind="container"]').evaluateAll((paths) => paths.map((path) => path.getAttribute("d")));
   const rotate = page.locator(".cad-rotate-handle"), selected = page.locator('[data-cad-kind="container"][data-cad-index="1"]');
@@ -639,7 +731,7 @@ test("builds and transforms a joined multi-region material from the toolbar", as
   expect(after[1]).not.toBe(before[1]);
   await expect(page.locator("[data-snap-target]")).toHaveValue("container-boundary");
 
-  await page.getByRole("button", { name: "Validate" }).click();
+  await page.keyboard.press("v");
   await expect(page.locator("#status")).toContainText("valid", { timeout: 10_000 });
   await page.getByRole("button", { name: "Delete selection" }).click();
   await expect(page.locator('[data-cad-kind="container"]')).toHaveCount(1);
@@ -648,29 +740,37 @@ test("builds and transforms a joined multi-region material from the toolbar", as
 test("runs packing and lets a user move and rotate returned items", async ({ page }) => {
   test.setTimeout(60_000);
   await page.goto("/");
+  await page.locator(".toolbar-more > summary").click();
   const snapToggle = page.locator("#toggle-grid-snap");
   await expect(snapToggle).toHaveAttribute("aria-pressed", "true");
-  await expect(snapToggle).toContainText("Snap");
+  await expect(snapToggle).toContainText("⌗");
   await snapToggle.click();
   await expect(snapToggle).toHaveAttribute("aria-pressed", "false");
-  await page.getByRole("button", { name: "Drafting aids" }).click();
+  await clickMoreTool(page, "Drafting aids");
   await expect(page.getByLabel("Snap to grid")).not.toBeChecked();
+  await page.locator(".toolbar-more > summary").click();
   await snapToggle.click();
   await expect(snapToggle).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByLabel("Snap to grid")).toBeChecked();
   await configureFastSolve(page);
-  await page.getByRole("button", { name: "Validate" }).click();
+  await page.keyboard.press("v");
   await expect(page.locator("#status")).toContainText("valid", { timeout: 10_000 });
   await page.getByRole("button", { name: "Run packing" }).click();
   await expect(page.locator("#workspace-summary")).toContainText("packed items", { timeout: 30_000 });
+  await expect(page.locator("#cad-shell")).toHaveAttribute("data-mode", "results");
+  await expect(page.locator(".results-summary")).toContainText(/\d+ of \d+ packed/);
+  await expect(page.locator(".result-metrics")).toContainText("Material used");
+  await expect(page.getByRole("button", { name: "Return to edit" })).toBeVisible();
+  await expect(page.locator(".cad-library .cad-item-sample")).toHaveCount(0);
   await expect(page.locator('[data-cad-kind="placement"]')).not.toHaveCount(0);
 
   const firstPlacement = page.locator('[data-cad-kind="placement"][data-cad-index="0"]').first();
   const originalPath = await firstPlacement.getAttribute("d");
   await firstPlacement.click();
-  await expect(page.locator("#selection-inspector")).toContainText("PACKED ITEM 1");
+  await expect(page.locator("#selection-inspector")).toContainText("Packed item 1");
+  await openInspectorDetails(page, "placement-precision");
   const x = page.locator('[data-placement-field="x"]');
-  await page.locator("#respect-manual-constraints").click();
+  await clickMoreTool(page, "Toggle manual collision guard");
   const canvasBox = await page.locator("#cad-canvas").boundingBox();
   const viewBox = (await page.locator("#cad-canvas").getAttribute("viewBox"))!.split(" ").map(Number);
   let dragBox = await firstPlacement.boundingBox();
@@ -705,7 +805,7 @@ test("runs packing and lets a user move and rotate returned items", async ({ pag
   await page.mouse.up();
   await expect(page.locator('[data-placement-field="rotation_deg"]')).not.toHaveValue(originalRotation);
 
-  await page.getByRole("button", { name: "Diagnostics" }).click();
+  await clickMoreTool(page, "Diagnostics");
   await expect(page.locator("#diagnostics-dialog")).toBeVisible();
   await expect(page.locator("#diagnostics")).toContainText("manually edited");
   await expect(page.locator("#diagnostics")).toContainText("independently valid");
@@ -714,10 +814,33 @@ test("runs packing and lets a user move and rotate returned items", async ({ pag
   await expect(page.locator("#diagnostics")).toContainText("Wasm memory");
 });
 
+test("undoes and redoes solved placement moves as atomic result edits", async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.goto("/");
+  await configureFastSolve(page);
+  await page.getByRole("button", { name: "Run packing" }).click();
+  await expect(page.getByRole("button", { name: "Repack" })).toBeEnabled({ timeout: 30_000 });
+  const placement = page.locator('[data-cad-kind="placement"][data-cad-index="0"]');
+  await placement.click();
+  await clickMoreTool(page, "Toggle manual collision guard");
+  const original = await placement.getAttribute("d");
+  const box = await placement.boundingBox();
+  if (!box) throw new Error("Packed item has no drag bounds");
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down(); await page.mouse.move(box.x + box.width / 2 + 24, box.y + box.height / 2 + 8); await page.mouse.up();
+  const moved = await placement.getAttribute("d");
+  expect(moved).not.toBe(original);
+  await page.getByRole("button", { name: "Undo" }).click();
+  await expect.poll(() => placement.getAttribute("d")).toBe(original);
+  await page.getByRole("button", { name: "Redo" }).click();
+  await expect.poll(() => placement.getAttribute("d")).toBe(moved);
+  await expect(page.locator("#workspace-summary")).toContainText("manual layout");
+});
+
 test("keeps sensitivity as the only separate analysis view", async ({ page }) => {
   await page.goto("/");
   await configureFastSolve(page);
-  await page.getByRole("button", { name: "Sensitivity" }).click();
+  await clickMoreTool(page, "Sensitivity");
   await expect(page.locator("#sensitivity-page")).toBeVisible();
   await expect(page.locator(".shape-step")).toHaveCount(7);
   const itemStart = await canvasData(page, '[data-study-preview="0"]');
@@ -741,7 +864,7 @@ test("keeps sensitivity as the only separate analysis view", async ({ page }) =>
   await expect(page.getByRole("button", { name: "Edit layout" })).toBeEnabled();
   await page.getByRole("button", { name: "Edit layout" }).click();
   await expect(page.locator("#workspace-summary")).toContainText("manual layout");
-  await page.getByRole("button", { name: "Sensitivity" }).click();
+  await clickMoreTool(page, "Sensitivity");
   await page.getByRole("button", { name: "Workspace" }).click();
   await expect(page.locator("#cad-canvas")).toBeVisible();
 });
@@ -754,7 +877,7 @@ test("makes sensitivity variables, exports, and shortcuts discoverable", async (
     ["#open-shortcuts", "(?)"], ["#fit-view", "(F)"], ["#focus-selection", "(Shift+F)"], ["#zoom-in", "(+)"], ["#zoom-out", "(−)"],
     ["#validate", "(V)"], ["#solve", "(R)"],
   ] as const) await expect(page.locator(selector)).toHaveAttribute("title", new RegExp(`${shortcut.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`));
-  await page.getByRole("button", { name: "Keyboard shortcuts" }).click();
+  await clickMoreTool(page, "Keyboard shortcuts");
   await expect(page.locator("#shortcuts-dialog")).toBeVisible();
   await expect(page.locator("#shortcut-list")).toContainText("Toggle dimensions");
   await page.keyboard.press("Escape");
@@ -776,7 +899,7 @@ test("makes sensitivity variables, exports, and shortcuts discoverable", async (
   await page.getByRole("button", { name: "Edit varied geometry" }).click();
   await expect(page.locator("#packing-page")).toBeVisible();
   await expect(page.getByRole("button", { name: "Dimensions" })).toHaveAttribute("aria-pressed", "true");
-  await expect(page.getByRole("button", { name: "Constraints" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "Spacing", exact: true })).toHaveAttribute("aria-pressed", "true");
 
   await page.getByRole("button", { name: "Export", exact: true }).click();
   await expect(page.locator("#export-dialog")).toBeVisible();
@@ -797,7 +920,7 @@ test("stops an active worker and starts a clean replacement", async ({ page }) =
   await expect(page.getByRole("button", { name: "Stop" })).toBeEnabled();
   await page.getByRole("button", { name: "Stop" }).click();
   await expect(page.locator("#status")).toContainText("cancelled");
-  await page.getByRole("button", { name: "Validate" }).click();
+  await page.keyboard.press("v");
   await expect(page.locator("#status")).toContainText("valid", { timeout: 10_000 });
 });
 
@@ -808,11 +931,11 @@ test("uses unified silhouettes and removes owners when their last shape is delet
   expect(((await itemSilhouette.getAttribute("d"))?.match(/M/g) ?? []).length).toBe(1);
   await expect(page.locator('[data-cad-kind="item"]')).toHaveCount(3);
 
-  await page.getByRole("button", { name: "Constraints" }).click();
+  await page.getByRole("button", { name: "Spacing", exact: true }).click();
   await expect(page.locator(".cad-library .cad-clearance.item")).not.toHaveCount(0);
 
   await page.locator('[data-cad-select="exclusion:0"]').click();
-  await page.getByRole("button", { name: "Add circle" }).click();
+  await page.locator('[data-add-part="circle"]').click();
   await expect(page.locator("#item-part-select option")).toHaveCount(2);
   await expect(page.locator("[data-snap-target]")).not.toHaveValue("");
   await expect(page.locator('[data-unified-geometry="exclusion:0"]')).toHaveCount(1);
@@ -855,12 +978,15 @@ test("snaps by visible anchors, reassigns construction ownership, and colours pa
   await page.mouse.up();
   await expect(page.locator('[data-snap-anchor="ownAnchor"]')).toHaveValue("center");
   await expect(page.locator('[data-snap-anchor="targetAnchor"]')).toHaveValue("bottom_left");
+  await openInspectorDetails(page, "snap-offset");
   await expect(page.locator('[data-snap-offset="x"]')).toHaveValue("0");
   await expect(page.locator(".cad-snap-anchor")).toHaveCount(0);
   await expect(page.locator(".cad-snap-constraint")).toHaveCount(0);
 
   await page.locator('[data-cad-select="container:0"]').click();
-  await page.getByRole("button", { name: "Add rectangle" }).click();
+  await page.locator("#add-material").hover();
+  await page.locator("#add-material-menu").getByRole("menuitemradio", { name: /Rectangle/ }).click();
+  await page.mouse.move(700, 500);
   await expect(page.locator(".cad-snap-anchor")).toHaveCount(0);
   const regionMove = page.locator(".cad-part-move-handle");
   const regionMoveBox = await regionMove.boundingBox();
@@ -877,7 +1003,7 @@ test("snaps by visible anchors, reassigns construction ownership, and colours pa
   await expect(page.locator(".cad-snap-anchor")).toHaveCount(0);
 
   await page.locator("[data-part-owner]").selectOption("item:0");
-  await expect(page.locator("#selection-inspector")).toContainText("PACKABLE SHAPE");
+  await expect(page.locator("#selection-inspector")).toContainText("Selected item");
   await expect(page.locator("#item-part-select option")).toHaveCount(4);
   const colour = page.locator("[data-primitive-color]");
   await colour.fill("#ff00aa");
@@ -949,6 +1075,7 @@ test("multi-selects individual construction parts and edits them precisely", asy
   await page.mouse.move(whole.x + whole.width + 5, whole.y + whole.height + 5, { steps: 4 }); await page.mouse.up(); await page.keyboard.up("Control");
   await expect(page.locator("#selection-inspector")).toContainText("3 parts selected");
   await page.locator('[data-cad-select="item:0"]').click();
+  await openInspectorDetails(page, "geometry-precision");
   const x = await page.locator('[data-primitive-field="x"]').inputValue(), y = await page.locator('[data-primitive-field="y"]').inputValue();
   await page.locator("[data-primitive-kind]").selectOption("circle");
   await expect(page.locator('[data-primitive-field="x"]')).toHaveValue(x); await expect(page.locator('[data-primitive-field="y"]')).toHaveValue(y);
@@ -987,8 +1114,9 @@ test("uses a restrained CAD palette in dark mode", async ({ page }) => {
   await page.goto("/");
   const containerFill = await page.locator(".cad-part-color.container").first().evaluate((node) => getComputedStyle(node).fill);
   expect(containerFill).not.toBe("rgb(231, 235, 239)");
-  await page.getByRole("button", { name: "Constraints", exact: true }).click();
+  await page.getByRole("button", { name: "Spacing", exact: true }).click();
   const clearanceStroke = await page.locator(".cad-clearance").first().evaluate((node) => getComputedStyle(node).stroke);
+  await page.locator(".toolbar-more > summary").click();
   const fixedAccent = await page.locator("#respect-manual-constraints").evaluate((node) => getComputedStyle(node).color);
   expect(clearanceStroke).not.toBe(fixedAccent);
 });
@@ -996,12 +1124,13 @@ test("uses a restrained CAD palette in dark mode", async ({ page }) => {
 test("retains solved layouts for stale edits and copies solved placements", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Run packing" }).click();
-  await expect(page.getByRole("button", { name: "Run packing" })).toBeEnabled({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: "Repack" })).toBeEnabled({ timeout: 30_000 });
   await expect(page.locator(".cad-placement").first()).toBeVisible();
   const before = await page.locator(".cad-placement").count();
   await page.locator(".cad-placement").first().click();
   await page.keyboard.press("Control+c"); await page.keyboard.press("Control+v");
   await expect(page.locator(".cad-placement")).toHaveCount(before + 1);
+  await page.getByRole("button", { name: "Return to edit" }).click();
   await page.locator('[data-cad-select="item:0"]').click();
   await page.locator('[data-object-field="quantity"]').fill("81"); await page.locator('[data-object-field="quantity"]').blur();
   await expect(page.locator(".cad-placement")).toHaveCount(before + 1);
@@ -1010,7 +1139,7 @@ test("retains solved layouts for stale edits and copies solved placements", asyn
 
 test("creates an empty project and previews fixed placements", async ({ page }) => {
   await page.goto("/");
-  await page.getByText("Fixed placements", { exact: false }).click();
+  await page.getByText("Locked items", { exact: false }).last().click();
   await page.getByRole("button", { name: "+ Add fixed placement" }).click();
   await expect(page.locator(".cad-placement.fixed")).toHaveCount(1);
   const initialX = await page.locator('[data-fixed-field="x"]').inputValue();
@@ -1024,7 +1153,7 @@ test("creates an empty project and previews fixed placements", async ({ page }) 
   await expect(page.locator('[data-cad-select="container:0"]')).toHaveCount(0);
   await page.locator("#project-dialog").getByRole("button", { name: "Close projects" }).click();
   await page.getByRole("button", { name: "+ Item" }).click();
-  await page.getByText("Fixed placements", { exact: false }).click();
+  await page.getByText("Locked items", { exact: false }).last().click();
   await page.getByRole("button", { name: "+ Add fixed placement" }).click();
   await expect(page.locator(".cad-placement.fixed")).toHaveCount(1);
   await expect(page.locator(".cad-fixed-badge")).toHaveCount(1);
@@ -1035,12 +1164,14 @@ async function configureFastSolve(page: import("@playwright/test").Page): Promis
   await setPackingNumber(page, "max_iterations", "2000");
   await setPackingNumber(page, "grid_step", "1");
   await setPackingNumber(page, "restarts", "1");
-  await page.getByLabel("Quality").selectOption("fast");
+  await page.getByLabel("Packing strategy").selectOption("fast");
 }
 
 async function openSolverSettings(page: import("@playwright/test").Page): Promise<void> {
-  const details = page.locator("details").filter({ hasText: "Solver" });
-  if (!(await details.getAttribute("open"))) await details.locator("summary").click();
+  const details = page.locator("details.settings-section").filter({ hasText: "Packing settings" });
+  if (!(await details.evaluate((node) => (node as HTMLDetailsElement).open))) await details.locator(":scope > summary").click();
+  const advanced = details.locator(".advanced-settings");
+  if (!(await advanced.evaluate((node) => (node as HTMLDetailsElement).open))) await advanced.locator(":scope > summary").click();
 }
 
 async function setPackingNumber(page: import("@playwright/test").Page, field: string, value: string): Promise<void> {

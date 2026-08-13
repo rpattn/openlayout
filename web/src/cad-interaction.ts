@@ -14,7 +14,7 @@ type DefinitionSelection = Exclude<CadSelection, { kind: "placement" }>;
 export type CadInteraction =
   | (InteractionBase & { mode: "pan"; originalView: CadView })
   | (InteractionBase & { mode: "marquee"; currentWorld: Point; additive: boolean; clickSelection?: CadSelection; clickPartIndex?: number })
-  | (InteractionBase & { mode: "placement" | "rotate"; placementIndex: number; originalPlacement: Placement })
+  | (InteractionBase & { mode: "placement" | "rotate"; placementIndex: number; originalPlacement: Placement; originalPlacements: Placement[] })
   | (InteractionBase & { mode: "group-move" | "group-rotate" | "group-scale"; center: Point; originalState: EditorState; originalPlacements: Placement[] })
   | (InteractionBase & { mode: "anchor-snap"; selection: DefinitionSelection; partIndex: number; ownAnchor: AnchorName; currentWorld: Point; originalState: EditorState })
   | (InteractionBase & { mode: "snap-offset" | "part-move"; selection: DefinitionSelection; partIndex: number; originalState: EditorState })
@@ -32,6 +32,6 @@ export function isPlacementInteraction(interaction: CadInteraction): interaction
   return interaction.mode === "placement" || interaction.mode === "rotate";
 }
 
-export function isGroupInteraction(interaction: CadInteraction): interaction is Extract<CadInteraction, { originalPlacements: Placement[] }> {
+export function isGroupInteraction(interaction: CadInteraction): interaction is Extract<CadInteraction, { mode: "group-move" | "group-rotate" | "group-scale" }> {
   return interaction.mode === "group-move" || interaction.mode === "group-rotate" || interaction.mode === "group-scale";
 }

@@ -1,30 +1,31 @@
-import { toolbarPaletteHtml } from "./toolbar-palette";
-import type { EditorState } from "./types";
+import { toolbarActionPaletteHtml, toolbarSplitPaletteHtml } from "./toolbar-palette";
+import type { PrimitiveEditor } from "./types";
 
 interface StudioShellOptions {
-  defaultOwner: EditorState["drafting"]["defaultOwner"];
   studyDisplay: { dimensions: boolean; clearance: boolean };
+  quickShapes: Record<"material" | "cutout" | "item" | "exclusion", PrimitiveEditor["kind"]>;
+  quickDrafting: string;
 }
 
 export function studioShellHtml(options: StudioShellOptions): string {
-  return `${packingPage(options.defaultOwner)}${sensitivityPage(options.studyDisplay)}${studioDialogs()}`;
+  return `${packingPage(options.quickShapes, options.quickDrafting)}${sensitivityPage(options.studyDisplay)}${studioDialogs()}`;
 }
 
-function packingPage(defaultOwner: StudioShellOptions["defaultOwner"]): string {
+function packingPage(quickShapes: StudioShellOptions["quickShapes"], quickDrafting: string): string {
   return `<section id="packing-page" class="app-page">
     <div id="cad-shell" class="cad-shell">
       <aside id="problem-panel" class="problem-panel">
         <header class="studio-brand"><div class="brand-lockup"><div><strong>OpenLayout</strong><small>2D packing studio</small></div></div><div class="project-quick"><select id="quick-project" aria-label="Switch project"></select><button id="open-projects" class="project-chip" aria-label="Edit projects" title="Manage, import, and export projects"><span id="active-project-name" class="sr-only"></span>•••</button></div></header>
         <div id="packing-sidebar" class="problem-panel-scroll"></div>
-        <footer class="run-dock"><div class="run-buttons"><button id="validate" class="button ghost" title="Validate problem (V)">Validate</button><button id="cancel" class="button danger" disabled>Stop</button><button id="solve" class="button primary" title="Run packing (R)">Run packing</button></div><div id="solve-progress-wrap" class="solve-progress-wrap" hidden><div><strong id="solve-stage">Preparing…</strong><span id="solve-detail"></span></div><progress id="solve-progress" max="100" value="0" aria-label="Packing solve progress"></progress></div></footer>
+        <footer class="run-dock"><div class="run-buttons"><button id="validate" class="sr-only" tabindex="-1" title="Validation runs automatically">Validate</button><button id="cancel" class="button danger" hidden disabled>Stop</button><button id="solve" class="button primary" title="Run packing (R)">Run packing</button><button id="result-export" class="button ghost result-action" hidden>Export</button><button id="return-to-edit" class="button ghost result-action" hidden>Return to edit</button></div><div id="solve-progress-wrap" class="solve-progress-wrap" hidden><div><strong id="solve-stage">Preparing…</strong><span id="solve-detail"></span></div><progress id="solve-progress" max="100" value="0" aria-label="Packing solve progress"></progress></div></footer>
       </aside>
       <main class="cad-stage-shell">
-        ${workspaceToolbar(defaultOwner)}
+        ${workspaceToolbar(quickShapes, quickDrafting)}
         <input id="toolbar-trace-image-input" class="sr-only" type="file" accept="image/*" data-trace-image aria-label="Choose trace image">
         <section id="drafting-panel" class="cad-tool-panel" aria-label="Drafting aids panel" hidden></section>
         <section id="view-settings-panel" class="cad-tool-panel view-settings-panel" aria-label="View settings panel" hidden></section>
         <svg id="cad-canvas" class="cad-canvas" tabindex="0" aria-label="Interactive packing workspace"></svg>
-        <div class="cad-nav-toolbar" aria-label="View navigation"><button id="select-tool" class="tool-button active icon-tool" aria-label="Select tool" title="Select tool">↖</button><button id="fit-view" class="tool-button icon-tool" aria-label="Fit workspace" title="Fit workspace (F)">⌗</button><button id="focus-selection" class="tool-button icon-tool" aria-label="Focus selection" title="Zoom to selected geometry (Shift+F)">◎</button><button id="zoom-in" class="tool-button icon-tool" aria-label="Zoom in" title="Zoom in (+)">＋</button><button id="zoom-out" class="tool-button icon-tool" aria-label="Zoom out" title="Zoom out (−)">−</button></div>
+        <div class="cad-nav-toolbar" aria-label="View navigation"><button id="fit-view" class="tool-button icon-tool" aria-label="Fit workspace" title="Fit workspace (F)">⌗</button><button id="focus-selection" class="tool-button icon-tool" aria-label="Focus selection" title="Zoom to selected geometry (Shift+F)">◎</button><button id="zoom-in" class="tool-button icon-tool" aria-label="Zoom in" title="Zoom in (+)">＋</button><button id="zoom-out" class="tool-button icon-tool" aria-label="Zoom out" title="Zoom out (−)">−</button><button id="select-tool" class="tool-button icon-tool active" aria-label="Select tool" aria-pressed="true" title="Select tool">↖</button></div>
         <div class="cad-help">Ctrl/⌘ drag: marquee · Alt: bypass snap · Shift: opposite-edge resize</div>
         <div class="workspace-state"><span id="status-dot"></span><span id="status" class="status neutral">Saved locally</span><strong id="workspace-summary">Problem definition</strong></div>
         <div id="cad-context-menu" class="cad-context-menu" hidden><button data-context-action="focus">Focus selection</button><button data-context-action="copy">Copy</button><button data-context-action="duplicate">Duplicate</button><button data-context-action="lock">Lock</button><button data-context-action="front">Bring to front</button><button data-context-action="back">Send to back</button><button data-context-action="reset-rotation">Reset rotation</button><button data-context-action="fixed">Toggle fixed</button><button data-context-action="delete" class="danger-text">Delete</button></div>
@@ -33,25 +34,38 @@ function packingPage(defaultOwner: StudioShellOptions["defaultOwner"]): string {
   </section>`;
 }
 
-function workspaceToolbar(defaultOwner: StudioShellOptions["defaultOwner"]): string {
+const QUICK_SHAPES = [
+  { value: "rectangle", icon: "▭", label: "Rectangle", detail: "Width and height" },
+  { value: "circle", icon: "○", label: "Circle", detail: "Radius" },
+  { value: "triangle", icon: "△", label: "Triangle", detail: "Base and height" },
+  { value: "polygon", icon: "⬠", label: "Polygon", detail: "Editable vertices" },
+  { value: "bezier", icon: "∿", label: "Bézier", detail: "Editable curve" },
+] satisfies Array<{ value: PrimitiveEditor["kind"]; icon: string; label: string; detail: string }>;
+
+const QUICK_DRAFTING = [
+  { value: "vertical-guide", icon: "┃", label: "Vertical guide", detail: "Place a construction line" },
+  { value: "horizontal-guide", icon: "━", label: "Horizontal guide", detail: "Place a construction line" },
+  { value: "line", icon: "╱", label: "Two-point line", detail: "Click two endpoints" },
+  { value: "polyline", icon: "⌁", label: "Polyline", detail: "Click points to draw a path" },
+  { value: "rectangle", icon: "▭", label: "Rectangle", detail: "Drafting geometry" },
+  { value: "circle", icon: "○", label: "Circle", detail: "Drafting geometry" },
+  { value: "trace", icon: "▧", label: "Trace image", detail: "Place a reference image" },
+  { value: "text", icon: "T", label: "Text", detail: "Add an annotation" },
+  { value: "settings", icon: "⚙", label: "Drafting settings", detail: "Grid, snap, guides and traces" },
+];
+
+function workspaceToolbar(quickShapes: StudioShellOptions["quickShapes"], quickDrafting: string): string {
   return `<div class="cad-toolbar" aria-label="Workspace tools">
-    <div class="toolbar-group" aria-label="Panels"><button id="sidebar-toggle" class="tool-button" aria-label="Hide problem panel" title="Problem panel (P)">☰</button></div>
-    <div class="toolbar-group" aria-label="Geometry"><button class="tool-button geometry-action icon-tool" data-toolbar-shape="rectangle" aria-label="Add rectangle" title="Rectangle">▭</button><button class="tool-button geometry-action icon-tool" data-toolbar-shape="circle" aria-label="Add circle" title="Circle">○</button>${toolbarPaletteHtml("toolbar-add-shape", "Add other geometry", "⬡", [
-      { value: "triangle", icon: "△", label: "Triangle", detail: "3 vertices" },
-      { value: "polygon", icon: "⬠", label: "Polygon", detail: "Vertex geometry" },
-      { value: "bezier", icon: "∿", label: "Bézier", detail: "Curve geometry" },
-    ])}${toolbarPaletteHtml("toolbar-default-owner", "Default new shape role", "◈", [
-      { value: "material", icon: "▧", label: "Material", detail: "Container add" },
-      { value: "cutout", icon: "▱", label: "Cut-out", detail: "Container subtract" },
-      { value: "item", icon: "◇", label: "Item", detail: "Packable" },
-      { value: "exclusion", icon: "⊘", label: "Exclusion", detail: "Keep-out" },
-    ], defaultOwner)}</div>
-    <div class="toolbar-group" aria-label="Selection"><label class="toolbar-color" title="Selected part colour"><input id="toolbar-part-color" type="color" aria-label="Selected part colour" value="#51c6a4"></label><button id="join-material" class="tool-button icon-tool" aria-label="Unify selected material" title="Unify material">⌁</button><button id="lock-selection" class="tool-button icon-tool" aria-label="Lock selection" title="Lock">⌑</button><button id="delete-selection" class="tool-button danger-tool" aria-label="Delete selection" title="Delete (Delete)">⌫</button><button id="respect-manual-constraints" class="tool-button compact-overlay active" aria-label="Toggle manual collision guard" aria-pressed="true" title="Collision guard">♢</button></div>
-    <div class="toolbar-group" aria-label="Display"><button id="toggle-dimensions" class="tool-button compact-overlay" aria-label="Dimensions" aria-pressed="false" title="Dimensions (D)">↔</button><button id="toggle-clearance" class="tool-button compact-overlay" aria-label="Constraints" aria-pressed="false" title="Clearances (G)">◌</button><button id="open-view-settings" class="tool-button icon-tool" aria-label="View settings" aria-pressed="false" title="View settings">⚙</button></div>
-    <div class="toolbar-group" aria-label="Drafting"><button id="toggle-grid-snap" class="tool-button snap-toggle" aria-label="Disable grid snapping" aria-pressed="true" title="Grid snapping on · hold Alt to bypass">⌗<span>Snap</span></button><button id="open-drafting-aids" class="tool-button icon-tool" aria-label="Drafting aids" aria-pressed="false" title="Drafting settings">⌗</button><button id="add-vertical-guide" class="tool-button icon-tool" aria-label="Add vertical drafting line" aria-pressed="false" title="Vertical guide">┃</button><button id="add-horizontal-guide" class="tool-button icon-tool" aria-label="Add horizontal drafting line" aria-pressed="false" title="Horizontal guide">━</button><button id="draw-drafting-line" class="tool-button icon-tool" aria-label="Draw two-point drafting line" aria-pressed="false" title="2-point line">╱</button><button id="draw-drafting-polyline" class="tool-button icon-tool" aria-label="Draw drafting polyline" aria-pressed="false" title="Polyline · Enter to finish">⌁</button><button id="draw-dimension" class="tool-button icon-tool" aria-label="Create dimension" aria-pressed="false" title="Dimension between two points">↔</button><button id="drafting-shape-mode" class="tool-button icon-tool" aria-label="Drafting shape mode" aria-pressed="false" title="Drafting geometry mode">◇</button><button id="add-trace-image" class="tool-button icon-tool" aria-label="Add trace image" title="Trace image">▧</button><button id="add-scene-text" class="tool-button icon-tool" aria-label="Add scene text" title="Text annotation">T</button></div>
+    <div class="toolbar-group" aria-label="Panel"><button id="sidebar-toggle" class="tool-button icon-tool" aria-label="Hide problem panel" title="Problem panel (P)">☰</button></div>
+    <div class="toolbar-group" aria-label="Draw">${toolbarSplitPaletteHtml("add-material", "Material", QUICK_SHAPES, quickShapes.material)}${toolbarSplitPaletteHtml("add-cutout", "Cut-out", QUICK_SHAPES, quickShapes.cutout, "▱")}${toolbarSplitPaletteHtml("add-item", "Item", QUICK_SHAPES, quickShapes.item)}${toolbarSplitPaletteHtml("add-exclusion", "Exclusion", QUICK_SHAPES, quickShapes.exclusion, "⊘")}</div>
+    <div class="toolbar-group" aria-label="Edit"><label class="toolbar-color" title="Selected part colour"><input id="toolbar-part-color" type="color" aria-label="Selected part colour" value="#51c6a4"></label><button id="delete-selection" class="tool-button danger-tool icon-tool" aria-label="Delete selection" title="Delete selection (Delete)">⌫</button></div>
+    <div class="toolbar-group" aria-label="View">${toolbarSplitPaletteHtml("add-drafting", "Drafting", QUICK_DRAFTING, quickDrafting)}<button id="toggle-grid-snap" class="tool-button icon-tool active" aria-label="Disable grid snapping" aria-pressed="true">⌗</button><button id="respect-manual-constraints" class="tool-button icon-tool active" aria-label="Toggle manual collision guard" aria-pressed="true">♢</button>${toolbarActionPaletteHtml("toggle-dimensions", "Dimensions", "▤", [{ value: "create", icon: "↔", label: "Dimension between two points", detail: "Click a start and end point" }], "Dimensions · hover for actions (D)")}<button id="toggle-clearance" class="tool-button compact-overlay" aria-label="Spacing" aria-pressed="false" title="Spacing overlay (G)">◌</button><button id="open-view-settings" class="tool-button icon-tool" aria-label="View settings" aria-pressed="false" title="View settings">⚙</button></div>
     <span class="tool-spacer"></span>
     <div class="toolbar-group" aria-label="History"><button id="undo" class="tool-button" aria-label="Undo" title="Undo (Ctrl/⌘+Z)" disabled>↶</button><button id="redo" class="tool-button" aria-label="Redo" title="Redo (Ctrl/⌘+Shift+Z)" disabled>↷</button></div>
-    <div class="toolbar-group" aria-label="Analysis and output"><button id="open-diagnostics" class="tool-button icon-tool" aria-label="Diagnostics" title="Diagnostics">⚙</button><button id="open-sensitivity" class="tool-button icon-tool" aria-label="Sensitivity" title="Sensitivity analysis (2)">∿</button><button id="open-export" class="tool-button icon-tool" aria-label="Export" title="Export (E)">⇩</button><button id="open-shortcuts" class="tool-button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">⌨</button><button id="theme-toggle" class="tool-button" aria-label="Toggle theme">◐</button></div>
+    <div class="toolbar-group" aria-label="Output"><button id="theme-toggle" class="tool-button icon-tool" aria-label="Toggle theme" title="Toggle light/dark theme">◐</button><button id="open-export" class="tool-button labeled-tool" aria-label="Export" title="Export (E)"><span aria-hidden="true">⇩</span>Export</button><details class="toolbar-more"><summary class="tool-button labeled-tool" aria-label="More tools"><span aria-hidden="true">•••</span>More</summary><div class="more-menu">
+      <button id="lock-selection" aria-label="Lock selection">⌑ <span>Lock selection</span></button><button id="join-material" aria-label="Unify selected material">⌁ <span>Unify material</span></button><button id="open-diagnostics" aria-label="Diagnostics">⚙ <span>Diagnostics</span></button><button id="open-sensitivity" aria-label="Sensitivity">∿ <span>Sensitivity</span></button><button id="open-shortcuts" aria-label="Keyboard shortcuts">⌨ <span>Keyboard shortcuts</span></button>
+    </div></details></div>
+    <div hidden><button id="draw-dimension"></button><button id="open-drafting-aids"></button><button id="add-vertical-guide"></button><button id="add-horizontal-guide"></button><button id="draw-drafting-line"></button><button id="draw-drafting-polyline"></button><button id="add-trace-image"></button><button id="add-scene-text"></button></div>
   </div>`;
 }
 

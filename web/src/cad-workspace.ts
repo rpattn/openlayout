@@ -19,7 +19,7 @@ export interface CadWorkspaceCallbacks {
   onSelect(selection: CadSelection | null, partIndex?: number, additive?: boolean): void;
   onMarquee(selections: CadSelection[], additive: boolean): void;
   onDefinitionChange(selection: Exclude<CadSelection, { kind: "placement" }>, previous: EditorState): void;
-  onPlacementChange(index: number, placement: Placement): void;
+  onPlacementChange(previous: Placement[], current: Placement[]): void;
   onDraftingPath(points: Point[]): void;
   onConstructionGuide(point: Point, rotation: number): void;
   onDimensionCreate(start: Point, end: Point): void;
@@ -43,6 +43,7 @@ export class CadWorkspace {
   private clearance = false;
   private fitted = false;
   private respectFixed = true;
+  private presentationMode: "edit" | "results" = "edit";
   private draftTool: "line" | "polyline" | null = null;
   private draftPoints: Point[] = [];
   private draftHover: Point | null = null;
@@ -95,6 +96,15 @@ export class CadWorkspace {
   }
 
   setRespectFixed(value: boolean): void { this.respectFixed = value; }
+
+  setPresentationMode(mode: "edit" | "results"): void {
+    this.presentationMode = mode;
+    this.svg.classList.toggle("results-mode", mode === "results");
+    if (mode === "results" && this.selection?.kind !== "placement") {
+      this.selection = null; this.selections = [];
+    }
+    this.render();
+  }
 
   setDraftTool(tool: "line" | "polyline" | null): void {
     this.draftTool = tool; this.draftPoints = []; this.draftHover = null;
@@ -198,30 +208,31 @@ export class CadWorkspace {
     this.svg.setAttribute("viewBox", `${this.view.minX} ${y} ${this.view.width} ${this.view.height}`);
     const scale = this.view.width / Math.max(this.svg.clientWidth, 1);
     this.svg.style.setProperty("--cad-edge-width", `${this.state.viewSettings.edgeThickness}px`);
-    const samples = this.itemSamples();
+    const editing = this.presentationMode === "edit";
+    const samples = editing ? this.itemSamples() : [];
     this.svg.innerHTML = `<rect class="cad-background" data-cad-background x="${this.view.minX}" y="${y}" width="${this.view.width}" height="${this.view.height}"/>
-      <g class="cad-grid">${this.state.viewSettings.showGrid ? gridMarkup(this.view, this.state.drafting.gridStep) : ""}</g>
-      ${traceImageMarkup(this.state)}
+      <g class="cad-grid">${editing && this.state.viewSettings.showGrid ? gridMarkup(this.view, this.state.drafting.gridStep) : ""}</g>
+      ${editing ? traceImageMarkup(this.state) : ""}
       <g class="cad-container"><defs><clipPath id="container-union-clip"><path fill-rule="evenodd" d="${compoundPath(this.resolved.container)}"/></clipPath></defs>
         ${this.problem.container.parts.map((part, index) => polygons(part.shape, part.rotation_deg, part.translation.x, part.translation.y).map((polygon) => `<path class="cad-part-color container" clip-path="url(#container-union-clip)" style="fill:${containerColor(this.state.containerParts[index]?.primitive)}" d="${path(polygon)}"/>`).join("")).join("")}
         <path data-unified-geometry="container" class="cad-region unified ${this.selections.some((entry) => entry.kind === "container") ? "selected" : ""}" style="fill:transparent" fill-rule="evenodd" d="${compoundPath(this.resolved.container)}"/>
-        ${this.problem.container.parts.map((part, index) => polygons(part.shape, part.rotation_deg, part.translation.x, part.translation.y).map((polygon) => `<path ${this.isLocked({ kind: "container", index }) ? "" : `data-cad-kind="container" data-cad-index="${index}"`} class="cad-source-hit ${this.isLocked({ kind: "container", index }) ? "locked" : this.isSelected({ kind: "container", index }) ? "selected" : ""}" d="${path(polygon)}"/>`).join("")).join("")}</g>
+        ${editing ? this.problem.container.parts.map((part, index) => polygons(part.shape, part.rotation_deg, part.translation.x, part.translation.y).map((polygon) => `<path ${this.isLocked({ kind: "container", index }) ? "" : `data-cad-kind="container" data-cad-index="${index}"`} class="cad-source-hit ${this.isLocked({ kind: "container", index }) ? "locked" : this.isSelected({ kind: "container", index }) ? "selected" : ""}" d="${path(polygon)}"/>`).join("")).join("") : ""}</g>
       ${this.clearance ? this.containerClearanceMarkup() : ""}
       <g class="cad-exclusions">${this.problem.exclusions.map((entry, index) => {
         const selected = this.isSelected({ kind: "exclusion", index });
         const visible = this.resolved.exclusions.find((geometry) => geometry.id === entry.id)?.polygons ?? [];
         const sources = sourcePartPolygons(entry.shape);
         const locked = this.isLocked({ kind: "exclusion", index });
-        return `<defs><clipPath id="exclusion-union-clip-${index}"><path fill-rule="evenodd" d="${compoundPath(visible)}"/></clipPath></defs>${sources.map((partPolygons, partIndex) => partPolygons.map((polygon) => `<path class="cad-part-color exclusion" clip-path="url(#exclusion-union-clip-${index})" style="fill:${editorColor(this.state.exclusions[index]?.parts[partIndex], "#ee716f")}" d="${path(polygon)}"/>`).join("")).join("")}<path data-unified-geometry="exclusion:${index}" class="cad-exclusion unified ${selected ? "selected" : ""}" style="fill:transparent" fill-rule="evenodd" d="${compoundPath(visible)}"/>${sources.map((partPolygons, partIndex) => partPolygons.map((polygon) => `<path ${locked ? "" : `data-cad-kind="exclusion" data-cad-index="${index}" data-cad-part="${partIndex}"`} class="cad-source-hit ${locked ? "locked" : this.isSelected({ kind: "exclusion", index, partIndex }) ? "selected" : ""}" d="${path(polygon)}"/>`).join("")).join("")}`;
+        return `<defs><clipPath id="exclusion-union-clip-${index}"><path fill-rule="evenodd" d="${compoundPath(visible)}"/></clipPath></defs>${sources.map((partPolygons, partIndex) => partPolygons.map((polygon) => `<path class="cad-part-color exclusion" clip-path="url(#exclusion-union-clip-${index})" style="fill:${editorColor(this.state.exclusions[index]?.parts[partIndex], "#ee716f")}" d="${path(polygon)}"/>`).join("")).join("")}<path data-unified-geometry="exclusion:${index}" class="cad-exclusion unified ${selected ? "selected" : ""}" style="fill:transparent" fill-rule="evenodd" d="${compoundPath(visible)}"/>${editing ? sources.map((partPolygons, partIndex) => partPolygons.map((polygon) => `<path ${locked ? "" : `data-cad-kind="exclusion" data-cad-index="${index}" data-cad-part="${partIndex}"`} class="cad-source-hit ${locked ? "locked" : this.isSelected({ kind: "exclusion", index, partIndex }) ? "selected" : ""}" d="${path(polygon)}"/>`).join("")).join("") : ""}`;
       }).join("")}</g>
       ${this.clearance ? this.exclusionClearanceMarkup() : ""}
       <g class="cad-placements">${this.placements.map((placement, index) => this.placementMarkup(placement, index)).join("")}</g>
       <g class="cad-library">${samples.map((sample, index) => this.itemSampleMarkup(sample, index)).join("")}</g>
       ${this.dimensions ? this.dimensionMarkup() : ""}
-      ${this.dimensions ? this.customDimensionMarkup(scale) : ""}
-      ${draftingMarkup(this.draftingMarkupContext())}
-      ${traceImageHitMarkup(this.draftingMarkupContext())}
-      ${this.selections.length > 1 ? this.multiSelectionMarkup(scale) : this.selection ? this.selectionHandles(this.selection, scale) : ""}
+      ${editing && this.dimensions ? this.customDimensionMarkup(scale) : ""}
+      ${editing ? draftingMarkup(this.draftingMarkupContext()) : ""}
+      ${editing ? traceImageHitMarkup(this.draftingMarkupContext()) : ""}
+      ${this.selections.length > 1 ? this.multiSelectionMarkup(scale) : this.selection && (editing || this.selection.kind === "placement") ? this.selectionHandles(this.selection, scale) : ""}
       ${guidePreviewMarkup(this.guideTool, this.guideHover, this.view, scale)}
       ${draftPreviewMarkup(this.draftTool, this.draftPoints, this.draftHover, scale)}
       ${dimensionPreviewMarkup(this.dimensionTool, this.dimensionPoints, this.dimensionHover, scale, this.state.viewSettings)}
@@ -400,7 +411,7 @@ export class CadWorkspace {
       if (!placement) return;
       this.selection = { kind: "placement", index };
       this.callbacks.onSelect(this.selection);
-      this.drag = { mode: "rotate", startClient: { x: event.clientX, y: event.clientY }, startWorld: this.eventPoint(event), placementIndex: index, originalPlacement: { ...placement }, moved: false };
+      this.drag = { mode: "rotate", startClient: { x: event.clientX, y: event.clientY }, startWorld: this.eventPoint(event), placementIndex: index, originalPlacement: { ...placement }, originalPlacements: structuredClone(this.placements), moved: false };
       this.svg.setPointerCapture(event.pointerId);
       return;
     }
@@ -437,7 +448,7 @@ export class CadWorkspace {
       this.callbacks.onSelect(selection, partIndex);
       if (selection.kind === "placement") {
         const placement = this.placements[selection.index];
-        this.drag = { mode: "placement", startClient: { x: event.clientX, y: event.clientY }, startWorld: this.eventPoint(event), placementIndex: selection.index, originalPlacement: { ...placement }, moved: false };
+        this.drag = { mode: "placement", startClient: { x: event.clientX, y: event.clientY }, startWorld: this.eventPoint(event), placementIndex: selection.index, originalPlacement: { ...placement }, originalPlacements: structuredClone(this.placements), moved: false };
         this.svg.setPointerCapture(event.pointerId);
       } else if ((selection.kind === "item" || selection.kind === "exclusion") && selection.partIndex !== undefined) {
         this.drag = {
@@ -623,9 +634,9 @@ export class CadWorkspace {
     if (drag.moved && isPlacementInteraction(drag)) {
       if (this.respectFixed && drag.mode === "placement" && !this.placementSatisfiesConstraints(drag.placementIndex)) {
         const adjusted = this.closestFeasiblePlacement(drag.placementIndex, drag.originalPlacement);
-        if (adjusted) { Object.assign(this.placements[drag.placementIndex], adjusted); this.callbacks.onPlacementChange(drag.placementIndex, this.placements[drag.placementIndex]); this.callbacks.onPlacementAdjusted?.(drag.placementIndex); }
+        if (adjusted) { Object.assign(this.placements[drag.placementIndex], adjusted); this.callbacks.onPlacementChange(drag.originalPlacements, structuredClone(this.placements)); this.callbacks.onPlacementAdjusted?.(drag.placementIndex); }
         else { Object.assign(this.placements[drag.placementIndex], drag.originalPlacement); this.callbacks.onPlacementRejected?.(drag.placementIndex); }
-      } else this.callbacks.onPlacementChange(drag.placementIndex, this.placements[drag.placementIndex]);
+      } else this.callbacks.onPlacementChange(drag.originalPlacements, structuredClone(this.placements));
     }
     if (drag.moved && isDefinitionInteraction(drag)) this.callbacks.onDefinitionChange(drag.selection, drag.originalState);
     if (drag.moved && drag.mode === "dimension") this.callbacks.onDimensionChange(drag.partIndex, drag.originalState);
@@ -633,7 +644,7 @@ export class CadWorkspace {
     if (drag.moved && isGroupInteraction(drag)) {
       const definition = this.selections.find((entry): entry is Exclude<CadSelection, { kind: "placement" }> => entry.kind !== "placement");
       if (definition) this.callbacks.onDefinitionChange(definition, drag.originalState);
-      this.selections.forEach((entry) => { if (entry.kind === "placement" && this.placements[entry.index]) this.callbacks.onPlacementChange(entry.index, this.placements[entry.index]); });
+      if (this.selections.some((entry) => entry.kind === "placement")) this.callbacks.onPlacementChange(drag.originalPlacements, structuredClone(this.placements));
     }
     this.render();
   }
@@ -1417,15 +1428,17 @@ export class CadWorkspace {
   private sceneBounds(): Bounds {
     const points = this.problem.container.parts.flatMap((part) => polygons(part.shape, part.rotation_deg, part.translation.x, part.translation.y).flat());
     this.problem.exclusions.forEach((entry) => points.push(...polygons(entry.shape).flat()));
-    this.itemSamples().forEach((sample) => points.push(...sample.polygons.flat()));
+    if (this.presentationMode === "edit") this.itemSamples().forEach((sample) => points.push(...sample.polygons.flat()));
     this.placements.forEach((placement) => {
       const item = this.problem.items.find((entry) => entry.id === placement.item_id);
       if (item) points.push(...polygons(item.shape, placement.rotation_deg, placement.x, placement.y).flat());
     });
-    this.state.drafting.traceImages.forEach((_, index) => { const bounds = this.selectionBounds({ kind: "trace", index }); if (bounds) points.push({ x: bounds.minX, y: bounds.minY }, { x: bounds.maxX, y: bounds.maxY }); });
-    this.state.drafting.texts.forEach((_, index) => { const bounds = this.selectionBounds({ kind: "text", index }); if (bounds) points.push({ x: bounds.minX, y: bounds.minY }, { x: bounds.maxX, y: bounds.maxY }); });
-    this.state.drafting.shapes.forEach((shape) => points.push(...draftingWorldPoints(shape)));
-    this.state.dimensions.forEach((dimension) => points.push(dimension.start, dimension.end, { x: dimension.start.x + dimension.offset.x, y: dimension.start.y + dimension.offset.y }, { x: dimension.end.x + dimension.offset.x, y: dimension.end.y + dimension.offset.y }));
+    if (this.presentationMode === "edit") this.state.drafting.traceImages.forEach((_, index) => { const bounds = this.selectionBounds({ kind: "trace", index }); if (bounds) points.push({ x: bounds.minX, y: bounds.minY }, { x: bounds.maxX, y: bounds.maxY }); });
+    if (this.presentationMode === "edit") {
+      this.state.drafting.texts.forEach((_, index) => { const bounds = this.selectionBounds({ kind: "text", index }); if (bounds) points.push({ x: bounds.minX, y: bounds.minY }, { x: bounds.maxX, y: bounds.maxY }); });
+      this.state.drafting.shapes.forEach((shape) => points.push(...draftingWorldPoints(shape)));
+      this.state.dimensions.forEach((dimension) => points.push(dimension.start, dimension.end, { x: dimension.start.x + dimension.offset.x, y: dimension.start.y + dimension.offset.y }, { x: dimension.end.x + dimension.offset.x, y: dimension.end.y + dimension.offset.y }));
+    }
     return points.length ? pointBounds(points) : this.containerBounds();
   }
 }

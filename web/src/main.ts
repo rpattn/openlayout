@@ -11,11 +11,12 @@ import { escapeHtml, formatNumber, humanize } from "./ui-utils";
 import { editorColor } from "./design-tokens";
 import { downloadBlob, downloadLayoutPng, downloadText, layoutToSvg, placementsCsv, safeFilename, shapesToSvg } from "./export-service";
 import { decodeParameter, parameterCatalog, parameterCurrentValue, stateAtParameter, studyValues } from "./sensitivity-model";
-import { bindToolbarPalette, closeToolbarPalettes } from "./toolbar-palette";
+import { bindToolbarActionPalette, bindToolbarSplitPalette, closeToolbarPalettes } from "./toolbar-palette";
 import { shortcutsMarkup } from "./shortcuts";
 import { renderInspector } from "./inspector-markup";
 import { studioShellHtml } from "./studio-shell";
 import { packingSidebarHtml } from "./packing-sidebar";
+import { packingOutcome } from "./packing-results";
 import { diagnosticsHtml, metricsHtml, parameterMatchesHtml, sensitivitySidebarHtml, studyStepsHtml, transitionsHtml } from "./sensitivity-markup";
 import { exportOptionsHtml, projectDialogHtml } from "./dialog-markup";
 import type {
@@ -25,6 +26,14 @@ import type {
 
 type PageName = "packing" | "sensitivity";
 type StatusTone = "neutral" | "working" | "success" | "error";
+type WorkspaceMode = "edit" | "running" | "results";
+interface StudioSnapshot {
+  state: EditorState;
+  result: SolveResult | null;
+  manualLayout: boolean;
+  resultStale: boolean;
+  mode: WorkspaceMode;
+}
 
 await initGeometryResolver();
 
@@ -33,7 +42,7 @@ const client = new SolverClient();
 const projects = new WorkspaceStore();
 await projects.recoverDurable();
 void projects.requestPersistentStorage();
-const history = new WorkspaceHistory();
+const history = new WorkspaceHistory<StudioSnapshot>();
 let state = structuredClone(projects.active.state);
 let page: PageName = "packing";
 let currentResult: SolveResult | null = null;
@@ -53,20 +62,27 @@ let cad: CadWorkspace;
 let running = false;
 let manualLayout = false;
 let resultStale = false;
+let workspaceMode: WorkspaceMode = "edit";
 let draftingShapeMode = false;
 let activeDraftPathTool: "line" | "polyline" | null = null;
 let activeGuideRotation: number | null = null;
 let activeDimensionTool = false;
 const display = { dimensions: state.viewSettings.showDimensions, clearance: state.viewSettings.showClearance };
 const studyDisplay = { dimensions: false, clearance: false };
+type QuickShapeRole = "material" | "cutout" | "item" | "exclusion";
+type QuickDraftingTool = "vertical-guide" | "horizontal-guide" | "line" | "polyline" | "rectangle" | "circle" | "trace" | "text" | "settings";
+const quickShapes: Record<QuickShapeRole, PrimitiveEditor["kind"]> = {
+  material: rememberedQuickShape("material"), cutout: rememberedQuickShape("cutout"), item: rememberedQuickShape("item"), exclusion: rememberedQuickShape("exclusion"),
+};
+let quickDrafting = rememberedQuickDrafting();
 
-root.innerHTML = studioShellHtml({ defaultOwner: state.drafting.defaultOwner, studyDisplay });
+root.innerHTML = studioShellHtml({ studyDisplay, quickShapes, quickDrafting });
 applyTheme(projects.theme);
 cad = new CadWorkspace(document.getElementById("cad-canvas") as unknown as SVGSVGElement, state, toProblem(state), {
   onSelect: selectCad,
   onMarquee: selectMarquee,
   onDefinitionChange: definitionChanged,
-  onPlacementChange: placementChanged,
+  onPlacementChange: placementTransaction,
   onDraftingPath: (points) => addDraftingPath(points, false),
   onConstructionGuide: placeConstructionGuide,
   onDimensionCreate: addDimension,
@@ -82,8 +98,17 @@ renderDraftingPanel();
 renderViewSettingsPanel();
 renderSensitivitySidebar();
 updateHistoryButtons();
+syncWorkspaceMode();
 
 function bindShell(): void {
+  const toolbarHints: Record<string, string> = {
+    validate: "Validate problem (V)", "open-sensitivity": "Sensitivity analysis (2)", "open-shortcuts": "Keyboard shortcuts (?)",
+    "open-diagnostics": "Diagnostics", "toggle-grid-snap": "Grid snapping on · hold Alt to bypass", "open-drafting-aids": "Drafting settings",
+    "add-vertical-guide": "Vertical guide", "add-horizontal-guide": "Horizontal guide", "draw-drafting-line": "2-point line",
+    "draw-drafting-polyline": "Polyline · Enter to finish", "draw-dimension": "Dimension between two points",
+    "add-trace-image": "Trace image", "add-scene-text": "Text annotation", "theme-toggle": "Toggle theme",
+  };
+  Object.entries(toolbarHints).forEach(([id, title]) => { element<HTMLElement>(id).title = title; });
   element("open-projects").addEventListener("click", openProjects);
   element<HTMLSelectElement>("quick-project").addEventListener("change", (event) => { projects.save(state); loadProject((event.target as HTMLSelectElement).value); });
   element("open-diagnostics").addEventListener("click", () => element<HTMLDialogElement>("diagnostics-dialog").showModal());
@@ -98,13 +123,14 @@ function bindShell(): void {
   element("focus-selection").addEventListener("click", () => cad.focusSelection());
   element("zoom-in").addEventListener("click", () => cad.zoom(.8));
   element("zoom-out").addEventListener("click", () => cad.zoom(1.25));
-  document.querySelectorAll<HTMLButtonElement>("[data-toolbar-shape]").forEach((button) => button.addEventListener("click", () => addGeometry(button.dataset.toolbarShape as PrimitiveEditor["kind"])));
-  bindToolbarPalette("toolbar-add-shape", (value) => addGeometry(value as PrimitiveEditor["kind"]));
-  bindToolbarPalette("toolbar-default-owner", (value) => {
-    const owner = value as EditorState["drafting"]["defaultOwner"];
-    mutate(() => { state.drafting.defaultOwner = owner; }, false);
-    setStatus("neutral", `Unselected new shapes will become ${owner === "cutout" ? "container cut-outs" : owner + " geometry"}`);
-  }, true);
+  document.querySelectorAll<HTMLButtonElement>(".more-menu > button").forEach((button) => button.addEventListener("click", () => button.closest("details")?.removeAttribute("open")));
+  (["material", "cutout", "item", "exclusion"] as const).forEach((role) => bindToolbarSplitPalette(`add-${role}`, (shape) => {
+    const kind = shape as PrimitiveEditor["kind"];
+    if (role === "material" && selection?.kind === "container" && !isLocked(selection) && state.containerParts[selection.index]?.operation === "add") addGeometry(kind);
+    else addObject(role, kind);
+  }, (shape) => rememberQuickShape(role, shape as PrimitiveEditor["kind"])));
+  bindToolbarSplitPalette("add-drafting", (tool) => runDraftingTool(tool as QuickDraftingTool), (tool) => rememberQuickDrafting(tool as QuickDraftingTool));
+  bindToolbarActionPalette("toggle-dimensions", () => toggleOverlay("dimensions"), () => toggleDimensionTool(true));
   element<HTMLInputElement>("toolbar-part-color").addEventListener("input", (event) => mutate(() => {
     const color = (event.target as HTMLInputElement).value;
     selectedPrimitivesForColor().forEach((part) => { part.color = color; });
@@ -113,7 +139,6 @@ function bindShell(): void {
   element("join-material").addEventListener("click", joinSelectedMaterial);
   element("lock-selection").addEventListener("click", toggleSelectionLock);
   element("delete-selection").addEventListener("click", deleteToolbarSelection);
-  element("toggle-dimensions").addEventListener("click", () => toggleOverlay("dimensions"));
   element("toggle-clearance").addEventListener("click", () => toggleOverlay("clearance"));
   element("toggle-grid-snap").addEventListener("click", () => {
     mutate(() => { state.drafting.snapToGrid = !state.drafting.snapToGrid; });
@@ -144,11 +169,6 @@ function bindShell(): void {
   element("add-horizontal-guide").addEventListener("click", () => setConstructionGuideTool(0));
   element("draw-drafting-line").addEventListener("click", () => setDraftPathTool("line"));
   element("draw-drafting-polyline").addEventListener("click", () => setDraftPathTool("polyline"));
-  element("drafting-shape-mode").addEventListener("click", () => {
-    draftingShapeMode = !draftingShapeMode;
-    const button = element<HTMLButtonElement>("drafting-shape-mode"); button.classList.toggle("active", draftingShapeMode); button.setAttribute("aria-pressed", String(draftingShapeMode));
-    setStatus("neutral", draftingShapeMode ? "Shape buttons now create drafting geometry" : "Shape buttons create problem geometry");
-  });
   bindTraceImageInput(element<HTMLInputElement>("toolbar-trace-image-input"));
   element("undo").addEventListener("click", undo);
   element("redo").addEventListener("click", redo);
@@ -157,6 +177,8 @@ function bindShell(): void {
   element("solve").addEventListener("click", () => void solve());
   element("validate").addEventListener("click", () => void validate());
   element("cancel").addEventListener("click", cancel);
+  element("result-export").addEventListener("click", openExport);
+  element("return-to-edit").addEventListener("click", returnToEdit);
   element("copy-result").addEventListener("click", () => void copyResult());
   const canvas = document.getElementById("cad-canvas") as unknown as SVGSVGElement, contextMenu = element("cad-context-menu");
   canvas.addEventListener("contextmenu", (event) => {
@@ -179,9 +201,10 @@ function bindShell(): void {
   });
   document.addEventListener("pointerdown", (event) => {
     if (!(event.target as Element).closest("#cad-context-menu")) contextMenu.hidden = true;
-    if (!(event.target as Element).closest(".tool-popover")) closeToolbarPalettes();
+    if (!(event.target as Element).closest(".tool-popover, .tool-split, [data-toolbar-action]")) closeToolbarPalettes();
     if (!(event.target as Element).closest("#drafting-panel, #open-drafting-aids")) closeDraftingPanel();
     if (!(event.target as Element).closest("#view-settings-panel, #open-view-settings")) closeViewSettingsPanel();
+    if (!(event.target as Element).closest(".toolbar-more")) document.querySelector(".toolbar-more")?.removeAttribute("open");
   });
   contextMenu.querySelectorAll<HTMLButtonElement>("[data-context-action]").forEach((button) => button.addEventListener("click", () => {
     contextMenu.hidden = true;
@@ -193,7 +216,9 @@ function bindShell(): void {
     else if (button.dataset.contextAction === "back") reorderContextSelection("back");
     else if (button.dataset.contextAction === "reset-rotation") resetSelectionRotation();
     else if (button.dataset.contextAction === "delete") deleteToolbarSelection();
-    else if (selection?.kind === "placement" && currentResult?.placements[selection.index]) { currentResult.placements[selection.index].fixed = !currentResult.placements[selection.index].fixed; placementChanged(selection.index, currentResult.placements[selection.index]); }
+    else if (selection?.kind === "placement" && currentResult?.placements[selection.index]) {
+      applyPlacementEdit(() => { currentResult!.placements[selection!.index].fixed = !currentResult!.placements[selection!.index].fixed; }, "Packed item fixed state changed");
+    }
   }));
   bindOverlay("study", studyDisplay);
   const chart = element<HTMLCanvasElement>("sensitivity-canvas");
@@ -268,6 +293,24 @@ function toggleSidebar(): void {
   requestAnimationFrame(() => cad.fit());
 }
 
+function returnToEdit(): void {
+  workspaceMode = "edit"; selection = { kind: "container", index: 0 }; selections = [selection];
+  syncWorkspaceMode(); refreshPacking(true); renderPackingSidebar(); setStatus("neutral", "Returned to packing setup; the latest layout is retained");
+}
+
+function syncWorkspaceMode(): void {
+  const shell = element("cad-shell"); shell.dataset.mode = workspaceMode;
+  const inResults = workspaceMode === "results";
+  cad.setPresentationMode(inResults ? "results" : "edit");
+  const solveButton = element<HTMLButtonElement>("solve"); solveButton.textContent = inResults ? "Repack" : "Run packing";
+  document.querySelectorAll<HTMLElement>(".result-action").forEach((button) => { button.hidden = !inResults; });
+  if (inResults && selection?.kind !== "placement") { selection = null; selections = []; cad.setSelection(null); }
+  if (workspaceMode !== "running") element("workspace-summary").textContent = currentResult
+    ? manualLayout ? `${currentResult.packed_item_count} items · manual layout`
+      : resultStale ? `${currentResult.packed_item_count} packed items · stale` : `${currentResult.packed_item_count} packed items`
+    : "Problem definition";
+}
+
 function toggleOverlay(key: keyof typeof display): void {
   display[key] = !display[key];
   if (key === "dimensions") state.viewSettings.showDimensions = display[key]; else state.viewSettings.showClearance = display[key];
@@ -301,6 +344,7 @@ function selectCad(next: CadSelection | null, partIndex?: number, additive = fal
   if ((next?.kind === "item" || next?.kind === "exclusion") && partIndex !== undefined) selectedPartIndex = partIndex;
   cad.setSelection(selection, selectedPartIndex, selections);
   renderPackingSidebar();
+  requestAnimationFrame(() => { element("packing-sidebar").scrollTop = 0; });
   updateToolbarState();
 }
 
@@ -314,6 +358,7 @@ function selectMarquee(next: CadSelection[], additive: boolean): void {
   selectedPartIndex = 0;
   cad.setSelection(selection, selectedPartIndex, selections);
   renderPackingSidebar();
+  requestAnimationFrame(() => { element("packing-sidebar").scrollTop = 0; });
 }
 
 function renderPackingSidebar(): void {
@@ -321,15 +366,30 @@ function renderPackingSidebar(): void {
   quickProject.innerHTML = projects.projects.map((project) => `<option value="${project.id}" ${project.id === projects.activeProjectId ? "selected" : ""}>${escapeHtml(project.name)}</option>`).join("");
   element("active-project-name").textContent = projects.active.name;
   const sidebar = element("packing-sidebar");
+  const inspectorKey = selection ? `${selection.kind}:${selection.index}:${selectedPartIndex}` : "none";
+  const previousInspector = sidebar.querySelector<HTMLElement>("#selection-inspector");
+  const openInspectorDetails = previousInspector?.dataset.selectionKey === inspectorKey
+    ? Array.from(previousInspector.querySelectorAll<HTMLDetailsElement>("details[open][data-inspector-detail]")).map((details) => details.dataset.inspectorDetail!)
+    : [];
   sidebar.innerHTML = packingSidebarHtml({
     state,
     selection,
     selections,
     lockedSelections: lockedSelections(),
     inspectorHtml: selectionInspector(),
+    mode: workspaceMode,
+    outcome: currentResult ? packingOutcome(toProblem(state), currentResult) : null,
+    resultWarnings: currentResult?.warnings ?? [],
     isLocked,
     selectionLabel,
   });
+  const nextInspector = sidebar.querySelector<HTMLElement>("#selection-inspector");
+  if (nextInspector) {
+    nextInspector.dataset.selectionKey = inspectorKey;
+    openInspectorDetails.forEach((key) => {
+      nextInspector.querySelector<HTMLDetailsElement>(`details[data-inspector-detail="${key}"]`)?.setAttribute("open", "");
+    });
+  }
   applySidebarTooltips(sidebar);
   sidebar.querySelectorAll<HTMLElement>("[data-cad-select]").forEach((node) => node.addEventListener("click", (event) => {
     const next = parseSelection(node.dataset.cadSelect!); selectCad(next, undefined, event.ctrlKey || event.metaKey);
@@ -344,8 +404,7 @@ function renderPackingSidebar(): void {
   }, false)));
   sidebar.querySelectorAll<HTMLInputElement>("[data-placement-field]").forEach((input) => input.addEventListener("change", () => {
     if (selection?.kind !== "placement" || !currentResult) return;
-    setField(currentResult.placements[selection.index], input.dataset.placementField!, Number(input.value));
-    placementChanged(selection.index, currentResult.placements[selection.index]);
+    applyPlacementEdit(() => setField(currentResult!.placements[selection!.index], input.dataset.placementField!, Number(input.value)), "Packed item properties changed");
   }));
   bindInlineInspector(sidebar);
   bindFixedPlacements(sidebar);
@@ -387,7 +446,7 @@ function isLocked(value: CadSelection): boolean {
 
 function toggleSelectionLock(): void {
   if (!selection) return;
-  const before = structuredClone(state), unlocking = selections.length === 1 && isLocked(selection);
+  const before = captureSession(), unlocking = selections.length === 1 && isLocked(selection);
   if (unlocking) {
     const ref = cadLockReference(state, selection, currentResult?.placements);
     if (ref) state.lockedEntities = state.lockedEntities.filter((entry) => entry.kind !== ref.kind || entry.id !== ref.id);
@@ -396,7 +455,7 @@ function toggleSelectionLock(): void {
     refs.forEach((ref) => { if (!state.lockedEntities.some((entry) => entry.kind === ref.kind && entry.id === ref.id)) state.lockedEntities.push(ref); });
     selection = refs.length ? selectionForLock(refs.at(-1)!) : selection; selections = selection ? [selection] : [];
   }
-  history.commit(before, state); projects.save(state); updateHistoryButtons();
+  commitSession(before); projects.save(state); updateHistoryButtons();
   cad.setSelection(selection, selectedPartIndex, selections); renderPackingSidebar(); refreshPacking();
   setStatus("neutral", unlocking ? "Entity unlocked for CAD interaction" : "Selection locked against CAD interaction");
 }
@@ -548,14 +607,14 @@ function renderViewSettingsPanel(): void {
   panel.hidden = hidden;
   panel.querySelector("[data-close-view-settings]")?.addEventListener("click", closeViewSettingsPanel);
   panel.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-view-field]").forEach((input) => input.addEventListener("change", () => {
-    const before = structuredClone(state), key = input.dataset.viewField!;
+    const before = captureSession(), key = input.dataset.viewField!;
     if (key === "gridStep") state.drafting.gridStep = Math.max(.001, Number(input.value) || .5);
     else if (key === "showGrid") state.viewSettings.showGrid = (input as HTMLInputElement).checked;
     else if (key === "dimensionTextSize") state.viewSettings.dimensionTextSize = clampNumber(Number(input.value), 7, 28);
     else if (key === "edgeThickness") state.viewSettings.edgeThickness = clampNumber(Number(input.value), .5, 5);
     else if (key === "dimensionPrecision") state.viewSettings.dimensionPrecision = Math.round(clampNumber(Number(input.value), 0, 5));
     else if (key === "dimensionUnit") state.viewSettings.dimensionUnit = input.value;
-    history.commit(before, state); projects.save(state); updateHistoryButtons(); refreshPacking(); renderDraftingPanel(); renderViewSettingsPanel();
+    commitSession(before); projects.save(state); updateHistoryButtons(); refreshPacking(); renderDraftingPanel(); renderViewSettingsPanel();
     setStatus("neutral", "View settings saved");
   }));
   panel.querySelector<HTMLInputElement>("[data-view-overlay]")?.addEventListener("change", (event) => {
@@ -696,7 +755,7 @@ function selectedOwnerKey(): string {
 function partOwnerOptions(): string {
   const current = selectedOwnerKey();
   const options: Array<[string, string]> = [["container", "Container material"]];
-  state.items.forEach((item, index) => options.push([`item:${index}`, `Packable shape · ${item.id}`]));
+  state.items.forEach((item, index) => options.push([`item:${index}`, `Item to pack · ${item.id}`]));
   state.exclusions.forEach((entry, index) => options.push([`exclusion:${index}`, `Exclusion · ${entry.id}`]));
   return options.map(([value, label]) => `<option value="${value}" ${value === current ? "selected" : ""}>${escapeHtml(label)}</option>`).join("");
 }
@@ -763,13 +822,13 @@ function addDimension(start: Point, end: Point): void {
 }
 
 function dimensionChanged(index: number, previous: EditorState): void {
-  history.commit(previous, state); projects.save(state); updateHistoryButtons();
+  const before = captureSession(); before.state = structuredClone(previous); commitSession(before); projects.save(state); updateHistoryButtons();
   selection = { kind: "dimension", index }; selections = [selection]; renderPackingSidebar(); refreshPacking();
   setStatus("neutral", "Dimension position saved");
 }
 
 function automaticDimensionChanged(owner: string, previous: EditorState): void {
-  history.commit(previous, state); projects.save(state); updateHistoryButtons(); renderPackingSidebar(); refreshPacking();
+  const before = captureSession(); before.state = structuredClone(previous); commitSession(before); projects.save(state); updateHistoryButtons(); renderPackingSidebar(); refreshPacking();
   setStatus("neutral", `${owner.startsWith("clearance:") ? "Clearance dimension" : "Dimension"} position saved`);
 }
 
@@ -813,19 +872,19 @@ function addDraftingPath(points: Point[], closed: boolean): void {
   clearDraftPathTool();
 }
 
-function addObject(kind: string): void {
+function addObject(kind: string, shapeKind: PrimitiveEditor["kind"] = "rectangle"): void {
   mutate(() => {
     if (kind === "item") {
       const id = uniqueId("item", state.items.map((item) => item.id));
-      state.items.push({ id, quantity: 50, rotationMode: "continuous", rotationCoupling: "independent", rotations: "0, 90", minRotation: 0, maxRotation: 360, parts: [makePrimitive("rectangle")] });
+      state.items.push({ id, quantity: 50, rotationMode: "continuous", rotationCoupling: "independent", rotations: "0, 90", minRotation: 0, maxRotation: 360, parts: [makePrimitive(shapeKind)] });
       selection = { kind: "item", index: state.items.length - 1 };
     } else if (kind === "exclusion") {
-      const primitive = makePrimitive("rectangle"); placeAtContainerCenter(primitive);
+      const primitive = makePrimitive(shapeKind); placeAtContainerCenter(primitive);
       state.exclusions.push({ id: uniqueId("exclusion", state.exclusions.map((entry) => entry.id)), clearance: 0, parts: [primitive] });
       selection = { kind: "exclusion", index: state.exclusions.length - 1 };
     } else {
       const operation = kind === "material" ? "add" : "subtract";
-      const primitive = makePrimitive("rectangle"); placeAtContainerCenter(primitive);
+      const primitive = makePrimitive(shapeKind); placeAtContainerCenter(primitive);
       state.containerParts.push({ id: uniqueId(operation === "add" ? "material" : "cutout", state.containerParts.map((entry) => entry.id)), operation, primitive });
       selection = { kind: "container", index: state.containerParts.length - 1 };
     }
@@ -833,6 +892,41 @@ function addObject(kind: string): void {
     selections = selection ? [selection] : [];
   });
   refreshPacking(true);
+  requestAnimationFrame(() => { element("packing-sidebar").scrollTop = 0; });
+}
+
+function rememberedQuickShape(role: QuickShapeRole): PrimitiveEditor["kind"] {
+  const value = localStorage.getItem(`openlayout.quick-shape.${role}`);
+  return value === "circle" || value === "triangle" || value === "polygon" || value === "bezier" ? value : "rectangle";
+}
+
+function rememberQuickShape(role: QuickShapeRole, shape: PrimitiveEditor["kind"]): void {
+  quickShapes[role] = shape;
+  try { localStorage.setItem(`openlayout.quick-shape.${role}`, shape); } catch { /* Keep the in-memory quick choice. */ }
+}
+
+function rememberedQuickDrafting(): QuickDraftingTool {
+  const value = localStorage.getItem("openlayout.quick-drafting");
+  return value === "horizontal-guide" || value === "line" || value === "polyline" || value === "rectangle" || value === "circle" || value === "trace" || value === "text" || value === "settings" ? value : "vertical-guide";
+}
+
+function rememberQuickDrafting(tool: QuickDraftingTool): void {
+  quickDrafting = tool;
+  try { localStorage.setItem("openlayout.quick-drafting", tool); } catch { /* Keep the in-memory quick choice. */ }
+}
+
+function runDraftingTool(tool: QuickDraftingTool): void {
+  if (tool === "vertical-guide") setConstructionGuideTool(90);
+  else if (tool === "horizontal-guide") setConstructionGuideTool(0);
+  else if (tool === "line" || tool === "polyline") setDraftPathTool(tool);
+  else if (tool === "trace") element<HTMLInputElement>("toolbar-trace-image-input").click();
+  else if (tool === "text") addSceneText();
+  else if (tool === "settings") element<HTMLButtonElement>("open-drafting-aids").click();
+  else {
+    draftingShapeMode = true;
+    addGeometry(tool);
+    draftingShapeMode = false;
+  }
 }
 
 function addGeometry(kind: PrimitiveEditor["kind"]): void {
@@ -942,14 +1036,8 @@ function deleteMultipleSelections(): void {
   }
   if (!currentResult) return;
   const indexes = selections.map((entry) => entry.index).sort((a, b) => b - a);
-  indexes.forEach((index) => currentResult?.placements.splice(index, 1));
-  currentResult.packed_item_count = currentResult.placements.length;
-  currentResult.packed_count_by_item = currentResult.placements.reduce<Record<string, number>>((counts, placement) => {
-    counts[placement.item_id] = (counts[placement.item_id] ?? 0) + 1; return counts;
-  }, {});
-  manualLayout = true; selection = null; selections = [];
-  refreshPacking(); renderPackingSidebar(); updateDiagnostics();
-  setStatus("neutral", "Selected placements deleted · validation is now stale");
+  applyPlacementEdit(() => indexes.forEach((index) => currentResult?.placements.splice(index, 1)), "Selected packed items deleted");
+  selection = null; selections = []; refreshPacking(); renderPackingSidebar();
 }
 
 function deleteSelectedPart(): void {
@@ -975,6 +1063,7 @@ function updateToolbarState(): void {
   element<HTMLButtonElement>("delete-selection").disabled = selections.length === 0 || selections.some(isLocked) || (selections.length === 1 && (selection?.kind === "placement" || selection?.kind === "auto-dimension"));
   const lock = element<HTMLButtonElement>("lock-selection"), unlock = selections.length === 1 && !!selection && isLocked(selection);
   lock.disabled = selections.length === 0 || selection?.kind === "auto-dimension"; lock.setAttribute("aria-label", unlock ? "Unlock selection" : "Lock selection");
+  const lockLabel = lock.querySelector("span"); if (lockLabel) lockLabel.textContent = unlock ? "Unlock selection" : "Lock selection";
   lock.title = unlock ? "Unlock this entity for CAD interaction" : "Lock selected entities against CAD interaction";
   lock.classList.toggle("active", unlock);
   const color = element<HTMLInputElement>("toolbar-part-color"), parts = selectedPrimitivesForColor(), texts = selectedTextsForColor();
@@ -1049,7 +1138,7 @@ function reorderContextSelection(direction: "front" | "back"): void {
 function resetSelectionRotation(): void {
   if (!selection) return;
   if (selection.kind === "placement" && currentResult?.placements[selection.index]) {
-    currentResult.placements[selection.index].rotation_deg = 0; placementChanged(selection.index, currentResult.placements[selection.index]); return;
+    applyPlacementEdit(() => { currentResult!.placements[selection!.index].rotation_deg = 0; }, "Packed item rotation reset"); return;
   }
   mutate(() => {
     if (!selection) return;
@@ -1101,10 +1190,9 @@ function pasteItems(): void {
   if (placementClipboard.length && currentResult) {
     const start = currentResult.placements.length;
     const copies = placementClipboard.map((source) => ({ ...structuredClone(source), x: source.x + 1, y: source.y - 1, fixed: false }));
-    currentResult.placements.push(...copies); currentResult.packed_item_count = currentResult.placements.length;
+    applyPlacementEdit(() => currentResult!.placements.push(...copies), `${copies.length} packed item${copies.length === 1 ? "" : "s"} pasted`);
     selections = copies.map((_, offset) => ({ kind: "placement", index: start + offset })); selection = selections.at(-1) ?? null;
-    manualLayout = true; resultStale = true; refreshPacking(); renderPackingSidebar(); updateDiagnostics();
-    setStatus("neutral", `${copies.length} placement${copies.length === 1 ? "" : "s"} pasted · validation is stale`); return;
+    refreshPacking(); renderPackingSidebar(); return;
   }
   if (partClipboard?.parts.length) {
     mutate(() => {
@@ -1239,11 +1327,15 @@ function renderStudyGeometryPreview(): void {
 
 async function solve(): Promise<void> {
   if (running) return;
+  const before = captureSession();
   try {
-    const problem = toProblem(state); setRunning(true, "Preparing geometry…"); currentResult = null; manualLayout = false; resultStale = false;
+    const problem = toProblem(state); workspaceMode = "running"; setRunning(true, "Validating geometry…"); syncWorkspaceMode();
+    await client.validate(problem);
+    element("solve-stage").textContent = "Preparing geometry"; currentResult = null; manualLayout = false; resultStale = false;
     currentResult = await client.solve(problem, state.options, (progress) => updateProgress(problem, progress));
-    setStatus("success", `${currentResult.packed_item_count} items · ${state.options.baseline_only ? "Baseline validated" : humanize(currentResult.status)}`); showPackingResult(problem, currentResult);
-  } catch (error) { handleRunError(error); } finally { setRunning(false); }
+    workspaceMode = "results"; showPackingResult(problem, currentResult); commitSession(before); updateHistoryButtons();
+    setStatus("success", `${currentResult.packed_item_count} items · ${state.options.baseline_only ? "Baseline validated" : humanize(currentResult.status)}`);
+  } catch (error) { restoreSession(before); refreshPacking(true); renderPackingSidebar(); handleRunError(error); } finally { setRunning(false); syncWorkspaceMode(); }
 }
 
 async function validate(): Promise<void> {
@@ -1272,24 +1364,42 @@ function updateProgress(problem: PackingProblem, progress: SolveProgress): void 
 }
 
 function showPackingResult(problem: PackingProblem, result: SolveResult): void {
-  cad.setModel(state, problem, result.placements);
+  workspaceMode = "results"; cad.setPresentationMode("results"); cad.setModel(state, problem, result.placements, true);
   element("workspace-summary").textContent = `${result.packed_item_count} packed items`;
-  updateDiagnostics();
+  updateDiagnostics(); renderPackingSidebar(); syncWorkspaceMode();
 }
 
-function placementChanged(index: number, placement: Placement): void {
-  if (!currentResult && !running && state.fixedPlacements[index]) {
-    const before = structuredClone(state); Object.assign(state.fixedPlacements[index], { x: placement.x, y: placement.y, rotation_deg: placement.rotation_deg });
-    history.commit(before, state); projects.save(state); updateHistoryButtons(); refreshPacking(); renderPackingSidebar();
-    setStatus("success", `Fixed placement moved to ${format(placement.x)}, ${format(placement.y)}`); return;
+function placementTransaction(previous: Placement[], current: Placement[]): void {
+  if (!currentResult && !running) {
+    const before = captureSession();
+    state.fixedPlacements = current.map(({ item_id, x, y, rotation_deg }) => ({ item_id, x, y, rotation_deg }));
+    commitSession(before); projects.save(state); updateHistoryButtons(); refreshPacking(); renderPackingSidebar();
+    setStatus("success", "Locked item placement changed"); return;
   }
-  if (!currentResult?.placements[index]) return;
-  manualLayout = true;
-  cad.setModel(state, toProblem(state), currentResult.placements);
-  renderPackingSidebar();
-  element("workspace-summary").textContent = `${currentResult.packed_item_count} items · manual layout`;
-  setStatus("neutral", "Manual layout changed · validation is now stale");
-  updateDiagnostics();
+  if (!currentResult) return;
+  const before = captureSession();
+  if (before.result) { before.result.placements = structuredClone(previous); updateResultCounts(before.result); }
+  currentResult.placements = structuredClone(current); updateResultCounts(currentResult);
+  finishPlacementEdit(before, "Packed layout adjusted");
+}
+
+function applyPlacementEdit(change: () => void, message: string): void {
+  if (!currentResult) return;
+  const before = captureSession(); change(); updateResultCounts(currentResult); finishPlacementEdit(before, message);
+}
+
+function finishPlacementEdit(before: StudioSnapshot, message: string): void {
+  manualLayout = true; resultStale = true; workspaceMode = "results"; commitSession(before); updateHistoryButtons();
+  refreshPacking(); renderPackingSidebar(); updateDiagnostics(); syncWorkspaceMode();
+  if (currentResult) element("workspace-summary").textContent = `${currentResult.packed_item_count} items · manual layout`;
+  setStatus("neutral", `${message} · validation is stale`);
+}
+
+function updateResultCounts(result: SolveResult): void {
+  result.packed_item_count = result.placements.length;
+  result.packed_count_by_item = result.placements.reduce<Record<string, number>>((counts, placement) => {
+    counts[placement.item_id] = (counts[placement.item_id] ?? 0) + 1; return counts;
+  }, {});
 }
 
 function updateDiagnostics(): void {
@@ -1319,32 +1429,41 @@ function selectSensitivityEvaluation(value: number, side: string): void {
 }
 
 function definitionChanged(next: Exclude<CadSelection, { kind: "placement" }>, previous: EditorState): void {
-  history.commit(previous, state); projects.save(state); markResultStale(); updateHistoryButtons();
+  const before = captureSession(); before.state = structuredClone(previous); markResultStale(); commitSession(before); projects.save(state); updateHistoryButtons();
   selection = next; renderPackingSidebar(); renderSensitivitySidebar(); refreshPacking(); setStatus("neutral", currentResult ? "Geometry changed · solved layout retained but stale" : "Geometry changed · saved locally");
 }
 
 function mutate(change: () => void, rerender = true): void {
-  const before = structuredClone(state);
+  const before = captureSession();
   try {
-    change(); history.commit(before, state); projects.save(state); markResultStale(); updateHistoryButtons();
+    change(); markResultStale(); commitSession(before); projects.save(state); updateHistoryButtons();
     if (rerender) { renderPackingSidebar(); renderSensitivitySidebar(); }
     refreshCurrentPage(); setStatus("neutral", "Changes saved locally");
-  } catch (error) { state = before; setStatus("error", errorMessage(error)); }
+  } catch (error) { restoreSession(before); setStatus("error", errorMessage(error)); }
 }
 
-function undo(): void { const restored = history.undo(state); if (restored) restoreHistory(restored, "Undid last workspace action"); }
-function redo(): void { const restored = history.redo(state); if (restored) restoreHistory(restored, "Redid workspace action"); }
-function restoreHistory(restored: EditorState, message: string): void {
-  state = restored; projects.save(state); clearResults(); updateHistoryButtons();
-  selection = normalizeSelection(selection); selections = selection ? [selection] : []; renderPackingSidebar(); renderSensitivitySidebar(); refreshCurrentPage(true); setStatus("neutral", message);
+function captureSession(): StudioSnapshot {
+  return { state: structuredClone(state), result: structuredClone(currentResult), manualLayout, resultStale, mode: workspaceMode };
+}
+function commitSession(previous: StudioSnapshot): void { history.commit(previous, captureSession()); }
+function restoreSession(restored: StudioSnapshot): void {
+  state = structuredClone(restored.state); currentResult = structuredClone(restored.result);
+  manualLayout = restored.manualLayout; resultStale = restored.resultStale; workspaceMode = restored.mode;
+}
+function undo(): void { const restored = history.undo(captureSession()); if (restored) restoreHistory(restored, "Undid last workspace action"); }
+function redo(): void { const restored = history.redo(captureSession()); if (restored) restoreHistory(restored, "Redid workspace action"); }
+function restoreHistory(restored: StudioSnapshot, message: string): void {
+  restoreSession(restored); projects.save(state); updateHistoryButtons();
+  selection = normalizeSelection(selection); selections = selection ? [selection] : []; renderPackingSidebar(); renderSensitivitySidebar(); refreshCurrentPage(true); updateDiagnostics(); syncWorkspaceMode(); setStatus("neutral", message);
 }
 
 function clearResults(): void {
-  currentResult = null; sensitivityResult = null; sensitivitySelection = null; manualLayout = false; resultStale = false;
+  currentResult = null; sensitivityResult = null; sensitivitySelection = null; manualLayout = false; resultStale = false; workspaceMode = "edit";
   element("workspace-summary").textContent = "Problem definition";
   element("diagnostics").innerHTML = "<p>Run a solve to inspect validation and search statistics.</p>";
   element<HTMLButtonElement>("edit-selected-layout").disabled = true;
   const progress = document.getElementById("study-progress"); if (progress) progress.hidden = true;
+  syncWorkspaceMode();
 }
 function markResultStale(): void {
   sensitivityResult = null; sensitivitySelection = null;
@@ -1378,7 +1497,7 @@ function updateStudyProgress(value: SensitivityProgress): void {
 function completeStudyProgress(count: number): void { const host = element("study-progress"), progress = host.querySelector("progress")!; progress.value = 100; host.querySelector("span")!.textContent = `${count} points complete`; }
 
 function setRunning(value: boolean, message?: string): void {
-  running = value; element<HTMLButtonElement>("solve").disabled = value; document.querySelector<HTMLButtonElement>("#run-study")?.toggleAttribute("disabled", value); element<HTMLButtonElement>("cancel").disabled = !value;
+  running = value; element<HTMLButtonElement>("solve").disabled = value; document.querySelector<HTMLButtonElement>("#run-study")?.toggleAttribute("disabled", value); element<HTMLButtonElement>("cancel").hidden = !value; element<HTMLButtonElement>("cancel").disabled = !value;
   const progress = element<HTMLProgressElement>("solve-progress"); element("solve-progress-wrap").hidden = !value;
   if (value) { progress.value = 0; element("solve-stage").textContent = message ?? "Preparing…"; element("solve-detail").textContent = "Starting solver"; }
   if (message) setStatus("working", message);
@@ -1398,9 +1517,9 @@ function editSelectedLayout(): void {
   const evaluation = selectedEvaluation(); if (!evaluation) return;
   const options = state.options, study = state.study;
   state = fromProblem(evaluation.problem); state.options = options; state.study = study;
-  currentResult = structuredClone(evaluation.result); manualLayout = true; resultStale = false;
+  currentResult = structuredClone(evaluation.result); manualLayout = true; resultStale = false; workspaceMode = "results";
   history.clear(); projects.save(state); selection = currentResult.placements.length ? { kind: "placement", index: 0 } : null; selections = selection ? [selection] : [];
-  renderPackingSidebar(); renderSensitivitySidebar(); updateHistoryButtons(); showPage("packing"); refreshPacking(true); updateDiagnostics(); element("workspace-summary").textContent = `${currentResult.packed_item_count} items · manual layout`;
+  renderPackingSidebar(); renderSensitivitySidebar(); updateHistoryButtons(); showPage("packing"); syncWorkspaceMode(); refreshPacking(true); updateDiagnostics(); element("workspace-summary").textContent = `${currentResult.packed_item_count} items · manual layout`;
   setStatus("neutral", "Sensitivity result opened as an editable layout");
 }
 
@@ -1441,7 +1560,8 @@ function bindOverlay(prefix: string, target: { dimensions: boolean; clearance: b
 function updateHistoryButtons(): void { element<HTMLButtonElement>("undo").disabled = !history.canUndo; element<HTMLButtonElement>("redo").disabled = !history.canRedo; }
 function normalizeSelection(value: CadSelection | null): CadSelection | null {
   if (value?.kind === "auto-dimension") return value;
-  if (!value || value.kind === "placement") return state.containerParts.length ? { kind: "container", index: 0 } : null;
+  if (value?.kind === "placement") return currentResult?.placements[value.index] ? value : currentResult?.placements.length ? { kind: "placement", index: 0 } : state.containerParts.length ? { kind: "container", index: 0 } : null;
+  if (!value) return null;
   const length = value.kind === "container" ? state.containerParts.length : value.kind === "exclusion" ? state.exclusions.length : value.kind === "item" ? state.items.length
     : value.kind === "guide" ? state.drafting.guides.length : value.kind === "drafting" ? state.drafting.shapes.length : value.kind === "dimension" ? state.dimensions.length : value.kind === "text" ? state.drafting.texts.length : state.drafting.traceImages.length;
   return value.index < length ? value : length ? { kind: value.kind, index: 0 } : null;

@@ -7,15 +7,15 @@ export function parameterCatalog(state: EditorState): ParameterChoice[] {
   const options: ParameterChoice[] = [];
   const add = (key: string, label: string, group: string) => options.push({ key, label, group });
   state.items.forEach((item) => {
-    add(`item_scale:${item.id}`, `${item.id} · whole shape scale`, "Packable shapes");
-    add(`item_quantity:${item.id}`, `${item.id} · quantity`, "Packable shapes");
+    add(`item_scale:${item.id}`, `${item.id} · whole shape scale`, "Items to pack");
+    add(`item_quantity:${item.id}`, `${item.id} · quantity`, "Items to pack");
     item.parts.forEach((part, index) => {
-      add(`part_scale:${item.id}:${index}`, `${item.id} · ${part.id} scale`, "Packable shapes");
+      add(`part_scale:${item.id}:${index}`, `${item.id} · ${part.id} scale`, "Items to pack");
       if (part.kind === "rectangle" || part.kind === "triangle" || part.kind === "polygon" || part.kind === "bezier") {
-        add(`part_width:${item.id}:${index}`, `${item.id} · ${part.id} width/base`, "Packable shapes");
-        add(`part_height:${item.id}:${index}`, `${item.id} · ${part.id} height`, "Packable shapes");
+        add(`part_width:${item.id}:${index}`, `${item.id} · ${part.id} width/base`, "Items to pack");
+        add(`part_height:${item.id}:${index}`, `${item.id} · ${part.id} height`, "Items to pack");
       }
-      if (part.kind === "circle") add(`part_radius:${item.id}:${index}`, `${item.id} · ${part.id} radius`, "Packable shapes");
+      if (part.kind === "circle") add(`part_radius:${item.id}:${index}`, `${item.id} · ${part.id} radius`, "Items to pack");
     });
   });
   state.containerParts.forEach((part) => {
@@ -24,7 +24,7 @@ export function parameterCatalog(state: EditorState): ParameterChoice[] {
     add(`container_part_height:${part.id}`, `${part.id} · height`, "Container");
   });
   add("clearance_item_to_item", "Item-to-item clearance", "Constraints");
-  add("clearance_item_to_boundary", "Boundary clearance", "Constraints");
+  add("clearance_item_to_boundary", "Container edge spacing", "Constraints");
   add("container_width", "Container width", "Container");
   add("container_height", "Container height", "Container");
   state.exclusions.forEach((entry) => add(`exclusion_scale:${entry.id}`, `${entry.id} · scale`, "Keep-out regions"));
