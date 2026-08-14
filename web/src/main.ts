@@ -20,7 +20,7 @@ import { packingOutcome } from "./packing-results";
 import { diagnosticsHtml, metricsHtml, parameterMatchesHtml, sensitivitySidebarHtml, studyStepsHtml, transitionsHtml } from "./sensitivity-markup";
 import { exportOptionsHtml, projectDialogHtml } from "./dialog-markup";
 import type {
-  AnchorName, EditorItem, EditorState, PackingProblem, Placement, Point, PrimitiveEditor, SensitivityProgress,
+  AnchorName, EditorExclusion, EditorItem, EditorRegion, EditorState, PackingProblem, Placement, Point, PrimitiveEditor, SensitivityProgress,
   SensitivityResult, SensitivityStudy, SolveProgress, SolveResult,
 } from "./types";
 
@@ -51,12 +51,16 @@ let sensitivitySelection: number | null = null;
 let selection: CadSelection | null = { kind: "container", index: 0 };
 let selections: CadSelection[] = selection ? [selection] : [];
 let selectedPartIndex = 0;
-let itemClipboard: EditorItem[] = [];
 interface PartClipboard {
   owner: { kind: "item" | "exclusion"; index: number };
   parts: PrimitiveEditor[];
 }
-let partClipboard: PartClipboard | null = null;
+type DefinitionClipboardEntry =
+  | { kind: "container"; value: EditorRegion }
+  | { kind: "item"; value: EditorItem }
+  | { kind: "exclusion"; value: EditorExclusion }
+  | { kind: "parts"; value: PartClipboard };
+let definitionClipboard: DefinitionClipboardEntry[] = [];
 let placementClipboard: Placement[] = [];
 let cad: CadWorkspace;
 let running = false;
@@ -190,8 +194,8 @@ function bindShell(): void {
     contextMenu.style.left = `${event.clientX}px`; contextMenu.style.top = `${event.clientY}px`; contextMenu.hidden = false;
     const kind = selection?.kind, layered = kind === "text" || kind === "trace" || kind === "drafting" || kind === "dimension";
     contextMenu.querySelector<HTMLButtonElement>('[data-context-action="fixed"]')!.hidden = kind !== "placement";
-    contextMenu.querySelector<HTMLButtonElement>('[data-context-action="copy"]')!.hidden = !(kind === "item" || kind === "placement");
-    contextMenu.querySelector<HTMLButtonElement>('[data-context-action="duplicate"]')!.hidden = !kind || kind === "auto-dimension" || kind === "container" || kind === "exclusion";
+    contextMenu.querySelector<HTMLButtonElement>('[data-context-action="copy"]')!.hidden = !(kind === "container" || kind === "item" || kind === "exclusion" || kind === "placement");
+    contextMenu.querySelector<HTMLButtonElement>('[data-context-action="duplicate"]')!.hidden = !kind || kind === "auto-dimension";
     contextMenu.querySelector<HTMLButtonElement>('[data-context-action="front"]')!.hidden = !layered;
     contextMenu.querySelector<HTMLButtonElement>('[data-context-action="back"]')!.hidden = !layered;
     const lockButton = contextMenu.querySelector<HTMLButtonElement>('[data-context-action="lock"]')!;
@@ -1111,7 +1115,7 @@ function deleteSelectedObject(): void {
 
 function duplicateContextSelection(): void {
   if (!selection) return;
-  if (selection.kind === "item" || selection.kind === "placement") { copySelectedItems(); pasteItems(); return; }
+  if (selection.kind === "container" || selection.kind === "item" || selection.kind === "exclusion" || selection.kind === "placement") { copySelectedItems(); pasteItems(); return; }
   const step = Math.max(state.drafting.gridStep, .1);
   mutate(() => {
     if (!selection) return;
