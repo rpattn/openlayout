@@ -276,6 +276,10 @@ pub(in crate::solver) fn learned_motif_layouts(
     observer: &mut dyn SolveObserver,
 ) -> Vec<(String, Vec<CandidatePlacement>)> {
     let mut layouts = Vec::new();
+    // Motifs need a fresh origin in each disconnected/obstructed region. Using only the global
+    // bounds makes a triangle pair stride across gaps between differently sized containers and
+    // leaves later components with a phase chosen for the first one.
+    let fill_regions = decomposed_regions(prepared);
     for (item_id, variant_indexes) in &prepared.variants_by_item {
         let item = prepared
             .problem
@@ -353,6 +357,7 @@ pub(in crate::solver) fn learned_motif_layouts(
                         second,
                         offset,
                         motif_bounds,
+                        &fill_regions,
                         vertical_high,
                         horizontal_high,
                         &mut placed,
@@ -506,6 +511,7 @@ fn motif_fill(
     second: &crate::prepare::PreparedVariant,
     offset: crate::Point,
     motif_bounds: Bounds,
+    fill_regions: &[Bounds],
     vertical_high: bool,
     horizontal_high: bool,
     placed: &mut Vec<CandidatePlacement>,
@@ -525,56 +531,55 @@ fn motif_fill(
     if pitch_x <= EPSILON || pitch_y <= EPSILON {
         return;
     }
-    let mut y = if vertical_high {
-        prepared.container_bounds.max_y - motif_bounds.max_y - boundary_clearance
-    } else {
-        prepared.container_bounds.min_y - motif_bounds.min_y + boundary_clearance
-    };
-    loop {
-        let y_beyond = if vertical_high {
-            y + motif_bounds.min_y < prepared.container_bounds.min_y - EPSILON
+    for fill_bounds in fill_regions {
+        let mut y = if vertical_high {
+            fill_bounds.max_y - motif_bounds.max_y - boundary_clearance
         } else {
-            y + motif_bounds.max_y > prepared.container_bounds.max_y + EPSILON
-        };
-        if y_beyond {
-            break;
-        }
-        let mut x = if horizontal_high {
-            prepared.container_bounds.max_x - motif_bounds.max_x - boundary_clearance
-        } else {
-            prepared.container_bounds.min_x - motif_bounds.min_x + boundary_clearance
+            fill_bounds.min_y - motif_bounds.min_y + boundary_clearance
         };
         loop {
-            if stop_requested(options, started, counters, observer) {
-                return;
-            }
-            let x_beyond = if horizontal_high {
-                x + motif_bounds.min_x < prepared.container_bounds.min_x - EPSILON
+            let y_beyond = if vertical_high {
+                y + motif_bounds.min_y < fill_bounds.min_y - EPSILON
             } else {
-                x + motif_bounds.max_x > prepared.container_bounds.max_x + EPSILON
+                y + motif_bounds.max_y > fill_bounds.max_y + EPSILON
             };
-            if x_beyond {
+            if y_beyond {
                 break;
             }
-            try_place_pair(prepared, first, second, x, y, offset, placed, counters);
-            x += if horizontal_high { -pitch_x } else { pitch_x };
+            let mut x = if horizontal_high {
+                fill_bounds.max_x - motif_bounds.max_x - boundary_clearance
+            } else {
+                fill_bounds.min_x - motif_bounds.min_x + boundary_clearance
+            };
+            loop {
+                if stop_requested(options, started, counters, observer) {
+                    return;
+                }
+                let x_beyond = if horizontal_high {
+                    x + motif_bounds.min_x < fill_bounds.min_x - EPSILON
+                } else {
+                    x + motif_bounds.max_x > fill_bounds.max_x + EPSILON
+                };
+                if x_beyond {
+                    break;
+                }
+                try_place_pair(prepared, first, second, x, y, offset, placed, counters);
+                x += if horizontal_high { -pitch_x } else { pitch_x };
+            }
+            // A repeated pair can leave room for one final member of an odd-length row.
+            if !stop_requested(options, started, counters, observer) {
+                try_place(prepared, first, x, y, placed, counters);
+                try_place(
+                    prepared,
+                    second,
+                    x + offset.x,
+                    y + offset.y,
+                    placed,
+                    counters,
+                );
+            }
+            y += if vertical_high { -pitch_y } else { pitch_y };
         }
-        // A repeated pair can leave room for one final member of the alternating chain even
-        // though the complete two-item motif no longer fits. Trying both members at that next
-        // origin closes odd-length rows directly and avoids spending thousands of generic
-        // contact probes to recover the elementary ninth triangle in a row.
-        if !stop_requested(options, started, counters, observer) {
-            try_place(prepared, first, x, y, placed, counters);
-            try_place(
-                prepared,
-                second,
-                x + offset.x,
-                y + offset.y,
-                placed,
-                counters,
-            );
-        }
-        y += if vertical_high { -pitch_y } else { pitch_y };
     }
 }
 

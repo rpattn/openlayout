@@ -27,6 +27,7 @@
 .locked-entity-group { margin-top: 13px; padding-top: 10px; border-top: 1px solid var(--line); }
 .locked-row { grid-template-columns: 46px 1fr; }
 .locked-entity-icon { width: 42px; height: 34px; display: grid; place-items: center; border: 1px dashed var(--line-strong); border-radius: 4px; color: var(--amber); font-size: 17px; }
+.entity-row .locked-action { display: inline-block; margin-top: 5px; color: var(--amber); font: 650 8px ui-sans-serif, system-ui, sans-serif; }
 .entity-row span strong, .entity-row span small { display: block; }
 .entity-row span strong { font: 600 10px ui-monospace, monospace; color: var(--text-soft); }
 .entity-row span small { margin-top: 2px; color: var(--muted); font-size: 8px; }

@@ -2,7 +2,7 @@ import { primitiveAnchor, primitiveDependsOn, primitiveShape, resolveEditorTrans
 import { resolveGeometry } from "./geometry-resolver";
 import { ANCHORS, editorColor, ITEM_COLORS } from "./design-tokens";
 import { cadLockReference, sameCadSelection as sameSelection, type CadSelection } from "./cad-selection";
-import { contourArea, offsetPolygon } from "./polygon-utils";
+import { contourArea, offsetPolygon, roundedPolygonPath } from "./polygon-utils";
 import { clamp, escapeHtml } from "./ui-utils";
 import { compoundDistance, compoundEdgeDistance, compoundPath, compoundsOverlap, inverseTransformPoint, path, pointBounds, pointInCompound, polygons, resolveShapePartTranslations, rotateAround, rotateVector, sourcePartPolygons, transformPolygons, type Bounds } from "./cad-geometry";
 import { engineeringDimensions, gridMarkup, linearDimensionMarkup } from "./cad-dimensions";
@@ -571,7 +571,9 @@ export class CadWorkspace {
         const originalState = this.drag.originalState, draggedPartIndex = this.drag.partIndex;
         targets.forEach((entry) => this.movePart(entry, originalState, entry.kind === "container" ? entry.index : entry.partIndex ?? draggedPartIndex, delta.x, delta.y));
       } else if (this.drag.mode === "geometry") {
-        this.editDefinitionGeometry(selection, this.drag.originalState, this.drag.partIndex, this.drag.geometryHandle, current, this.drag.center, this.drag.rotation, event.altKey, event.shiftKey);
+        // Edge handles resize from the opposite edge by default. Holding Shift switches to
+        // a centred, symmetric resize, matching the global scale cage without moving siblings.
+        this.editDefinitionGeometry(selection, this.drag.originalState, this.drag.partIndex, this.drag.geometryHandle, current, this.drag.center, this.drag.rotation, event.altKey, event.shiftKey, this.drag.startWorld);
       }
       this.problem = toProblem(this.state);
       this.resolved = resolveGeometry(this.problem);
@@ -908,6 +910,18 @@ export class CadWorkspace {
     } else if (primitive.kind === "polygon") {
       primitive.vertices.forEach((point, index) => handles.push({ key: `vertex:${index}`, point }));
     } else {
+      const bounds = pointBounds(shapePoints(primitiveShape(primitive))), gap = Math.max(8 * scale, .15);
+      handles.push(
+        { key: "bounds:left", point: { x: bounds.minX - gap, y: (bounds.minY + bounds.maxY) / 2 }, className: "bounds" },
+        { key: "bounds:right", point: { x: bounds.maxX + gap, y: (bounds.minY + bounds.maxY) / 2 }, className: "bounds" },
+        { key: "bounds:top", point: { x: (bounds.minX + bounds.maxX) / 2, y: bounds.maxY + gap }, className: "bounds" },
+        { key: "bounds:bottom", point: { x: (bounds.minX + bounds.maxX) / 2, y: bounds.minY - gap }, className: "bounds" },
+        { key: "bounds:top_left", point: { x: bounds.minX - gap, y: bounds.maxY + gap }, className: "bounds" },
+        { key: "bounds:top_right", point: { x: bounds.maxX + gap, y: bounds.maxY + gap }, className: "bounds" },
+        { key: "bounds:bottom_left", point: { x: bounds.minX - gap, y: bounds.minY - gap }, className: "bounds" },
+        { key: "bounds:bottom_right", point: { x: bounds.maxX + gap, y: bounds.minY - gap }, className: "bounds" },
+      );
+      guides += `<rect class="cad-bezier-bounds" x="${bounds.minX + context.center.x}" y="${-(bounds.maxY + context.center.y)}" width="${bounds.width}" height="${bounds.height}" transform="rotate(${-context.rotation} ${context.center.x} ${-context.center.y})"/>`;
       primitive.knots.forEach((knot, index) => {
         const point = transformPoint(knot.point, context.rotation, context.center.x, context.center.y);
         const incoming = transformPoint(knot.control_in, context.rotation, context.center.x, context.center.y);
@@ -920,6 +934,8 @@ export class CadWorkspace {
     const radius = Math.max(3.8 * scale, .075);
     const target = `${selection.kind}:${selection.index}`;
     const centerHandle = `<circle class="cad-part-move-handle" data-part-move="${target}" data-part-index="${partIndex}" cx="${context.center.x}" cy="${-context.center.y}" r="${Math.max(3.5 * scale, .07)}"/>`;
+    // Bounds handles sit above coincident end knots so the resize cage remains draggable.
+    handles.sort((left, right) => Number(left.className === "bounds") - Number(right.className === "bounds"));
     const controls = handles.map((entry) => {
       const point = transformPoint(entry.point, context.rotation, context.center.x, context.center.y);
       return `<circle class="cad-geometry-handle ${entry.className ?? ""}" data-geometry-target="${target}" data-geometry-part="${partIndex}" data-geometry-handle="${entry.key}" cx="${point.x}" cy="${-point.y}" r="${radius}"/>`;
@@ -951,13 +967,27 @@ export class CadWorkspace {
 
   private editDefinitionGeometry(
     selection: Exclude<CadSelection, { kind: "placement" }>, original: EditorState, partIndex: number,
-    handle: string, world: Point, center: Point, rotation: number, bypassSnapping = false, anchoredResize = false,
+    handle: string, world: Point, center: Point, rotation: number, bypassSnapping = false, symmetricResize = false, startWorld = world,
   ): void {
     const target = primitiveFor(this.state, selection, partIndex);
     const source = primitiveFor(original, selection, partIndex);
     if (!target || !source || target.kind !== source.kind) return;
     const local = inverseTransformPoint(world, rotation, center.x, center.y);
-    if (anchoredResize && this.resizeFromOppositeHandle(target, source, handle, local, rotation, bypassSnapping)) return;
+    if (target.kind === "bezier" && source.kind === "bezier" && handle.startsWith("bounds:")) {
+      const anchor = handle.slice(7), bounds = pointBounds(shapePoints(primitiveShape(source)));
+      const startLocal = inverseTransformPoint(startWorld, rotation, center.x, center.y);
+      const boundary = {
+        x: anchor.includes("left") ? bounds.minX : anchor.includes("right") ? bounds.maxX : (bounds.minX + bounds.maxX) / 2,
+        y: anchor.includes("bottom") ? bounds.minY : anchor.includes("top") ? bounds.maxY : (bounds.minY + bounds.maxY) / 2,
+      };
+      const adjusted = { x: boundary.x + local.x - startLocal.x, y: boundary.y + local.y - startLocal.y };
+      this.resizeBezierBounds(target, source, anchor, adjusted, rotation, symmetricResize, bypassSnapping);
+      return;
+    }
+    // Radius handles remain centred by default; Shift anchors the opposite point. Polygonal edge
+    // and Bézier cage handles use the conventional opposite-edge default and Shift centres them.
+    const useOppositeHandle = target.kind === "circle" ? symmetricResize : !symmetricResize;
+    if (useOppositeHandle && this.resizeFromOppositeHandle(target, source, handle, local, rotation, bypassSnapping)) return;
     if (target.kind === "rectangle") {
       const anchor = handle.startsWith("resize:") ? handle.slice(7) : handle;
       if (anchor.includes("left") || anchor.includes("right") || anchor === "width") target.width = this.snapLength(Math.max(.05, Math.abs(local.x) * 2), target, false, bypassSnapping);
@@ -984,6 +1014,44 @@ export class CadWorkspace {
       const knot = target.knots[Number(handle.split(":")[1])]; if (knot) knot.control_in = { x: round(local.x), y: round(local.y) };
     } else if (target.kind === "bezier" && handle.startsWith("control_out:")) {
       const knot = target.knots[Number(handle.split(":")[1])]; if (knot) knot.control_out = { x: round(local.x), y: round(local.y) };
+    }
+  }
+
+  private resizeBezierBounds(
+    target: Extract<PrimitiveEditor, { kind: "bezier" }>, source: Extract<PrimitiveEditor, { kind: "bezier" }>,
+    anchor: string, local: Point, rotation: number, symmetric: boolean, bypassSnapping: boolean,
+  ): void {
+    const sourceBounds = pointBounds(shapePoints(primitiveShape(source)));
+    const next = { minX: sourceBounds.minX, maxX: sourceBounds.maxX, minY: sourceBounds.minY, maxY: sourceBounds.maxY };
+    const snap = (value: number) => this.state.drafting.snapToGrid && !bypassSnapping ? snapUnit(value, this.state.drafting.gridStep) : value;
+    if (anchor.includes("left") || anchor.includes("right")) {
+      const value = snap(local.x), center = (sourceBounds.minX + sourceBounds.maxX) / 2;
+      if (symmetric) {
+        const half = Math.max(.025, Math.abs(value - center)); next.minX = center - half; next.maxX = center + half;
+      } else if (anchor.includes("left")) next.minX = Math.min(value, sourceBounds.maxX - .05);
+      else next.maxX = Math.max(value, sourceBounds.minX + .05);
+    }
+    if (anchor.includes("top") || anchor.includes("bottom")) {
+      const value = snap(local.y), center = (sourceBounds.minY + sourceBounds.maxY) / 2;
+      if (symmetric) {
+        const half = Math.max(.025, Math.abs(value - center)); next.minY = center - half; next.maxY = center + half;
+      } else if (anchor.includes("bottom")) next.minY = Math.min(value, sourceBounds.maxY - .05);
+      else next.maxY = Math.max(value, sourceBounds.minY + .05);
+    }
+    const scaleX = (next.maxX - next.minX) / Math.max(sourceBounds.width, .05);
+    const scaleY = (next.maxY - next.minY) / Math.max(sourceBounds.height, .05);
+    const map = (point: Point): Point => ({
+      x: round(next.minX + (point.x - sourceBounds.minX) * scaleX),
+      y: round(next.minY + (point.y - sourceBounds.minY) * scaleY),
+    });
+    target.knots = source.knots.map((knot) => ({ point: map(knot.point), control_in: map(knot.control_in), control_out: map(knot.control_out) }));
+    if (!symmetric && target.snap) {
+      const centerDelta = rotateVector({
+        x: (next.minX + next.maxX - sourceBounds.minX - sourceBounds.maxX) / 2,
+        y: (next.minY + next.maxY - sourceBounds.minY - sourceBounds.maxY) / 2,
+      }, rotation);
+      const originalOffset = source.snap?.offset ?? { x: 0, y: 0 };
+      target.snap.offset = { x: round(originalOffset.x + centerDelta.x), y: round(originalOffset.y + centerDelta.y) };
     }
   }
 
@@ -1247,7 +1315,8 @@ export class CadWorkspace {
     const candidates = this.sceneSnapPoints();
     const nearest = candidates.reduce<Point | null>((best, candidate) => !best || Math.hypot(candidate.x - point.x, candidate.y - point.y) < Math.hypot(best.x - point.x, best.y - point.y) ? candidate : best, null);
     const capture = this.view.width / Math.max(this.svg.clientWidth, 1) * 14;
-    return nearest && Math.hypot(nearest.x - point.x, nearest.y - point.y) <= capture ? nearest : this.snapDraftPoint(point);
+    const selected = nearest && Math.hypot(nearest.x - point.x, nearest.y - point.y) <= capture ? nearest : point;
+    return this.snapDraftPoint(selected);
   }
 
   private sceneSnapPoints(): Point[] {
@@ -1260,13 +1329,17 @@ export class CadWorkspace {
   private containerClearanceMarkup(): string {
     const distance = this.problem.clearance.item_to_boundary;
     if (!distance) return "";
-    return this.resolved.container.map((polygon) => `<path class="cad-clearance" d="${path(offsetPolygon(polygon, contourArea(polygon) >= 0 ? -distance : distance))}"/>`).join("");
+    return this.resolved.container.map((polygon) => {
+      const offset = offsetPolygon(polygon, contourArea(polygon) >= 0 ? -distance : distance);
+      return `<path class="cad-clearance" d="${roundedPolygonPath(offset, distance * .7)}"/>`;
+    }).join("");
   }
 
   private exclusionClearanceMarkup(): string {
     return this.problem.exclusions.flatMap((entry) => (this.resolved.exclusions.find((geometry) => geometry.id === entry.id)?.polygons ?? []).map((polygon) => {
       const distance = Math.max(this.problem.clearance.item_to_exclusion, entry.clearance);
-      return distance ? `<path class="cad-clearance danger" d="${path(offsetPolygon(polygon, contourArea(polygon) >= 0 ? distance : -distance))}"/>` : "";
+      const offset = offsetPolygon(polygon, contourArea(polygon) >= 0 ? distance : -distance);
+      return distance ? `<path class="cad-clearance danger" d="${roundedPolygonPath(offset, distance * .7)}"/>` : "";
     })).join("");
   }
 

@@ -135,6 +135,37 @@ test("Wasm baseline learns clearance-aware complementary triangle rows", () => {
   engine.free();
 });
 
+test("Wasm triangle motifs restart efficiently in differently sized disconnected containers", () => {
+  const disconnected = {
+    schema_version: 2,
+    container: { parts: [
+      { id: "large", operation: "add", shape: { kind: "rectangle", width: 10, height: 6 }, translation: { x: 0, y: 0 }, rotation_deg: 0 },
+      { id: "small", operation: "add", shape: { kind: "rectangle", width: 7, height: 4 }, translation: { x: 12, y: 0 }, rotation_deg: 0 },
+    ] },
+    exclusions: [],
+    items: [{
+      id: "triangle", quantity: 100,
+      rotation_policy: { kind: "continuous", min_deg: 0, max_deg: 360, coupling: "independent" },
+      shape: { kind: "compound", parts: [{ shape: { kind: "triangle", base: 2, height: 2 }, translation: { x: 0, y: 0 }, rotation_deg: 0, snap: null }] },
+    }],
+    fixed_placements: [],
+    clearance: { item_to_item: 0.15, item_to_boundary: 0.1, item_to_exclusion: 0 },
+  };
+  const engine = new PackingEngine();
+  const result = JSON.parse(engine.solve_direct(
+    JSON.stringify(disconnected),
+    JSON.stringify({ ...options, seed: 7, max_iterations: 20_000, grid_step: 0.25, restarts: 2, baseline_only: true }),
+  ));
+  const largeCount = result.placements.filter((placement) => placement.x < 6).length;
+  const smallCount = result.placements.filter((placement) => placement.x > 7).length;
+  assert.match(result.solver_strategy, /^learned_motif_/);
+  assert.ok(largeCount >= 15, JSON.stringify({ largeCount, smallCount, strategy: result.solver_strategy }));
+  assert.ok(smallCount >= 4, JSON.stringify({ largeCount, smallCount, strategy: result.solver_strategy }));
+  assert.equal(result.validation.valid, true);
+  assert.ok(result.statistics.exact_geometry_checks <= 12_000, JSON.stringify({ exact: result.statistics.exact_geometry_checks }));
+  engine.free();
+});
+
 test("Wasm studio defaults recover direct 20 and continuation 21", () => {
   const exclusion = Array.from({ length: 32 }, (_, index) => {
     const angle = Math.PI * 2 * index / 32;

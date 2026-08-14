@@ -432,6 +432,61 @@ test("edits item, container, cut-out, and exclusion geometry without leaving the
   expect(itemPreview).not.toBe(exclusionPreview);
 });
 
+test("keeps the drafting camera stable and gives bezier bounds predictable resize semantics", async ({ page }) => {
+  await page.goto("/");
+  await page.locator('[data-cad-select="item:0"]').click();
+  await page.getByRole("button", { name: "Focus selection" }).click();
+  await page.getByRole("button", { name: "Zoom in" }).click();
+  await page.getByRole("button", { name: "Zoom in" }).click();
+  const canvas = page.locator("#cad-canvas");
+  const camera = await canvas.getAttribute("viewBox");
+
+  await page.locator('[data-add-part="bezier"]').click();
+  await expect(canvas).toHaveAttribute("viewBox", camera!);
+  await expect(page.locator('.cad-geometry-handle.bounds')).toHaveCount(8);
+
+  const left = page.locator('[data-geometry-handle="bounds:left"]');
+  const right = page.locator('[data-geometry-handle="bounds:right"]');
+  const leftBefore = Number(await left.getAttribute("cx"));
+  const rightBefore = Number(await right.getAttribute("cx"));
+  const rightBox = await right.boundingBox();
+  if (!rightBox) throw new Error("Bezier right bound handle unavailable");
+  expect(await page.evaluate(({ x, y }) => (document.elementFromPoint(x, y) as SVGElement | null)?.dataset.geometryHandle, { x: rightBox.x + rightBox.width / 2, y: rightBox.y + rightBox.height / 2 })).toBe("bounds:right");
+  await page.mouse.move(rightBox.x + rightBox.width / 2, rightBox.y + rightBox.height / 2);
+  await page.mouse.down(); await page.mouse.move(rightBox.x + rightBox.width / 2 + 80, rightBox.y + rightBox.height / 2, { steps: 4 }); await page.mouse.up();
+  await expect.poll(async () => Number(await right.getAttribute("cx"))).not.toBeCloseTo(rightBefore, 4);
+  const rightAfter = Number(await right.getAttribute("cx")), leftAfter = Number(await left.getAttribute("cx"));
+  expect(Math.abs(leftAfter - leftBefore)).toBeLessThan(Math.abs(rightAfter - rightBefore) * .25);
+
+  const rightBeforeSymmetric = Number(await right.getAttribute("cx"));
+  const resizedLeftBox = await left.boundingBox();
+  if (!resizedLeftBox) throw new Error("Resized Bezier left bound handle unavailable");
+  await page.keyboard.down("Shift");
+  await page.mouse.move(resizedLeftBox.x + resizedLeftBox.width / 2, resizedLeftBox.y + resizedLeftBox.height / 2);
+  await page.mouse.down(); await page.mouse.move(resizedLeftBox.x + resizedLeftBox.width / 2 - 70, resizedLeftBox.y + resizedLeftBox.height / 2, { steps: 4 }); await page.mouse.up();
+  await page.keyboard.up("Shift");
+  expect(Number(await right.getAttribute("cx"))).not.toBeCloseTo(rightBeforeSymmetric, 4);
+
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect(canvas).toHaveAttribute("viewBox", camera!);
+  await page.keyboard.press("ControlOrMeta+Shift+z");
+  await expect(canvas).toHaveAttribute("viewBox", camera!);
+});
+
+test("shows a grid-snapped cursor before the first point-to-point dimension click", async ({ page }) => {
+  await page.goto("/");
+  await clickMoreTool(page, "Create dimension");
+  const canvas = page.locator("#cad-canvas"), box = await canvas.boundingBox();
+  if (!box) throw new Error("CAD canvas unavailable");
+  await page.mouse.move(box.x + box.width * .617, box.y + box.height * .413);
+  const cursor = page.locator(".cad-dimension-cursor");
+  await expect(cursor).toBeVisible();
+  const x = Number(await cursor.locator("circle").getAttribute("cx"));
+  const y = -Number(await cursor.locator("circle").getAttribute("cy"));
+  expect(x / .5).toBeCloseTo(Math.round(x / .5), 6);
+  expect(y / .5).toBeCloseTo(Math.round(y / .5), 6);
+});
+
 test("copies constituent shapes into their construction and removes empty owners", async ({ page }) => {
   await page.goto("/");
   await page.locator('[data-cad-kind="item"][data-cad-index="0"][data-cad-part="1"]').click();
@@ -676,6 +731,17 @@ test("locks every CAD entity type and exposes locked entities only in the sideba
   await page.reload();
   await expect(page.locator(".locked-entity-group .locked-row")).toHaveCount(5);
   await expect(page.locator('[data-cad-kind="trace"], [data-cad-kind="drafting"], [data-cad-kind="guide"], [data-cad-kind="item"][data-cad-index="0"], [data-cad-kind="exclusion"][data-cad-index="0"]')).toHaveCount(0);
+});
+
+test("unlocks a locked trace image directly from the locked entity row", async ({ page }) => {
+  await page.goto("/");
+  const chooser = page.waitForEvent("filechooser"); await clickMoreTool(page, "Add trace image");
+  await (await chooser).setFiles({ name: "trace.svg", mimeType: "image/svg+xml", buffer: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="80" height="40"><rect width="80" height="40" fill="purple"/></svg>') });
+  await clickMoreTool(page, "Lock selection");
+  await expect(page.locator('[data-cad-kind="trace"]')).toHaveCount(0);
+  await page.locator(".locked-row .locked-action").click();
+  await expect(page.locator('[data-cad-kind="trace"]')).toHaveCount(1);
+  await expect(page.locator(".locked-entity-group")).toHaveCount(0);
 });
 
 test("keeps oriented snap anchors attached through rotation", async ({ page }) => {
@@ -1116,6 +1182,8 @@ test("uses a restrained CAD palette in dark mode", async ({ page }) => {
   expect(containerFill).not.toBe("rgb(231, 235, 239)");
   await page.getByRole("button", { name: "Spacing", exact: true }).click();
   const clearanceStroke = await page.locator(".cad-clearance").first().evaluate((node) => getComputedStyle(node).stroke);
+  await expect(page.locator(".cad-clearance").first()).toHaveAttribute("d", /Q/);
+  await expect(page.locator(".cad-clearance").first()).toHaveCSS("stroke-linejoin", "round");
   await page.locator(".toolbar-more > summary").click();
   const fixedAccent = await page.locator("#respect-manual-constraints").evaluate((node) => getComputedStyle(node).color);
   expect(clearanceStroke).not.toBe(fixedAccent);

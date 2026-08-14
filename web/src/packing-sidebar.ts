@@ -27,7 +27,7 @@ export function packingSidebarHtml(context: PackingSidebarContext): string {
   const lockedButton = (value: CadSelection): string => {
     const key = `${value.kind}:${value.index}`;
     const selected = context.selection?.kind === value.kind && context.selection.index === value.index;
-    return `<button class="entity-row locked-row ${selected ? "selected" : ""}" data-cad-select="${key}" title="Locked"><span class="locked-entity-icon" aria-hidden="true">⌑</span><span><strong>${escapeHtml(context.selectionLabel(value))}</strong><small>${escapeHtml(selectionKindLabel(state, value))}</small></span></button>`;
+    return `<button class="entity-row locked-row ${selected ? "selected" : ""}" data-cad-select="${key}" title="Select or unlock"><span class="locked-entity-icon" aria-hidden="true">⌑</span><span><strong>${escapeHtml(context.selectionLabel(value))}</strong><small>${escapeHtml(selectionKindLabel(state, value))}</small><span class="locked-action" data-unlock-entity>Unlock</span></span></button>`;
   };
   return `<section id="selection-inspector" class="problem-section inspector-section selection-inspector-top">${context.inspectorHtml}</section>
     ${context.outcome ? resultsHtml(context.outcome, context.resultWarnings) : ""}

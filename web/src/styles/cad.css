@@ -62,7 +62,7 @@
   stroke: var(--accent); stroke-width: 3px; filter: drop-shadow(0 0 4px color-mix(in srgb, var(--accent) 72%, transparent));
 }
 .cad-label { fill: var(--muted); font: 600 .42px ui-monospace, monospace; pointer-events: none; }
-.cad-clearance { fill: none; stroke: var(--constraint); stroke-width: 1.2px; stroke-dasharray: 7 5; vector-effect: non-scaling-stroke; pointer-events: none; }
+.cad-clearance { fill: none; stroke: var(--constraint); stroke-width: 1.2px; stroke-dasharray: 7 5; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; pointer-events: none; }
 .cad-clearance.danger { stroke: var(--constraint-danger); }
 .cad-dimensions { pointer-events: none; }
 .cad-dimensions line { fill: none; stroke: var(--text-soft); stroke-width: max(1px, calc(var(--cad-edge-width, 1.4px) * .75)); vector-effect: non-scaling-stroke; }
@@ -77,6 +77,8 @@
 .cad-selection-handles .cad-geometry-handle:hover { fill: var(--accent); stroke: var(--surface); }
 .cad-selection-handles .cad-geometry-handle.control { fill: var(--surface); stroke: var(--amber); cursor: crosshair; }
 .cad-selection-handles .cad-geometry-handle.knot { fill: var(--accent); stroke: var(--surface); cursor: move; }
+.cad-selection-handles .cad-geometry-handle.bounds { fill: var(--surface); stroke: var(--text-soft); cursor: ew-resize; }
+.cad-bezier-bounds { fill: none; stroke: var(--text-soft) !important; stroke-width: 1px !important; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; pointer-events: none; }
 .cad-selection-handles .cad-part-move-handle { fill: var(--surface); stroke: var(--text); stroke-width: 2px; cursor: move; }
 .cad-selection-handles .cad-part-move-handle:hover { fill: var(--text); stroke: var(--surface); }
 .cad-selection-handles .cad-global-scale-handle { fill: var(--surface); stroke: var(--amber); stroke-width: 2px; cursor: nesw-resize; }

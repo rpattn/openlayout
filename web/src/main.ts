@@ -393,6 +393,7 @@ function renderPackingSidebar(): void {
   applySidebarTooltips(sidebar);
   sidebar.querySelectorAll<HTMLElement>("[data-cad-select]").forEach((node) => node.addEventListener("click", (event) => {
     const next = parseSelection(node.dataset.cadSelect!); selectCad(next, undefined, event.ctrlKey || event.metaKey);
+    if ((event.target as Element).closest("[data-unlock-entity]")) toggleSelectionLock();
   }));
   sidebar.querySelector("[data-toggle-lock]")?.addEventListener("click", toggleSelectionLock);
   sidebar.querySelectorAll<HTMLButtonElement>("[data-add-object]").forEach((button) => button.addEventListener("click", () => addObject(button.dataset.addObject!)));
@@ -789,7 +790,7 @@ function moveSelectedPart(targetOwner: string): void {
     }
   });
   selections = selection ? [selection] : [];
-  refreshPacking(true);
+  refreshPacking();
 }
 
 function setDraftPathTool(tool: "line" | "polyline" | null): void {
@@ -891,7 +892,7 @@ function addObject(kind: string, shapeKind: PrimitiveEditor["kind"] = "rectangle
     selectedPartIndex = 0;
     selections = selection ? [selection] : [];
   });
-  refreshPacking(true);
+  refreshPacking();
   requestAnimationFrame(() => { element("packing-sidebar").scrollTop = 0; });
 }
 
@@ -979,7 +980,7 @@ function addGeometry(kind: PrimitiveEditor["kind"]): void {
     selectedPartIndex = 0;
   });
   selections = selection ? [selection] : [];
-  refreshPacking(true);
+  refreshPacking();
 }
 
 function joinSelectedMaterial(): void {
@@ -1454,7 +1455,7 @@ function undo(): void { const restored = history.undo(captureSession()); if (res
 function redo(): void { const restored = history.redo(captureSession()); if (restored) restoreHistory(restored, "Redid workspace action"); }
 function restoreHistory(restored: StudioSnapshot, message: string): void {
   restoreSession(restored); projects.save(state); updateHistoryButtons();
-  selection = normalizeSelection(selection); selections = selection ? [selection] : []; renderPackingSidebar(); renderSensitivitySidebar(); refreshCurrentPage(true); updateDiagnostics(); syncWorkspaceMode(); setStatus("neutral", message);
+  selection = normalizeSelection(selection); selections = selection ? [selection] : []; renderPackingSidebar(); renderSensitivitySidebar(); refreshCurrentPage(); updateDiagnostics(); syncWorkspaceMode(); setStatus("neutral", message);
 }
 
 function clearResults(): void {

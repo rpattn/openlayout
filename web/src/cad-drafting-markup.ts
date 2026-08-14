@@ -65,9 +65,12 @@ export function guidePreviewMarkup(rotation: number | null, hover: Point | null,
 }
 
 export function dimensionPreviewMarkup(active: boolean, points: Point[], hover: Point | null, scale: number, settings: EditorState["viewSettings"]): string {
-  if (!active || !hover || !points.length) return "";
+  if (!active || !hover) return "";
+  const radius = Math.max(5 * scale, .1), crosshair = Math.max(8 * scale, .16), label = Math.max(9 * scale, .18);
+  const cursor = `<g class="cad-draft-cursor cad-dimension-cursor"><circle cx="${hover.x}" cy="${-hover.y}" r="${radius}"/><line x1="${hover.x - crosshair}" y1="${-hover.y}" x2="${hover.x + crosshair}" y2="${-hover.y}"/><line x1="${hover.x}" y1="${-hover.y - crosshair}" x2="${hover.x}" y2="${-hover.y + crosshair}"/><text x="${hover.x + label}" y="${-hover.y - label}">${formatNumber(hover.x, 2)}, ${formatNumber(hover.y, 2)}</text></g>`;
+  if (!points.length) return cursor;
   const preview: CadDimension = { id: "preview", start: points[0], end: hover, offset: { x: 0, y: 0 }, textOverride: "" };
-  return `<g class="cad-dimension-preview">${linearDimensionMarkup(preview, scale, settings)}</g>`;
+  return `<g class="cad-dimension-preview">${linearDimensionMarkup(preview, scale, settings)}</g>${cursor}`;
 }
 
 export function draftingWorldPoints(shape: DraftingPath): Point[] {
