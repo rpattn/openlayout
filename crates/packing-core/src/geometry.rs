@@ -963,7 +963,7 @@ fn collinear_interior_overlap(a: Point, b: Point, c: Point, d: Point) -> bool {
     overlap > EPSILON
 }
 
-fn point_in_polygon(point: Point, polygon: &[Point]) -> bool {
+pub(crate) fn point_in_polygon(point: Point, polygon: &[Point]) -> bool {
     let mut inside = false;
     for index in 0..polygon.len() {
         let a = polygon[index];

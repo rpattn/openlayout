@@ -33,6 +33,8 @@ export class CadWorkspace {
   private state: EditorState;
   private problem: PackingProblem;
   private resolved: ResolvedProblemGeometry;
+  private placementProblem: PackingProblem;
+  private placementResolved: ResolvedProblemGeometry;
   private placements: Placement[] = [];
   private selection: CadSelection | null = null;
   private selections: CadSelection[] = [];
@@ -63,6 +65,8 @@ export class CadWorkspace {
     this.state = state;
     this.problem = problem;
     this.resolved = resolveGeometry(problem);
+    this.placementProblem = problem;
+    this.placementResolved = this.resolved;
     this.bind();
     this.fit();
   }
@@ -71,10 +75,12 @@ export class CadWorkspace {
     this.svg.replaceWith(this.svg.cloneNode(false));
   }
 
-  setModel(state: EditorState, problem: PackingProblem, placements: Placement[], refit = false): void {
+  setModel(state: EditorState, problem: PackingProblem, placements: Placement[], refit = false, placementProblem = problem): void {
     this.state = state;
     this.problem = problem;
     this.resolved = resolveGeometry(problem);
+    this.placementProblem = placementProblem;
+    this.placementResolved = placementProblem === problem ? this.resolved : resolveGeometry(placementProblem);
     this.placements = placements;
     this.selections = this.selections.filter((entry) => !this.isLocked(entry));
     if (this.selection && this.isLocked(this.selection)) this.selection = null;
@@ -177,9 +183,9 @@ export class CadWorkspace {
     exportSvg.style.width = `${width}px`; exportSvg.style.height = `${height}px`; host.append(exportSvg); document.body.append(host);
     try {
       const workspace = new CadWorkspace(exportSvg, this.state, this.problem, this.callbacks);
-      workspace.setModel(this.state, this.problem, this.placements, true);
+      workspace.setModel(this.state, this.problem, this.placements, true, this.placementProblem);
       workspace.setOverlays(this.dimensions, this.clearance);
-      workspace.setPresentationMode("edit");
+      workspace.setPresentationMode(this.presentationMode);
       workspace.setSelection(null);
       return await workspace.rasterizeSvg(width, height);
     } finally {
@@ -615,7 +621,7 @@ export class CadWorkspace {
     const current = this.eventPoint(event);
     if (this.drag.mode === "placement") {
       let rawX = original.x + current.x - this.drag.startWorld.x, rawY = original.y + current.y - this.drag.startWorld.y;
-      const item = this.problem.items.find((entry) => entry.id === placement.item_id);
+      const item = this.placementProblem.items.find((entry) => entry.id === placement.item_id);
       const placementPoints = item ? polygons(item.shape, placement.rotation_deg, rawX, rawY).flat() : [{ x: rawX, y: rawY }];
       const placementBounds = pointBounds(placementPoints), placementAnchors = [
         ...placementPoints,
@@ -734,16 +740,17 @@ export class CadWorkspace {
   }
 
   private placementMarkup(placement: Placement, index: number): string {
-    const itemIndex = this.problem.items.findIndex((entry) => entry.id === placement.item_id);
-    const item = this.problem.items[itemIndex];
+    const itemIndex = this.placementProblem.items.findIndex((entry) => entry.id === placement.item_id);
+    const item = this.placementProblem.items[itemIndex];
     if (!item) return "";
     const color = ITEM_COLORS[Math.max(itemIndex, 0) % ITEM_COLORS.length];
     const selected = this.isSelected({ kind: "placement", index });
     const locked = this.isLocked({ kind: "placement", index });
-    const local = this.resolved.items.find((geometry) => geometry.id === item.id)?.polygons ?? [];
+    const local = this.placementResolved.items.find((geometry) => geometry.id === item.id)?.polygons ?? [];
     const placed = transformPolygons(local, placement.rotation_deg, placement.x, placement.y);
     const sourceParts = sourcePartPolygons(item.shape).map((partPolygons) => transformPolygons(partPolygons, placement.rotation_deg, placement.x, placement.y));
-    const colored = sourceParts.map((partPolygons, partIndex) => partPolygons.map((polygon) => `<path class="cad-part-color item" style="fill:${editorColor(this.state.items[itemIndex]?.parts[partIndex], color)}" d="${path(polygon)}"/>`).join("")).join("");
+    const editorItem = this.state.items.find((entry) => entry.id === item.id);
+    const colored = sourceParts.map((partPolygons, partIndex) => partPolygons.map((polygon) => `<path class="cad-part-color item" style="fill:${editorColor(editorItem?.parts[partIndex], color)}" d="${path(polygon)}"/>`).join("")).join("");
     const interactive = this.presentationMode === "results" || placement.fixed;
     const paths = `${colored}<path ${locked || !interactive ? "" : `data-cad-kind="placement" data-cad-index="${index}"`} class="cad-placement unified ${locked ? "locked" : selected ? "selected" : ""} ${placement.fixed ? "fixed" : ""} ${interactive ? "" : "reference"}" fill-rule="evenodd" style="--item-color:${color};fill:transparent" d="${compoundPath(placed)}"/>${this.clearance && this.problem.clearance.item_to_item > 0 ? placed.map((polygon) => `<path class="cad-clearance item" d="${path(offsetPolygon(polygon, (contourArea(polygon) >= 0 ? 1 : -1) * this.problem.clearance.item_to_item / 2))}"/>`).join("") : ""}`;
     const fixedBadge = placement.fixed ? `<g class="cad-fixed-badge" aria-label="Fixed placement"><circle cx="${placement.x}" cy="${-placement.y}" r=".32"/><text x="${placement.x}" y="${-placement.y + .12}" text-anchor="middle">F</text></g>` : "";
@@ -751,8 +758,8 @@ export class CadWorkspace {
   }
 
   private placementSatisfiesConstraints(index: number): boolean {
-    const placement = this.placements[index], item = placement && this.problem.items.find((entry) => entry.id === placement.item_id);
-    const local = item && this.resolved.items.find((entry) => entry.id === item.id)?.polygons;
+    const placement = this.placements[index], item = placement && this.placementProblem.items.find((entry) => entry.id === placement.item_id);
+    const local = item && this.placementResolved.items.find((entry) => entry.id === item.id)?.polygons;
     if (!placement || !local) return false;
     const moved = transformPolygons(local, placement.rotation_deg, placement.x, placement.y);
     const boundaryGap = this.problem.clearance.item_to_boundary;
@@ -763,8 +770,8 @@ export class CadWorkspace {
     }
     for (let otherIndex = 0; otherIndex < this.placements.length; otherIndex++) {
       if (otherIndex === index) continue;
-      const other = this.placements[otherIndex], otherItem = this.problem.items.find((entry) => entry.id === other.item_id);
-      const otherLocal = otherItem && this.resolved.items.find((entry) => entry.id === otherItem.id)?.polygons;
+      const other = this.placements[otherIndex], otherItem = this.placementProblem.items.find((entry) => entry.id === other.item_id);
+      const otherLocal = otherItem && this.placementResolved.items.find((entry) => entry.id === otherItem.id)?.polygons;
       if (!otherLocal) continue;
       const placed = transformPolygons(otherLocal, other.rotation_deg, other.x, other.y);
       if (compoundsOverlap(moved, placed) || compoundDistance(moved, placed) < this.problem.clearance.item_to_item - 1e-8) return false;
@@ -774,7 +781,7 @@ export class CadWorkspace {
 
   private closestFeasiblePlacement(index: number, original: Placement): Placement | null {
     const placement = this.placements[index], intended = { ...placement };
-    const item = this.problem.items.find((entry) => entry.id === placement.item_id), local = item && this.resolved.items.find((entry) => entry.id === item.id)?.polygons;
+    const item = this.placementProblem.items.find((entry) => entry.id === placement.item_id), local = item && this.placementResolved.items.find((entry) => entry.id === item.id)?.polygons;
     const bounds = local?.flat().length ? pointBounds(local.flat()) : null;
     const step = Math.max(.08, Math.min(bounds?.width ?? 1, bounds?.height ?? 1) / 10, this.problem.clearance.item_to_item / 2);
     const maxRadius = Math.hypot(this.view.width, this.view.height), radialStep = Math.max(step, maxRadius / 80);
@@ -1369,7 +1376,7 @@ export class CadWorkspace {
     }
     const index = selection.index;
     const placement = this.placements[index];
-    const item = placement && this.problem.items.find((entry) => entry.id === placement.item_id);
+    const item = placement && this.placementProblem.items.find((entry) => entry.id === placement.item_id);
     if (!placement || !item) return null;
     const points = polygons(item.shape, placement.rotation_deg, placement.x, placement.y).flat();
     return points.length ? pointBounds(points) : null;
@@ -1382,9 +1389,9 @@ export class CadWorkspace {
     };
     append(this.resolved.container.flat(), "material", 0, this.state.containerParts.length === 1 && this.state.containerParts[0]?.primitive.kind === "circle");
     this.problem.exclusions.forEach((entry, index) => append((this.resolved.exclusions.find((geometry) => geometry.id === entry.id)?.polygons ?? []).flat(), `exclusion:${entry.id}`, index + 1, this.state.exclusions[index]?.parts.length === 1 && this.state.exclusions[index]?.parts[0]?.kind === "circle"));
-    this.itemSamples().forEach((sample, index) => append(sample.polygons.flat(), `item:${this.problem.items[index]?.id ?? index + 1}`, this.problem.exclusions.length + index + 1, this.state.items[index]?.parts.length === 1 && this.state.items[index]?.parts[0]?.kind === "circle"));
+    if (this.presentationMode === "edit") this.itemSamples().forEach((sample, index) => append(sample.polygons.flat(), `item:${this.problem.items[index]?.id ?? index + 1}`, this.problem.exclusions.length + index + 1, this.state.items[index]?.parts.length === 1 && this.state.items[index]?.parts[0]?.kind === "circle"));
     if (this.selection?.kind === "placement") {
-      const placement = this.placements[this.selection.index], item = placement && this.problem.items.find((entry) => entry.id === placement.item_id);
+      const placement = this.placements[this.selection.index], item = placement && this.placementProblem.items.find((entry) => entry.id === placement.item_id);
       const editorItem = placement && this.state.items.find((entry) => entry.id === placement.item_id);
       if (placement && item) append(polygons(item.shape, placement.rotation_deg, placement.x, placement.y).flat(), `placement:${placement.item_id}`, 0, editorItem?.parts.length === 1 && editorItem.parts[0]?.kind === "circle");
     }
@@ -1398,7 +1405,7 @@ export class CadWorkspace {
     };
     clearance(this.resolved.container.flat(), this.problem.clearance.item_to_boundary, "clearance:boundary", false);
     this.problem.exclusions.forEach((entry) => clearance((this.resolved.exclusions.find((geometry) => geometry.id === entry.id)?.polygons ?? []).flat(), Math.max(this.problem.clearance.item_to_exclusion, entry.clearance), `clearance:exclusion:${entry.id}`, true));
-    const sample = this.itemSamples()[0]; if (sample) clearance(sample.polygons.flat(), this.problem.clearance.item_to_item, "clearance:item-to-item", true);
+    const sample = this.presentationMode === "edit" ? this.itemSamples()[0] : undefined; if (sample) clearance(sample.polygons.flat(), this.problem.clearance.item_to_item, "clearance:item-to-item", true);
     return markup.join("");
   }
 
@@ -1435,7 +1442,7 @@ export class CadWorkspace {
   private sceneSnapPoints(excludedDraftPoint?: { shapeIndex: number; pointIndex: number }): Point[] {
     const points = [...this.resolved.container.flat(), ...this.resolved.exclusions.flatMap((entry) => entry.polygons.flat())];
     this.itemSamples().forEach((sample) => points.push(...sample.polygons.flat()));
-    this.placements.forEach((placement) => { const item = this.problem.items.find((entry) => entry.id === placement.item_id); if (item) points.push(...polygons(item.shape, placement.rotation_deg, placement.x, placement.y).flat()); });
+    this.placements.forEach((placement) => { const item = this.placementProblem.items.find((entry) => entry.id === placement.item_id); if (item) points.push(...polygons(item.shape, placement.rotation_deg, placement.x, placement.y).flat()); });
     points.push(...this.draftingSnapPoints(excludedDraftPoint));
     return points;
   }
@@ -1617,7 +1624,7 @@ export class CadWorkspace {
     this.problem.exclusions.forEach((entry) => points.push(...polygons(entry.shape).flat()));
     if (this.presentationMode === "edit") this.itemSamples().forEach((sample) => points.push(...sample.polygons.flat()));
     this.placements.forEach((placement) => {
-      const item = this.problem.items.find((entry) => entry.id === placement.item_id);
+      const item = this.placementProblem.items.find((entry) => entry.id === placement.item_id);
       if (item) points.push(...polygons(item.shape, placement.rotation_deg, placement.x, placement.y).flat());
     });
     if (this.presentationMode === "edit") this.state.drafting.traceImages.forEach((trace, index) => { if (trace.visible === false) return; const bounds = this.selectionBounds({ kind: "trace", index }); if (bounds) points.push({ x: bounds.minX, y: bounds.minY }, { x: bounds.maxX, y: bounds.maxY }); });

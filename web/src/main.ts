@@ -30,6 +30,7 @@ type WorkspaceMode = "edit" | "running" | "results";
 interface StudioSnapshot {
   state: EditorState;
   result: SolveResult | null;
+  resultProblem: PackingProblem | null;
   manualLayout: boolean;
   resultStale: boolean;
   mode: WorkspaceMode;
@@ -46,6 +47,7 @@ const history = new WorkspaceHistory<StudioSnapshot>();
 let state = structuredClone(projects.active.state);
 let page: PageName = "packing";
 let currentResult: SolveResult | null = null;
+let resultProblem: PackingProblem | null = null;
 let sensitivityResult: SensitivityResult | null = null;
 let sensitivitySelection: number | null = null;
 let selection: CadSelection | null = { kind: "container", index: 0 };
@@ -1174,34 +1176,36 @@ function copySelectedItems(): void {
   const placementIndexes = selections.filter((entry) => entry.kind === "placement").map((entry) => entry.index);
   if (placementIndexes.length && currentResult) {
     placementClipboard = placementIndexes.map((index) => currentResult!.placements[index]).filter(Boolean).map((entry) => structuredClone(entry));
-    itemClipboard = []; partClipboard = null;
+    definitionClipboard = [];
     setStatus("success", `${placementClipboard.length} solved placement${placementClipboard.length === 1 ? "" : "s"} copied`); return;
   }
-  const explicitItems = selections.filter((entry) => entry.kind === "item" && entry.partIndex === undefined).map((entry) => entry.index);
-  const selectedItemParts = selections.filter((entry): entry is Extract<CadSelection, { kind: "item" }> & { partIndex: number } => entry.kind === "item" && entry.partIndex !== undefined);
-  const fullySelectedItems = [...new Set(selectedItemParts.map((entry) => entry.index))].filter((index) => {
-    const item = state.items[index];
-    return !!item?.parts.length && item.parts.every((_part, partIndex) => selectedItemParts.some((entry) => entry.index === index && entry.partIndex === partIndex));
-  });
-  const indexes = [...new Set([...explicitItems, ...fullySelectedItems])];
-  itemClipboard = indexes.map((index) => state.items[index]).filter(Boolean).map((item) => structuredClone(item));
-  const partial = selectedItemParts.filter((entry) => !indexes.includes(entry.index));
-  if (!itemClipboard.length && partial.length) {
-    const ownerIndex = partial[0].index;
-    const parts = partial.filter((entry) => entry.index === ownerIndex).map((entry) => state.items[ownerIndex]?.parts[entry.partIndex]).filter(Boolean);
-    partClipboard = { owner: { kind: "item", index: ownerIndex }, parts: structuredClone(parts) };
-  } else if (!itemClipboard.length) {
-    const exclusionParts = selections.filter((entry): entry is Extract<CadSelection, { kind: "exclusion" }> & { partIndex: number } => entry.kind === "exclusion" && entry.partIndex !== undefined);
-    const ownerIndex = exclusionParts[0]?.index;
-    const parts = ownerIndex === undefined ? [] : exclusionParts.filter((entry) => entry.index === ownerIndex).map((entry) => state.exclusions[ownerIndex]?.parts[entry.partIndex]).filter(Boolean);
-    partClipboard = parts.length ? { owner: { kind: "exclusion", index: ownerIndex }, parts: structuredClone(parts) } : null;
-  } else partClipboard = null;
+  const entries: DefinitionClipboardEntry[] = [];
+  const containers = [...new Set(selections.filter((entry) => entry.kind === "container").map((entry) => entry.index))];
+  containers.forEach((index) => { const value = state.containerParts[index]; if (value) entries.push({ kind: "container", value: structuredClone(value) }); });
+  for (const kind of ["item", "exclusion"] as const) {
+    const owners = kind === "item" ? state.items : state.exclusions;
+    const selectedParts = selections.filter((entry): entry is Extract<CadSelection, { kind: typeof kind }> & { partIndex: number } => entry.kind === kind && entry.partIndex !== undefined);
+    const explicit = selections.filter((entry) => entry.kind === kind && entry.partIndex === undefined).map((entry) => entry.index);
+    const complete = [...new Set(selectedParts.map((entry) => entry.index))].filter((index) => {
+      const owner = owners[index];
+      return !!owner?.parts.length && owner.parts.every((_part, partIndex) => selectedParts.some((entry) => entry.index === index && entry.partIndex === partIndex));
+    });
+    const whole = [...new Set([...explicit, ...complete])];
+    whole.forEach((index) => {
+      const value = owners[index];
+      if (value) entries.push(kind === "item" ? { kind, value: structuredClone(value as EditorItem) } : { kind, value: structuredClone(value as EditorExclusion) });
+    });
+    for (const ownerIndex of [...new Set(selectedParts.map((entry) => entry.index))].filter((index) => !whole.includes(index))) {
+      const parts = selectedParts.filter((entry) => entry.index === ownerIndex).map((entry) => owners[ownerIndex]?.parts[entry.partIndex]).filter((part): part is PrimitiveEditor => !!part);
+      if (parts.length) entries.push({ kind: "parts", value: { owner: { kind, index: ownerIndex }, parts: structuredClone(parts) } });
+    }
+  }
+  definitionClipboard = entries;
   placementClipboard = [];
-  const copied = itemClipboard.length || partClipboard?.parts.length || 0;
-  setStatus(copied ? "success" : "neutral", itemClipboard.length
-    ? `${itemClipboard.length} complete item${itemClipboard.length === 1 ? "" : "s"} copied`
-    : partClipboard ? `${partClipboard.parts.length} constituent shape${partClipboard.parts.length === 1 ? "" : "s"} copied`
-      : "Select an item or constituent shape to copy");
+  const copied = entries.reduce((count, entry) => count + (entry.kind === "parts" ? entry.value.parts.length : 1), 0);
+  setStatus(copied ? "success" : "neutral", copied
+    ? `${copied} scene object${copied === 1 ? "" : "s"} copied`
+    : "Select material, an item, an exclusion, or constituent shapes to copy");
 }
 
 function pasteItems(): void {
@@ -1213,43 +1217,70 @@ function pasteItems(): void {
     selections = copies.map((_, offset) => ({ kind: "placement", index: start + offset })); selection = selections.at(-1) ?? null;
     refreshPacking(); renderPackingSidebar(); return;
   }
-  if (partClipboard?.parts.length) {
-    mutate(() => {
-      const destination = selection?.kind === partClipboard!.owner.kind ? selectedConstraintParts()
-        : partClipboard!.owner.kind === "item" ? state.items[partClipboard!.owner.index]?.parts : state.exclusions[partClipboard!.owner.index]?.parts;
-      if (!destination) return;
-      const idMap = new Map<string, string>();
-      const copies = structuredClone(partClipboard!.parts);
-      const used = destination.map((part) => part.id);
-      copies.forEach((part) => { const id = uniqueId(`${part.id}-copy`, [...used, ...idMap.values()]); idMap.set(part.id, id); part.id = id; });
-      copies.forEach((part, index) => {
-        const source = partClipboard!.parts[index];
-        if (source.snap && idMap.has(source.snap.targetId)) part.snap!.targetId = idMap.get(source.snap.targetId)!;
-        else if (part.snap && !destination.some((target) => target.id === part.snap!.targetId)) delete part.snap;
-        if (!part.snap) { part.x = roundForEditor(part.x + state.options.grid_step); part.y = roundForEditor(part.y - state.options.grid_step); }
-      });
-      const start = destination.length; destination.push(...copies); selectedPartIndex = destination.length - 1;
-      if (selection?.kind !== partClipboard!.owner.kind) selection = { kind: partClipboard!.owner.kind, index: partClipboard!.owner.index };
-      selections = copies.map((_part, offset) => ({ ...selection!, partIndex: start + offset } as CadSelection));
-      selection = selections.at(-1) ?? selection;
-    });
-    refreshPacking(true);
-    setStatus("success", `${partClipboard.parts.length} constituent shape${partClipboard.parts.length === 1 ? "" : "s"} pasted into the construction`);
-    return;
-  }
-  if (!itemClipboard.length) { setStatus("neutral", "Copy a packable item before pasting"); return; }
+  if (!definitionClipboard.length) { setStatus("neutral", "Copy scene objects before pasting"); return; }
+  const copiedCount = definitionClipboard.reduce((count, entry) => count + (entry.kind === "parts" ? entry.value.parts.length : 1), 0);
   mutate(() => {
     const added: CadSelection[] = [];
-    itemClipboard.forEach((source) => {
-      const item = structuredClone(source);
-      item.id = uniqueId(`${source.id}-copy`, state.items.map((entry) => entry.id));
-      state.items.push(item);
+    const step = Math.max(state.drafting.gridStep, .1);
+    const containerEntries = definitionClipboard.filter((entry): entry is Extract<DefinitionClipboardEntry, { kind: "container" }> => entry.kind === "container");
+    if (containerEntries.length) {
+      const sources = containerEntries.map((entry) => entry.value.primitive);
+      const copies = duplicatePrimitiveGroup(sources, state.containerParts.map((entry) => entry.primitive), step);
+      containerEntries.forEach((entry, index) => {
+        const region = structuredClone(entry.value);
+        region.id = uniqueId(`${region.id}-copy`, state.containerParts.map((value) => value.id));
+        region.primitive = copies[index]; state.containerParts.push(region);
+        added.push({ kind: "container", index: state.containerParts.length - 1 });
+      });
+    }
+    definitionClipboard.filter((entry): entry is Extract<DefinitionClipboardEntry, { kind: "item" }> => entry.kind === "item").forEach((entry) => {
+      const item = structuredClone(entry.value);
+      item.id = uniqueId(`${item.id}-copy`, state.items.map((value) => value.id));
+      item.parts = duplicatePrimitiveGroup(item.parts, [], 0); state.items.push(item);
       added.push({ kind: "item", index: state.items.length - 1 });
+    });
+    definitionClipboard.filter((entry): entry is Extract<DefinitionClipboardEntry, { kind: "exclusion" }> => entry.kind === "exclusion").forEach((entry) => {
+      const exclusion = structuredClone(entry.value);
+      exclusion.id = uniqueId(`${exclusion.id}-copy`, state.exclusions.map((value) => value.id));
+      exclusion.parts = duplicatePrimitiveGroup(exclusion.parts, [], step); state.exclusions.push(exclusion);
+      added.push({ kind: "exclusion", index: state.exclusions.length - 1 });
+    });
+    definitionClipboard.filter((entry): entry is Extract<DefinitionClipboardEntry, { kind: "parts" }> => entry.kind === "parts").forEach((entry) => {
+      const owner = entry.value.owner;
+      const targetIndex = definitionClipboard.length === 1 && selection?.kind === owner.kind ? selection.index : owner.index;
+      const destination = owner.kind === "item" ? state.items[targetIndex]?.parts : state.exclusions[targetIndex]?.parts;
+      if (!destination) return;
+      const copies = duplicatePrimitiveGroup(entry.value.parts, destination, step), start = destination.length;
+      destination.push(...copies);
+      copies.forEach((_part, offset) => added.push({ kind: owner.kind, index: targetIndex, partIndex: start + offset }));
     });
     selections = added; selection = added.at(-1) ?? null; selectedPartIndex = 0;
   });
   refreshPacking(true);
-  setStatus("success", `${itemClipboard.length} new item${itemClipboard.length === 1 ? "" : "s"} pasted`);
+  const onlyParts = definitionClipboard.every((entry) => entry.kind === "parts");
+  const onlyItems = definitionClipboard.every((entry) => entry.kind === "item");
+  setStatus("success", onlyParts
+    ? `${copiedCount} constituent shape${copiedCount === 1 ? "" : "s"} pasted into the construction`
+    : onlyItems ? `${copiedCount} new item${copiedCount === 1 ? "" : "s"} pasted`
+    : `${copiedCount} new scene object${copiedCount === 1 ? "" : "s"} pasted`);
+}
+
+function duplicatePrimitiveGroup(sources: PrimitiveEditor[], existing: PrimitiveEditor[], offset: number): PrimitiveEditor[] {
+  const copies = structuredClone(sources), idMap = new Map<string, string>(), used = existing.map((part) => part.id);
+  copies.forEach((part) => {
+    const id = uniqueId(`${part.id}-copy`, [...used, ...idMap.values()]); idMap.set(part.id, id); part.id = id;
+  });
+  copies.forEach((part, index) => {
+    const source = sources[index], target = source.snap?.targetId;
+    if (target && idMap.has(target)) part.snap!.targetId = idMap.get(target)!;
+    else if (target && existing.some((candidate) => candidate.id === target)) {
+      part.snap!.offset = { x: roundForEditor(part.snap!.offset.x + offset), y: roundForEditor(part.snap!.offset.y - offset) };
+    } else {
+      if (part.snap) delete part.snap;
+      part.x = roundForEditor(part.x + offset); part.y = roundForEditor(part.y - offset);
+    }
+  });
+  return copies;
 }
 
 function roundForEditor(value: number): number { return Math.round(value * 1000) / 1000; }
@@ -1352,6 +1383,7 @@ async function solve(): Promise<void> {
     await client.validate(problem);
     element("solve-stage").textContent = "Preparing geometry"; currentResult = null; manualLayout = false; resultStale = false;
     currentResult = await client.solve(problem, state.options, (progress) => updateProgress(problem, progress));
+    resultProblem = structuredClone(problem);
     workspaceMode = "results"; showPackingResult(problem, currentResult); commitSession(before); updateHistoryButtons();
     setStatus("success", `${currentResult.packed_item_count} items · ${state.options.baseline_only ? "Baseline validated" : humanize(currentResult.status)}`);
   } catch (error) { restoreSession(before); refreshPacking(true); renderPackingSidebar(); handleRunError(error); } finally { setRunning(false); syncWorkspaceMode(); }
@@ -1383,6 +1415,7 @@ function updateProgress(problem: PackingProblem, progress: SolveProgress): void 
 }
 
 function showPackingResult(problem: PackingProblem, result: SolveResult): void {
+  resultProblem = structuredClone(problem);
   workspaceMode = "results"; cad.setPresentationMode("results"); cad.setModel(state, problem, result.placements, true);
   element("workspace-summary").textContent = `${result.packed_item_count} packed items`;
   updateDiagnostics(); renderPackingSidebar(); syncWorkspaceMode();
@@ -1462,11 +1495,12 @@ function mutate(change: () => void, rerender = true): void {
 }
 
 function captureSession(): StudioSnapshot {
-  return { state: structuredClone(state), result: structuredClone(currentResult), manualLayout, resultStale, mode: workspaceMode };
+  return { state: structuredClone(state), result: structuredClone(currentResult), resultProblem: structuredClone(resultProblem), manualLayout, resultStale, mode: workspaceMode };
 }
 function commitSession(previous: StudioSnapshot): void { history.commit(previous, captureSession()); }
 function restoreSession(restored: StudioSnapshot): void {
   state = structuredClone(restored.state); currentResult = structuredClone(restored.result);
+  resultProblem = structuredClone(restored.resultProblem);
   manualLayout = restored.manualLayout; resultStale = restored.resultStale; workspaceMode = restored.mode;
 }
 function undo(): void { const restored = history.undo(captureSession()); if (restored) restoreHistory(restored, "Undid last workspace action"); }
@@ -1477,7 +1511,7 @@ function restoreHistory(restored: StudioSnapshot, message: string): void {
 }
 
 function clearResults(): void {
-  currentResult = null; sensitivityResult = null; sensitivitySelection = null; manualLayout = false; resultStale = false; workspaceMode = "edit";
+  currentResult = null; resultProblem = null; sensitivityResult = null; sensitivitySelection = null; manualLayout = false; resultStale = false; workspaceMode = "edit";
   element("workspace-summary").textContent = "Problem definition";
   element("diagnostics").innerHTML = "<p>Run a solve to inspect validation and search statistics.</p>";
   element<HTMLButtonElement>("edit-selected-layout").disabled = true;
@@ -1494,7 +1528,11 @@ function markResultStale(): void {
 function refreshCurrentPage(refit = false): void { if (page === "packing") refreshPacking(refit); else refreshSensitivityPage(); }
 function refreshPacking(refit = false): void {
   const fixedPreview: Placement[] = state.fixedPlacements.map((placement) => ({ ...placement, fixed: true }));
-  try { cad.setModel(state, toProblem(state), currentResult?.placements ?? fixedPreview, refit); cad.setSelection(selection, selectedPartIndex, selections); }
+  try {
+    const problem = toProblem(state);
+    cad.setModel(state, problem, currentResult?.placements ?? fixedPreview, refit, currentResult ? resultProblem ?? problem : problem);
+    cad.setSelection(selection, selectedPartIndex, selections);
+  }
   catch (error) { setStatus("error", errorMessage(error)); }
 }
 function refreshSensitivityPage(): void { renderStudyGeometryPreview(); renderSensitivityResults(); if (sensitivityResult && sensitivitySelection !== null) selectSensitivityEvaluation(sensitivitySelection, "selected"); }
@@ -1536,7 +1574,7 @@ function editSelectedLayout(): void {
   const evaluation = selectedEvaluation(); if (!evaluation) return;
   const options = state.options, study = state.study;
   state = fromProblem(evaluation.problem); state.options = options; state.study = study;
-  currentResult = structuredClone(evaluation.result); manualLayout = true; resultStale = false; workspaceMode = "results";
+  currentResult = structuredClone(evaluation.result); resultProblem = structuredClone(evaluation.problem); manualLayout = true; resultStale = false; workspaceMode = "results";
   history.clear(); projects.save(state); selection = currentResult.placements.length ? { kind: "placement", index: 0 } : null; selections = selection ? [selection] : [];
   renderPackingSidebar(); renderSensitivitySidebar(); updateHistoryButtons(); showPage("packing"); syncWorkspaceMode(); refreshPacking(true); updateDiagnostics(); element("workspace-summary").textContent = `${currentResult.packed_item_count} items · manual layout`;
   setStatus("neutral", "Sensitivity result opened as an editable layout");

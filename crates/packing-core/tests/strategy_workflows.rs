@@ -547,4 +547,76 @@ fn capsule_quality_and_studio_twenty_one_item_witness_are_validated() {
     assert_eq!(continuation.packed_item_count, 21);
     assert!(continuation.validation.valid);
     assert!(continuation.statistics.continuation_stages <= 2);
+
+    problem.container.parts.push(RegionPart {
+        id: "disconnected-stock".into(),
+        operation: RegionOperation::Add,
+        shape: Shape::Rectangle {
+            width: 12.0,
+            height: 8.0,
+        },
+        translation: Point { x: 6.0, y: -6.0 },
+        rotation_deg: 0.0,
+        snap: None,
+    });
+    let prepared_multi = prepare_problem(&problem).unwrap();
+    let multi = solve_with_observer_direct(
+        &prepared_multi,
+        &direct_options,
+        &mut RecordingObserver::default(),
+    )
+    .unwrap();
+    let retained_main = multi
+        .placements
+        .iter()
+        .filter(|placement| placement.y >= 0.0)
+        .count();
+    let packed_disconnected = multi
+        .placements
+        .iter()
+        .filter(|placement| placement.y < 0.0)
+        .count();
+    assert!(
+        retained_main >= direct.packed_item_count,
+        "disconnected stock reduced the original complex component from {} to {retained_main} items via {}",
+        direct.packed_item_count,
+        multi.solver_strategy
+    );
+    assert!(
+        packed_disconnected >= 4,
+        "expected the disconnected stock to contribute capsules, got {packed_disconnected} via {}",
+        multi.solver_strategy
+    );
+    assert!(multi.validation.valid);
+    assert!(
+        multi.statistics.iterations <= 20_000,
+        "multi-container completion regressed to {} portfolio iterations",
+        multi.statistics.iterations
+    );
+    assert!(
+        multi.statistics.exact_geometry_checks <= 40_000,
+        "multi-container completion regressed to {} exact checks",
+        multi.statistics.exact_geometry_checks
+    );
+
+    let multi_continuation =
+        solve_prepared_clearance_continuation(&prepared_multi, &continuation_options).unwrap();
+    let continued_main = multi_continuation
+        .placements
+        .iter()
+        .filter(|placement| placement.y >= 0.0)
+        .count();
+    let continued_disconnected = multi_continuation
+        .placements
+        .iter()
+        .filter(|placement| placement.y < 0.0)
+        .count();
+    assert!(
+        continued_main >= continuation.packed_item_count,
+        "disconnected stock reduced the continued 21-item witness to {continued_main} items ({} total, {continued_disconnected} disconnected) via {}",
+        multi_continuation.packed_item_count,
+        multi_continuation.solver_strategy
+    );
+    assert!(continued_disconnected >= 4);
+    assert!(multi_continuation.validation.valid);
 }

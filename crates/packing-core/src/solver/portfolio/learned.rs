@@ -11,12 +11,14 @@ pub(in crate::solver) fn learned_lattice_layouts(
     let mut layouts = Vec::new();
     let subdivision_started = Clock::start();
     let decomposed_cells = decomposed_regions(prepared);
+    let component_bounds = container_component_bounds(prepared);
+    let mut component_best = vec![Vec::new(); component_bounds.len()];
     counters.subdivision_ms += subdivision_started.elapsed_ms();
-    for variant in &prepared.variants {
+    'variant_portfolio: for variant in &prepared.variants {
         let horizontal_pitch = variant.bounds.width() + prepared.problem.clearance.item_to_item;
         for shift_fraction in [0.0, 0.5] {
             if stop_requested(options, started, counters, observer) {
-                return layouts;
+                break 'variant_portfolio;
             }
             let row_shift = horizontal_pitch * shift_fraction;
             let vertical_pitch = learned_separation(
@@ -57,6 +59,45 @@ pub(in crate::solver) fn learned_lattice_layouts(
                     ),
                     placed,
                 ));
+                if component_bounds.len() > 1 {
+                    let mut component_aligned = fixed.to_vec();
+                    for component in &component_bounds {
+                        lattice_fill(
+                            prepared,
+                            options,
+                            variant,
+                            *component,
+                            horizontal_pitch,
+                            vertical_pitch,
+                            row_shift,
+                            vertical_high,
+                            horizontal_high,
+                            &mut component_aligned,
+                            counters,
+                            started,
+                            observer,
+                        );
+                    }
+                    if rotation_is_independent(
+                        &prepared.problem.items[variant.item_index].rotation_policy,
+                    ) {
+                        retain_component_best(
+                            &component_aligned,
+                            fixed.len(),
+                            &component_bounds,
+                            &mut component_best,
+                        );
+                    }
+                    layouts.push((
+                        format!(
+                            "learned_component_aligned_{}_shift_{shift_fraction:.2}_{}{}",
+                            variant.rotation_deg,
+                            if vertical_high { "top" } else { "bottom" },
+                            if horizontal_high { "_right" } else { "_left" }
+                        ),
+                        component_aligned,
+                    ));
+                }
                 if decomposed_cells.len() > 1 {
                     let mut decomposed = fixed.to_vec();
                     for cell in &decomposed_cells {
@@ -85,11 +126,75 @@ pub(in crate::solver) fn learned_lattice_layouts(
                         ),
                         decomposed,
                     ));
+                    if rotation_is_independent(
+                        &prepared.problem.items[variant.item_index].rotation_policy,
+                    ) {
+                        let decomposed = &layouts.last().expect("layout was just pushed").1;
+                        retain_component_best(
+                            decomposed,
+                            fixed.len(),
+                            &component_bounds,
+                            &mut component_best,
+                        );
+                    }
                 }
             }
         }
     }
+    if component_bounds.len() > 1 {
+        let mut componentwise = fixed.to_vec();
+        for entry in component_best.into_iter().flatten() {
+            let item = prepared
+                .problem
+                .items
+                .iter()
+                .find(|item| item.id == entry.placement.item_id)
+                .expect("candidate item exists");
+            if item_count(&componentwise, &entry.placement.item_id) < item.quantity as usize {
+                componentwise.push(entry);
+            }
+        }
+        layouts.push((
+            "learned_decomposed_componentwise".to_string(),
+            componentwise,
+        ));
+    }
     layouts
+}
+
+fn retain_component_best(
+    candidate: &[CandidatePlacement],
+    fixed_count: usize,
+    component_bounds: &[Bounds],
+    component_best: &mut [Vec<CandidatePlacement>],
+) {
+    for (component_index, component) in component_bounds.iter().enumerate() {
+        let within_component = candidate
+            .iter()
+            .skip(fixed_count)
+            .filter(|entry| bounds_inside(entry.bounds, *component))
+            .cloned()
+            .collect::<Vec<_>>();
+        if within_component.len() > component_best[component_index].len()
+            || (within_component.len() == component_best[component_index].len()
+                && layout_key(&within_component) < layout_key(&component_best[component_index]))
+        {
+            component_best[component_index] = within_component;
+        }
+    }
+}
+
+fn rotation_is_independent(policy: &crate::RotationPolicy) -> bool {
+    matches!(
+        policy,
+        crate::RotationPolicy::Discrete {
+            coupling: crate::RotationCoupling::Independent,
+            ..
+        } | crate::RotationPolicy::Continuous {
+            coupling: crate::RotationCoupling::Independent,
+            ..
+        }
+    )
 }
 
 fn decomposed_regions(prepared: &PreparedProblem) -> Vec<Bounds> {

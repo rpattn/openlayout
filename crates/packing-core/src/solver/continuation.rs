@@ -7,6 +7,46 @@ pub(super) fn clearance_continuation(
     observer: &mut dyn SolveObserver,
     preview_seed: &[Placement],
 ) -> Result<ContinuationOutcome, PackingError> {
+    if let Some(component) = dominant_complex_component(prepared) {
+        let seed = if preview_seed.iter().any(|placement| !placement.fixed) {
+            preview_seed.to_vec()
+        } else {
+            solve_with_observer_internal(prepared, options, &mut NoObserver, None, false)?
+                .placements
+        };
+        let retained = seed
+            .iter()
+            .filter(|placement| !placement_inside_component(prepared, placement, &component))
+            .cloned()
+            .collect::<Vec<_>>();
+        let component_seed = seed
+            .iter()
+            .filter(|placement| placement_inside_component(prepared, placement, &component))
+            .cloned()
+            .collect::<Vec<_>>();
+        let component_prepared = prepared_for_component(prepared, component.clone());
+        let mut component_observer = ComponentContinuationObserver {
+            inner: observer,
+            retained: &retained,
+        };
+        let mut outcome = clearance_continuation_single(
+            &component_prepared,
+            options,
+            &mut component_observer,
+            &component_seed,
+        )?;
+        outcome.placements.extend(retained);
+        return Ok(outcome);
+    }
+    clearance_continuation_single(prepared, options, observer, preview_seed)
+}
+
+fn clearance_continuation_single(
+    prepared: &PreparedProblem,
+    options: &SolveOptions,
+    observer: &mut dyn SolveObserver,
+    preview_seed: &[Placement],
+) -> Result<ContinuationOutcome, PackingError> {
     let target_clearance = prepared.problem.clearance.item_to_item;
     let origin_x = (prepared.container_bounds.min_x + prepared.container_bounds.max_x) / 2.0;
     let origin_y = (prepared.container_bounds.min_y + prepared.container_bounds.max_y) / 2.0;
@@ -134,6 +174,169 @@ pub(super) fn clearance_continuation(
         search_stages,
         full_solve_stages,
     })
+}
+
+struct ComponentContinuationObserver<'a> {
+    inner: &'a mut dyn SolveObserver,
+    retained: &'a [Placement],
+}
+
+impl SolveObserver for ComponentContinuationObserver<'_> {
+    fn should_cancel(&mut self) -> bool {
+        self.inner.should_cancel()
+    }
+
+    fn on_progress(&mut self, progress: &SolveProgress) {
+        let mut combined = progress.clone();
+        combined.placements.extend_from_slice(self.retained);
+        combined.packed_item_count = combined.placements.len();
+        self.inner.on_progress(&combined);
+    }
+}
+
+fn dominant_complex_component(prepared: &PreparedProblem) -> Option<PolygonSet> {
+    let complex_item = prepared.variants.iter().any(|variant| {
+        variant
+            .geometry
+            .polygons
+            .iter()
+            .map(Vec::len)
+            .sum::<usize>()
+            > 16
+    });
+    if !complex_item {
+        return None;
+    }
+    let mut outer = prepared
+        .container
+        .polygons
+        .iter()
+        .filter(|polygon| contour_twice_area(polygon) > EPSILON)
+        .collect::<Vec<_>>();
+    if outer.len() < 2 {
+        return None;
+    }
+    outer.sort_by(|a, b| {
+        contour_twice_area(b)
+            .total_cmp(&contour_twice_area(a))
+            .then_with(|| a.len().cmp(&b.len()))
+    });
+    let dominant = outer[0].clone();
+    let dominant_owner = dominant.clone();
+    let mut polygons = vec![dominant];
+    polygons.extend(
+        prepared
+            .container
+            .polygons
+            .iter()
+            .filter(|polygon| contour_twice_area(polygon) < -EPSILON)
+            .filter(|polygon| {
+                let point = polygon[0];
+                prepared
+                    .container
+                    .polygons
+                    .iter()
+                    .filter(|outer| {
+                        contour_twice_area(outer) > EPSILON
+                            && crate::geometry::point_in_polygon(point, outer)
+                    })
+                    .min_by(|a, b| contour_twice_area(a).total_cmp(&contour_twice_area(b)))
+                    .is_some_and(|owner| owner == &dominant_owner)
+            })
+            .cloned(),
+    );
+    let mut component = PolygonSet::new(polygons);
+    component.enable_edge_index();
+    Some(component)
+}
+
+fn prepared_for_component(prepared: &PreparedProblem, component: PolygonSet) -> PreparedProblem {
+    let component_bounds = bounds(&component);
+    let selected_exclusions = prepared
+        .exclusions
+        .iter()
+        .zip(&prepared.problem.exclusions)
+        .filter(|(geometry, _)| set_inside(geometry, &component, 0.0))
+        .map(|(geometry, exclusion)| (geometry.clone(), exclusion.clone()))
+        .collect::<Vec<_>>();
+    let mut component_prepared = prepared.clone();
+    component_prepared.container_contacts = component
+        .polygons
+        .iter()
+        .flat_map(|polygon| {
+            polygon.iter().enumerate().flat_map(|(index, point)| {
+                let next = polygon[(index + 1) % polygon.len()];
+                [
+                    *point,
+                    crate::Point {
+                        x: (point.x + next.x) / 2.0,
+                        y: (point.y + next.y) / 2.0,
+                    },
+                ]
+            })
+        })
+        .collect();
+    component_prepared.exclusion_contacts = selected_exclusions
+        .iter()
+        .flat_map(|(geometry, _)| geometry.polygons.iter().flatten().copied())
+        .collect();
+    component_prepared.exclusions = selected_exclusions
+        .iter()
+        .map(|(geometry, _)| geometry.clone())
+        .collect();
+    component_prepared.problem.exclusions = selected_exclusions
+        .into_iter()
+        .map(|(_, exclusion)| exclusion)
+        .collect();
+    component_prepared.problem.fixed_placements.retain(|fixed| {
+        placement_inside_component(
+            prepared,
+            &Placement {
+                item_id: fixed.item_id.clone(),
+                x: fixed.x,
+                y: fixed.y,
+                rotation_deg: fixed.rotation_deg,
+                fixed: true,
+            },
+            &component,
+        )
+    });
+    component_prepared.container = component;
+    component_prepared.container_bounds = component_bounds;
+    component_prepared.usable_area = area(&component_prepared.container);
+    component_prepared.simple_upper_bound = None;
+    component_prepared.region_upper_bound = None;
+    component_prepared.projection_upper_bound = None;
+    component_prepared
+}
+
+fn placement_inside_component(
+    prepared: &PreparedProblem,
+    placement: &Placement,
+    component: &PolygonSet,
+) -> bool {
+    prepared
+        .variants
+        .iter()
+        .find(|variant| {
+            variant.item_id == placement.item_id
+                && same_rotation(variant.rotation_deg, placement.rotation_deg)
+        })
+        .is_some_and(|variant| {
+            let geometry = transform(&variant.geometry, 0.0, placement.x, placement.y);
+            set_inside(&geometry, component, 0.0)
+        })
+}
+
+fn contour_twice_area(polygon: &[crate::Point]) -> f64 {
+    polygon
+        .iter()
+        .enumerate()
+        .map(|(index, point)| {
+            let next = polygon[(index + 1) % polygon.len()];
+            point.x * next.y - next.x * point.y
+        })
+        .sum()
 }
 
 pub(super) struct ContinuationOutcome {

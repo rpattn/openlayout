@@ -1,13 +1,43 @@
 import { expect, test, type Page } from "@playwright/test";
 
 test("default project reaches the 21-item continuation result", async ({ page }) => {
+  await page.addInitScript(() => {
+    const serialize = XMLSerializer.prototype.serializeToString;
+    XMLSerializer.prototype.serializeToString = function (root) {
+      const result = serialize.call(this, root);
+      if (root instanceof SVGElement) (window as typeof window & { __lastSceneSvg?: string }).__lastSceneSvg = result;
+      return result;
+    };
+  });
   await page.goto("/");
+  await page.getByRole("button", { name: "Dimensions", exact: true }).click();
+  await expect(page.locator('[data-dimension-owner^="item:"]')).not.toHaveCount(0);
   const started = Date.now();
   await page.locator("#solve").click();
   await expect(page.locator("#workspace-summary")).toHaveText("21 packed items", { timeout: 15_000 });
   await expect(page.locator("#diagnostics")).toContainText("Workers2");
   await expect(page.locator("#diagnostics")).toContainText("Winning laneClearance continuation");
   expect(Date.now() - started).toBeLessThan(15_000);
+  await expect(page.locator(".cad-library .cad-item-sample")).toHaveCount(0);
+  await expect(page.locator('[data-dimension-owner^="item:"]')).toHaveCount(0);
+  await expect(page.locator('[data-dimension-owner="clearance:item-to-item"]')).toHaveCount(0);
+  await expect(page.locator('[data-dimension-owner="material"]')).toHaveCount(1);
+  await page.locator("#result-export").click();
+  const download = page.waitForEvent("download");
+  await page.locator('[data-export="scene-png"]').click();
+  await download;
+  const exported = await page.evaluate(() => {
+    const source = (window as typeof window & { __lastSceneSvg?: string }).__lastSceneSvg ?? "";
+    const document = new DOMParser().parseFromString(source, "image/svg+xml");
+    return {
+      placements: document.querySelectorAll(".cad-placement").length,
+      itemSamples: document.querySelectorAll(".cad-library .cad-item-sample").length,
+      itemDimensions: document.querySelectorAll('[data-dimension-owner^="item:"]').length,
+    };
+  });
+  expect(exported.placements).toBeGreaterThan(0);
+  expect(exported.itemSamples).toBe(0);
+  expect(exported.itemDimensions).toBe(0);
 });
 
 async function clickMoreTool(page: Page, name: string): Promise<void> {
@@ -1301,6 +1331,34 @@ test("multi-selects, applies bulk actions, and duplicates item definitions", asy
   await expect(page.locator(".cad-item-sample.selected")).toHaveCount(0);
 });
 
+test("copies and pastes mixed material, item, and exclusion selections", async ({ page }) => {
+  await page.goto("/");
+  await page.locator('[data-cad-select="container:0"]').click();
+  await page.locator("#add-material").hover();
+  await page.locator("#add-material-menu").getByRole("menuitemradio", { name: /Circle/ }).click();
+  await page.mouse.move(700, 500);
+  await page.locator('[data-cad-select="container:0"]').click();
+  await page.locator('[data-cad-select="container:1"]').click({ modifiers: ["Control"] });
+  await page.locator('[data-cad-select="item:0"]').click({ modifiers: ["Control"] });
+  await page.locator('[data-cad-select="exclusion:0"]').click({ modifiers: ["Control"] });
+  await expect(page.locator("#selection-inspector")).toContainText("4 objects selected");
+
+  const materialBefore = await page.locator('[data-cad-kind="container"]').count();
+  const itemsBefore = await page.locator('[data-unified-geometry^="item:"]').count();
+  const exclusionsBefore = await page.locator('[data-unified-geometry^="exclusion:"]').count();
+  await page.locator("#cad-canvas").focus();
+  await page.keyboard.press("Control+c");
+  await page.keyboard.press("Control+v");
+
+  await expect(page.locator('[data-cad-kind="container"]')).toHaveCount(materialBefore + 2);
+  await expect(page.locator('[data-unified-geometry^="item:"]')).toHaveCount(itemsBefore + 1);
+  await expect(page.locator('[data-unified-geometry^="exclusion:"]')).toHaveCount(exclusionsBefore + 1);
+  await expect(page.locator("#selection-inspector")).toContainText("4 objects selected");
+  await expect(page.locator("#status")).toContainText("4 new scene objects pasted");
+  await page.keyboard.press("v");
+  await expect(page.locator("#status")).toContainText("valid", { timeout: 10_000 });
+});
+
 test("multi-selects individual construction parts and edits them precisely", async ({ page }) => {
   await page.goto("/");
   const parts = page.locator('[data-cad-kind="item"][data-cad-index="0"]');
@@ -1368,7 +1426,16 @@ test("retains solved layouts for stale edits and copies solved placements", asyn
   await page.locator(".cad-placement").first().click();
   await page.keyboard.press("Control+c"); await page.keyboard.press("Control+v");
   await expect(page.locator(".cad-placement")).toHaveCount(before + 1);
+  const solvedPaths = await page.locator(".cad-placement").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("d")));
   await page.getByRole("button", { name: "Return to edit" }).click();
+  const sourcePart = page.locator('[data-cad-kind="item"][data-cad-index="0"]').first();
+  const sourcePath = await sourcePart.getAttribute("d");
+  const sourceBox = await sourcePart.boundingBox();
+  if (!sourceBox) throw new Error("Packing source shape is unavailable");
+  await page.mouse.move(sourceBox.x + sourceBox.width / 2, sourceBox.y + sourceBox.height / 2);
+  await page.mouse.down(); await page.mouse.move(sourceBox.x + sourceBox.width / 2 + 35, sourceBox.y + sourceBox.height / 2 + 15, { steps: 4 }); await page.mouse.up();
+  await expect.poll(() => sourcePart.getAttribute("d")).not.toBe(sourcePath);
+  await expect.poll(() => page.locator(".cad-placement").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("d")))).toEqual(solvedPaths);
   await page.locator('[data-cad-select="item:0"]').click();
   await page.locator('[data-object-field="quantity"]').fill("81"); await page.locator('[data-object-field="quantity"]').blur();
   await expect(page.locator(".cad-placement")).toHaveCount(before + 1);
