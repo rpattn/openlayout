@@ -471,10 +471,11 @@ export class CadWorkspace {
         const placement = this.placements[selection.index];
         this.drag = { mode: "placement", startClient: { x: event.clientX, y: event.clientY }, startWorld: this.eventPoint(event), placementIndex: selection.index, originalPlacement: { ...placement }, originalPlacements: structuredClone(this.placements), moved: false };
         this.svg.setPointerCapture(event.pointerId);
-      } else if ((selection.kind === "item" || selection.kind === "exclusion") && selection.partIndex !== undefined) {
+      } else if (selection.kind === "container" || ((selection.kind === "item" || selection.kind === "exclusion") && selection.partIndex !== undefined)) {
+        const partIndex = selection.kind === "container" ? selection.index : selection.partIndex!;
         this.drag = {
           mode: "part-move", startClient: { x: event.clientX, y: event.clientY }, startWorld: this.eventPoint(event),
-          selection, partIndex: selection.partIndex, originalState: structuredClone(this.state), moved: false,
+          selection, partIndex, originalState: structuredClone(this.state), moved: false,
         };
         this.svg.setPointerCapture(event.pointerId);
         this.render();
@@ -743,7 +744,8 @@ export class CadWorkspace {
     const placed = transformPolygons(local, placement.rotation_deg, placement.x, placement.y);
     const sourceParts = sourcePartPolygons(item.shape).map((partPolygons) => transformPolygons(partPolygons, placement.rotation_deg, placement.x, placement.y));
     const colored = sourceParts.map((partPolygons, partIndex) => partPolygons.map((polygon) => `<path class="cad-part-color item" style="fill:${editorColor(this.state.items[itemIndex]?.parts[partIndex], color)}" d="${path(polygon)}"/>`).join("")).join("");
-    const paths = `${colored}<path ${locked ? "" : `data-cad-kind="placement" data-cad-index="${index}"`} class="cad-placement unified ${locked ? "locked" : selected ? "selected" : ""} ${placement.fixed ? "fixed" : ""}" fill-rule="evenodd" style="--item-color:${color};fill:transparent" d="${compoundPath(placed)}"/>${this.clearance && this.problem.clearance.item_to_item > 0 ? placed.map((polygon) => `<path class="cad-clearance item" d="${path(offsetPolygon(polygon, (contourArea(polygon) >= 0 ? 1 : -1) * this.problem.clearance.item_to_item / 2))}"/>`).join("") : ""}`;
+    const interactive = this.presentationMode === "results" || placement.fixed;
+    const paths = `${colored}<path ${locked || !interactive ? "" : `data-cad-kind="placement" data-cad-index="${index}"`} class="cad-placement unified ${locked ? "locked" : selected ? "selected" : ""} ${placement.fixed ? "fixed" : ""} ${interactive ? "" : "reference"}" fill-rule="evenodd" style="--item-color:${color};fill:transparent" d="${compoundPath(placed)}"/>${this.clearance && this.problem.clearance.item_to_item > 0 ? placed.map((polygon) => `<path class="cad-clearance item" d="${path(offsetPolygon(polygon, (contourArea(polygon) >= 0 ? 1 : -1) * this.problem.clearance.item_to_item / 2))}"/>`).join("") : ""}`;
     const fixedBadge = placement.fixed ? `<g class="cad-fixed-badge" aria-label="Fixed placement"><circle cx="${placement.x}" cy="${-placement.y}" r=".32"/><text x="${placement.x}" y="${-placement.y + .12}" text-anchor="middle">F</text></g>` : "";
     return `<g aria-label="${escapeHtml(placement.item_id)} placement ${index + 1}">${paths}${fixedBadge}</g>`;
   }

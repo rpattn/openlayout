@@ -517,7 +517,14 @@ function bindInlineInspector(sidebar: HTMLElement): void {
     setField(target, input.dataset.objectField!, input instanceof HTMLInputElement && input.type === "number" ? Number(input.value) : input.value);
   })));
   sidebar.querySelectorAll<HTMLInputElement>("[data-primitive-field]").forEach((input) => input.addEventListener("change", () => mutate(() => {
-    const part = selectedPrimitive(); if (part) setField(part, input.dataset.primitiveField!, Number(input.value));
+    const part = selectedPrimitive(); if (!part) return;
+    const field = input.dataset.primitiveField!;
+    if ((field === "x" || field === "y") && part.snap) {
+      const parts = selectedConstraintParts();
+      const current = parts ? resolveEditorTranslations(parts).get(part.id) : null;
+      if (current) part.snap.offset[field] = roundForEditor(part.snap.offset[field] + Number(input.value) - current[field]);
+      else setField(part, field, Number(input.value));
+    } else setField(part, field, Number(input.value));
   })));
   sidebar.querySelector<HTMLSelectElement>("[data-primitive-kind]")?.addEventListener("change", (event) => mutate(() => {
     const part = selectedPrimitive(); if (!part) return;

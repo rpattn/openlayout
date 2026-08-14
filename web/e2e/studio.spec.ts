@@ -991,6 +991,65 @@ test("runs packing and lets a user move and rotate returned items", async ({ pag
   await expect(page.locator("#diagnostics")).toContainText("Wasm memory");
 });
 
+test("moves a centered rectangle added immediately after a solve", async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Edit projects" }).click();
+  await page.locator("details.json-panel > summary").click();
+  await page.locator("#problem-json").fill(JSON.stringify({
+    schema_version: 2,
+    container: { parts: [
+      { id: "material", operation: "add", shape: { kind: "rectangle", width: 18.942, height: 8.93 }, translation: { x: -0.5, y: 1.5 }, rotation_deg: 0, snap: null },
+      { id: "material-2", operation: "add", shape: { kind: "rectangle", width: 32.5, height: 2 }, translation: { x: -0.5, y: 1.5 }, rotation_deg: 0, snap: null },
+    ] },
+    exclusions: [],
+    items: [{
+      id: "item", quantity: 50,
+      rotation_policy: { kind: "continuous", min_deg: 0, max_deg: 360, coupling: "independent" },
+      shape: { kind: "compound", parts: [{ shape: { kind: "triangle", base: 3, height: 2.4 }, translation: { x: 0, y: 0 }, rotation_deg: 0, snap: null }] },
+    }],
+    fixed_placements: [],
+    clearance: { item_to_item: 0.35, item_to_boundary: 0.3, item_to_exclusion: 0.25 },
+  }));
+  await page.locator("#load-json").click();
+  await page.getByRole("button", { name: "Close projects" }).click();
+  await configureFastSolve(page);
+  await page.getByRole("button", { name: "Run packing" }).click();
+  await expect(page.getByRole("button", { name: "Repack" })).toBeEnabled({ timeout: 30_000 });
+  await page.getByRole("button", { name: "Return to edit" }).click();
+  await page.locator('[data-cad-select="container:1"]').click();
+  const added = page.locator('[data-cad-kind="container"][data-cad-index="1"]');
+  const original = page.locator('[data-cad-kind="container"][data-cad-index="0"]').first();
+  await expect(added).toBeVisible();
+  await openInspectorDetails(page, "geometry-precision");
+  const x = page.locator('[data-primitive-field="x"]');
+  await expect(x).toHaveValue("-0.5");
+  const beforePrecision = await added.getAttribute("d");
+  await x.fill("2.5"); await x.blur();
+  await expect.poll(() => added.getAttribute("d")).not.toBe(beforePrecision);
+  await x.fill("-0.5"); await x.blur();
+
+  const before = await added.getAttribute("d");
+  const originalBefore = await original.getAttribute("d");
+  const addedBox = await added.boundingBox();
+  if (!addedBox) throw new Error("Second rectangle is unavailable");
+  const solvedBoxes = await page.locator(".cad-placement.reference").evaluateAll((nodes) => nodes.map((node) => {
+    const box = node.getBoundingClientRect(); return { x: box.x, y: box.y, width: box.width, height: box.height };
+  }));
+  const covered = solvedBoxes.find((box) => {
+    const x = box.x + box.width / 2, y = box.y + box.height / 2;
+    return x > addedBox.x && x < addedBox.x + addedBox.width && y > addedBox.y && y < addedBox.y + addedBox.height;
+  });
+  if (!covered) throw new Error("No solved placement overlaps the second rectangle");
+  const dragX = covered.x + covered.width / 2, dragY = covered.y + covered.height / 2;
+  await page.mouse.move(dragX, dragY);
+  await page.mouse.down();
+  await page.mouse.move(dragX + 70, dragY + 35, { steps: 4 });
+  await page.mouse.up();
+  await expect.poll(() => added.getAttribute("d")).not.toBe(before);
+  await expect(original).toHaveAttribute("d", originalBefore!);
+});
+
 test("undoes and redoes solved placement moves as atomic result edits", async ({ page }) => {
   test.setTimeout(60_000);
   await page.goto("/");

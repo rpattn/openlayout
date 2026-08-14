@@ -1,6 +1,6 @@
 import { isPartSelection, type CadSelection } from "./cad-selection";
 import { ANCHORS, editorColor } from "./design-tokens";
-import { primitiveDependsOn } from "./problem";
+import { primitiveDependsOn, resolveEditorTranslations } from "./problem";
 import type { EditorState, Placement, PrimitiveEditor } from "./types";
 import { escapeHtml, formatNumber } from "./ui-utils";
 
@@ -64,7 +64,8 @@ export function renderInspector(context: InspectorContext): InspectorMarkup {
   if (selection.kind === "container") {
     const entry = state.containerParts[selection.index];
     if (!entry) return result(emptyConstruction("Container is empty", "Add material or a cut-out from the object bar."));
-    return result(`<div class="inspector-heading"><div><small>Container region</small><h2>${escapeHtml(entry.id)}</h2></div><span class="selection-badge">${entry.operation}</span></div><div class="field-grid two primary-fields"><label>ID<input data-object-field="id" value="${escapeHtml(entry.id)}"></label><label>Region role<select data-object-field="operation">${options(["add", "subtract"], ["Add material", "Subtract cut-out"], entry.operation)}</select></label></div>${primitiveSetup(entry.primitive, context.partOwnerOptions)}${snapEditor(state.containerParts.map((region) => region.primitive), entry.primitive, "Region connection")}${primitivePrecision(entry.primitive)}<button data-delete-object class="button danger full">Delete region</button>`);
+    const parts = state.containerParts.map((region) => region.primitive);
+    return result(`<div class="inspector-heading"><div><small>Container region</small><h2>${escapeHtml(entry.id)}</h2></div><span class="selection-badge">${entry.operation}</span></div><div class="field-grid two primary-fields"><label>ID<input data-object-field="id" value="${escapeHtml(entry.id)}"></label><label>Region role<select data-object-field="operation">${options(["add", "subtract"], ["Add material", "Subtract cut-out"], entry.operation)}</select></label></div>${primitiveSetup(entry.primitive, context.partOwnerOptions)}${snapEditor(parts, entry.primitive, "Region connection")}${primitivePrecision(entry.primitive, resolveEditorTranslations(parts).get(entry.primitive.id))}<button data-delete-object class="button danger full">Delete region</button>`);
   }
   if (selection.kind === "exclusion") {
     const entry = state.exclusions[selection.index];
@@ -86,21 +87,21 @@ export function renderInspector(context: InspectorContext): InspectorMarkup {
 }
 
 function constructionEditor(parts: PrimitiveEditor[], part: PrimitiveEditor | undefined, partIndex: number, snapTitle: string, ownerOptions: string): string {
-  return `<div class="inspector-block construction-block"><div class="inspector-block-title"><strong>Shape construction</strong><span>${part ? `${partIndex + 1}/${parts.length} parts` : "Empty"}</span></div><label>Selected part<select id="item-part-select" ${part ? "" : "disabled"}>${parts.map((entry, index) => `<option value="${index}" ${index === partIndex ? "selected" : ""}>${escapeHtml(entry.id)} · ${entry.kind}</option>`).join("")}</select></label>${part ? primitiveSetup(part, ownerOptions) : '<div class="inspector-empty compact"><strong>Empty construction</strong></div>'}<div class="part-add-row" aria-label="Add another shape">${(["rectangle", "triangle", "circle", "polygon", "bezier"] as const).map((kind) => `<button data-add-part="${kind}">+ ${kind}</button>`).join("")}</div>${part ? snapEditor(parts, part, snapTitle) + primitivePrecision(part) : ""}</div>`;
+  return `<div class="inspector-block construction-block"><div class="inspector-block-title"><strong>Shape construction</strong><span>${part ? `${partIndex + 1}/${parts.length} parts` : "Empty"}</span></div><label>Selected part<select id="item-part-select" ${part ? "" : "disabled"}>${parts.map((entry, index) => `<option value="${index}" ${index === partIndex ? "selected" : ""}>${escapeHtml(entry.id)} · ${entry.kind}</option>`).join("")}</select></label>${part ? primitiveSetup(part, ownerOptions) : '<div class="inspector-empty compact"><strong>Empty construction</strong></div>'}<div class="part-add-row" aria-label="Add another shape">${(["rectangle", "triangle", "circle", "polygon", "bezier"] as const).map((kind) => `<button data-add-part="${kind}">+ ${kind}</button>`).join("")}</div>${part ? snapEditor(parts, part, snapTitle) + primitivePrecision(part, resolveEditorTranslations(parts).get(part.id)) : ""}</div>`;
 }
 
 function primitiveSetup(part: PrimitiveEditor, ownerOptions: string): string {
   return `<div class="primitive-editor primary-geometry"><div class="primitive-editor-title"><small>Shape setup</small><span>${escapeHtml(part.id)}${part.snap ? " · snapped" : ""}</span></div><div class="field-grid two"><label class="wide important-field">Shape type<select data-primitive-kind>${options(["rectangle", "triangle", "circle", "polygon", "bezier"], ["Rectangle", "Triangle", "Circle", "Polygon", "Bézier"], part.kind)}</select></label><label class="wide">Construction role<select data-part-owner>${ownerOptions}</select></label><label class="wide">Colour<input type="color" data-primitive-color value="${editorColor(part)}"></label></div><p class="visual-edit-hint">Drag the shape and its handles on the canvas to edit it visually.</p></div>`;
 }
 
-function primitivePrecision(part: PrimitiveEditor): string {
+function primitivePrecision(part: PrimitiveEditor, position = { x: part.x, y: part.y }): string {
   const field = (label: string, name: string, value: number, step = .1) => numberField(label, "data-primitive-field", name, value, step);
   const dimensions = part.kind === "rectangle" ? field("Width", "width", part.width) + field("Height", "height", part.height)
     : part.kind === "triangle" ? field("Base", "base", part.base) + field("Height", "height", part.height)
       : part.kind === "circle" ? field("Radius", "radius", part.radius) + field("Segments", "segments", part.segments, 1)
         : part.kind === "polygon" ? `<label class="wide">Vertices<textarea rows="4" data-primitive-points>${part.vertices.map((point) => `${format(point.x)}, ${format(point.y)}`).join("\n")}</textarea></label>`
           : `${field("Curve segments", "segments", part.segments, 1)}<label class="wide">Bézier knots<textarea rows="5" data-bezier-knots>${escapeHtml(JSON.stringify(part.knots, null, 2))}</textarea></label><div class="inline-actions wide"><button type="button" data-mirror-bezier="x" class="button ghost">Mirror left ↔ right</button><button type="button" data-mirror-bezier="y" class="button ghost">Mirror top ↔ bottom</button></div>`;
-  return `<details class="precision-details" data-inspector-detail="geometry-precision"><summary><span>Precision geometry</span><small>Coordinates & exact dimensions</small></summary><div class="details-inner field-grid two">${dimensions}${field("X", "x", part.x)}${field("Y", "y", part.y)}${field("Rotation°", "rotation", part.rotation, 1)}</div></details>`;
+  return `<details class="precision-details" data-inspector-detail="geometry-precision"><summary><span>Precision geometry</span><small>Coordinates & exact dimensions</small></summary><div class="details-inner field-grid two">${dimensions}${field("X", "x", position.x)}${field("Y", "y", position.y)}${field("Rotation°", "rotation", part.rotation, 1)}</div></details>`;
 }
 
 function snapEditor(parts: PrimitiveEditor[], part: PrimitiveEditor, title: string): string {

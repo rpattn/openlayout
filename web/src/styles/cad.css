@@ -53,6 +53,7 @@
 .cad-placement { fill: color-mix(in srgb, var(--item-color) 70%, transparent); stroke: var(--item-color); stroke-width: var(--cad-edge-width, 1.4px); cursor: move; }
 .cad-placement:hover, .cad-placement.selected { fill: color-mix(in srgb, var(--item-color) 86%, transparent); stroke: var(--text); stroke-width: 2px; }
 .cad-placement.fixed { stroke: var(--amber); stroke-width: 2.2px; stroke-dasharray: 4 2; }
+.cad-placement.reference { pointer-events: none; cursor: default; opacity: .45; }
 .cad-fixed-badge { pointer-events: none; }
 .cad-fixed-badge circle { fill: var(--amber); stroke: var(--canvas); stroke-width: .08px; }
 .cad-fixed-badge text { fill: #fff; font: 700 .28px ui-monospace, monospace; }
