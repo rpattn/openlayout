@@ -25,7 +25,10 @@
 .entity-row.selected { border-color: var(--accent); background: var(--accent-soft); }
 .entity-row canvas { width: 42px; height: 34px; display: block; border: 0; background: transparent; }
 .locked-entity-group { margin-top: 13px; padding-top: 10px; border-top: 1px solid var(--line); }
-.locked-row { grid-template-columns: 46px 1fr; }
+.locked-row { position: relative; display: block; padding: 0; }
+.locked-select { width: 100%; min-height: 48px; display: grid; grid-template-columns: 46px minmax(0,1fr); align-items: center; gap: 9px; padding: 6px 40px 6px 8px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.locked-visibility { position: absolute; right: 8px; top: 50%; width: 27px; height: 27px; transform: translateY(-50%); display: grid; place-items: center; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-raised); color: var(--text-soft); cursor: pointer; }
+.locked-visibility:hover { border-color: var(--accent); color: var(--accent); }
 .locked-entity-icon { width: 42px; height: 34px; display: grid; place-items: center; border: 1px dashed var(--line-strong); border-radius: 4px; color: var(--amber); font-size: 17px; }
 .entity-row .locked-action { display: inline-block; margin-top: 5px; color: var(--amber); font: 650 8px ui-sans-serif, system-ui, sans-serif; }
 .entity-row span strong, .entity-row span small { display: block; }

@@ -245,6 +245,7 @@ export interface TraceImage {
   height: number;
   opacity: number;
   rotation: number;
+  visible: boolean;
 }
 export interface DraftingText {
   id: string;

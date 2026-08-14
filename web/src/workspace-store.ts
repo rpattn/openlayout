@@ -250,7 +250,7 @@ function migrateProject(project: LocalProject): LocalProject {
     y: guide.y ?? (guide.axis === "y" ? guide.position ?? 0 : 0), rotation: guide.rotation ?? (guide.axis === "x" ? 90 : 0),
   }));
   state.drafting.traceImages ??= state.drafting.traceImage ? [{ ...state.drafting.traceImage, rotation: state.drafting.traceImage.rotation ?? 0 }] : [];
-  state.drafting.traceImages.forEach((trace) => { trace.id ??= crypto.randomUUID(); trace.rotation ??= 0; });
+  state.drafting.traceImages.forEach((trace) => { trace.id ??= crypto.randomUUID(); trace.rotation ??= 0; trace.visible ??= true; });
   state.drafting.texts ??= [];
   state.drafting.texts.forEach((entry) => {
     entry.fontFamily ??= "mono"; entry.align ??= "left"; entry.bold ??= false; entry.italic ??= false; entry.underline ??= false;

@@ -17,11 +17,11 @@ export interface DraftingMarkupContext {
 }
 
 export function traceImageMarkup(state: EditorState): string {
-  return state.drafting.traceImages.map((trace) => `<g transform="translate(${trace.x} ${-trace.y}) rotate(${-trace.rotation})"><image class="cad-trace-image" href="${escapeHtml(trace.dataUrl)}" x="${-trace.width / 2}" y="${-trace.height / 2}" width="${trace.width}" height="${trace.height}" opacity="${clamp(trace.opacity, 0, 1)}" preserveAspectRatio="none"/></g>`).join("");
+  return state.drafting.traceImages.map((trace) => trace.visible === false ? "" : `<g transform="translate(${trace.x} ${-trace.y}) rotate(${-trace.rotation})"><image class="cad-trace-image" href="${escapeHtml(trace.dataUrl)}" x="${-trace.width / 2}" y="${-trace.height / 2}" width="${trace.width}" height="${trace.height}" opacity="${clamp(trace.opacity, 0, 1)}" preserveAspectRatio="none"/></g>`).join("");
 }
 
 export function traceImageHitMarkup({ state, isLocked, isSelected }: DraftingMarkupContext): string {
-  return state.drafting.traceImages.map((trace, index) => isLocked({ kind: "trace", index }) ? "" : `<rect data-cad-kind="trace" data-cad-index="${index}" class="cad-trace-hit ${isSelected({ kind: "trace", index }) ? "selected" : ""}" transform="translate(${trace.x} ${-trace.y}) rotate(${-trace.rotation})" x="${-trace.width / 2}" y="${-trace.height / 2}" width="${trace.width}" height="${trace.height}"/>`).join("");
+  return state.drafting.traceImages.map((trace, index) => trace.visible === false || isLocked({ kind: "trace", index }) ? "" : `<rect data-cad-kind="trace" data-cad-index="${index}" class="cad-trace-hit ${isSelected({ kind: "trace", index }) ? "selected" : ""}" transform="translate(${trace.x} ${-trace.y}) rotate(${-trace.rotation})" x="${-trace.width / 2}" y="${-trace.height / 2}" width="${trace.width}" height="${trace.height}"/>`).join("");
 }
 
 export function draftingMarkup({ state, view, isLocked, isSelected }: DraftingMarkupContext): string {

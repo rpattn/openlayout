@@ -166,6 +166,75 @@ test("Wasm triangle motifs restart efficiently in differently sized disconnected
   engine.free();
 });
 
+test("Wasm keeps an irregular component's motif capacity when another container is added", () => {
+  const engine = new PackingEngine();
+  const top = {
+    schema_version: 2,
+    container: { parts: [
+      { id: "top", operation: "add", shape: { kind: "rectangle", width: 9, height: 4 }, translation: { x: 0, y: 0 }, rotation_deg: 0 },
+      { id: "rounded-end", operation: "add", shape: { kind: "circle", radius: 2, segments: 32 }, translation: { x: -4.5, y: 0 }, rotation_deg: 0 },
+    ] },
+    exclusions: [],
+    items: [{
+      id: "triangle", quantity: 40,
+      rotation_policy: { kind: "continuous", min_deg: 0, max_deg: 360, coupling: "independent" },
+      shape: { kind: "triangle", base: 2, height: 2 },
+    }],
+    fixed_placements: [],
+    clearance: { item_to_item: 0.35, item_to_boundary: 0.3, item_to_exclusion: 0 },
+  };
+  const solveOptions = { ...options, seed: 7, max_iterations: 10_000, grid_step: 0.25, restarts: 2, baseline_only: true };
+  const single = JSON.parse(engine.solve_direct(JSON.stringify(top), JSON.stringify(solveOptions)));
+  const combinedProblem = structuredClone(top);
+  combinedProblem.container.parts.push({
+    id: "lower", operation: "add", shape: { kind: "rectangle", width: 6.6, height: 4.9 },
+    translation: { x: 1.65, y: -6.45 }, rotation_deg: 0,
+  });
+  const combined = JSON.parse(engine.solve_direct(JSON.stringify(combinedProblem), JSON.stringify(solveOptions)));
+  const retained = combined.placements.filter((placement) => placement.y > -3).length;
+  const added = combined.placements.filter((placement) => placement.y < -3).length;
+
+  assert.ok(single.packed_item_count >= 7, JSON.stringify(single));
+  assert.ok(retained >= single.packed_item_count, JSON.stringify({ single: single.packed_item_count, retained, added, strategy: combined.solver_strategy }));
+  assert.ok(added >= 4, JSON.stringify({ retained, added, strategy: combined.solver_strategy }));
+  assert.equal(combined.validation.valid, true);
+  engine.free();
+});
+
+test("Wasm combines independently best triangle phases across rectangular containers", () => {
+  const engine = new PackingEngine();
+  const top = {
+    schema_version: 2,
+    container: { parts: [
+      { id: "top", operation: "add", shape: { kind: "rectangle", width: 8, height: 6 }, translation: { x: 0, y: 0 }, rotation_deg: 0 },
+    ] },
+    exclusions: [],
+    items: [{
+      id: "triangle", quantity: 40,
+      rotation_policy: { kind: "continuous", min_deg: 0, max_deg: 360, coupling: "independent" },
+      shape: { kind: "triangle", base: 2, height: 2 },
+    }],
+    fixed_placements: [],
+    clearance: { item_to_item: 0.15, item_to_boundary: 0.1, item_to_exclusion: 0 },
+  };
+  const solveOptions = { ...options, seed: 7, max_iterations: 10_000, grid_step: 0.25, restarts: 2, baseline_only: true };
+  const single = JSON.parse(engine.solve_direct(JSON.stringify(top), JSON.stringify(solveOptions)));
+  const combinedProblem = structuredClone(top);
+  combinedProblem.container.parts.push({
+    id: "lower", operation: "add", shape: { kind: "rectangle", width: 8, height: 5 },
+    translation: { x: 0, y: -7 }, rotation_deg: 0,
+  });
+  const combined = JSON.parse(engine.solve_direct(JSON.stringify(combinedProblem), JSON.stringify(solveOptions)));
+  const retainedTop = combined.placements.filter((placement) => placement.y > -3).length;
+  const packedLower = combined.placements.filter((placement) => placement.y < -3).length;
+
+  assert.equal(single.packed_item_count, 12);
+  assert.equal(retainedTop, 12, JSON.stringify({ retainedTop, packedLower, strategy: combined.solver_strategy }));
+  assert.ok(packedLower >= 10, JSON.stringify({ retainedTop, packedLower, strategy: combined.solver_strategy }));
+  assert.equal(combined.validation.valid, true);
+  engine.free();
+});
+
 test("Wasm studio defaults recover direct 20 and continuation 21", () => {
   const exclusion = Array.from({ length: 32 }, (_, index) => {
     const angle = Math.PI * 2 * index / 32;

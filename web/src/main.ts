@@ -395,6 +395,13 @@ function renderPackingSidebar(): void {
     const next = parseSelection(node.dataset.cadSelect!); selectCad(next, undefined, event.ctrlKey || event.metaKey);
     if ((event.target as Element).closest("[data-unlock-entity]")) toggleSelectionLock();
   }));
+  sidebar.querySelectorAll<HTMLButtonElement>("[data-toggle-trace-visibility]").forEach((button) => button.addEventListener("click", () => {
+    const trace = state.drafting.traceImages[Number(button.dataset.toggleTraceVisibility)];
+    if (!trace) return;
+    const before = captureSession(); trace.visible = trace.visible === false;
+    commitSession(before); projects.save(state); updateHistoryButtons(); renderPackingSidebar(); refreshPacking();
+    setStatus("neutral", trace.visible ? "Reference image shown" : "Reference image hidden");
+  }));
   sidebar.querySelector("[data-toggle-lock]")?.addEventListener("click", toggleSelectionLock);
   sidebar.querySelectorAll<HTMLButtonElement>("[data-add-object]").forEach((button) => button.addEventListener("click", () => addObject(button.dataset.addObject!)));
   sidebar.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-pack-scope]").forEach((input) => input.addEventListener("change", () => mutate(() => {
@@ -663,7 +670,7 @@ function bindTraceImageInput(input: HTMLInputElement): void {
       const dataUrl = String(reader.result); const image = new Image();
       image.addEventListener("load", () => mutate(() => {
         const width = 20, height = width * (image.naturalHeight || 1) / (image.naturalWidth || 1);
-        state.drafting.traceImages.push({ id: crypto.randomUUID(), dataUrl, x: 0, y: 0, width, height, opacity: .35, rotation: 0 });
+        state.drafting.traceImages.push({ id: crypto.randomUUID(), dataUrl, x: 0, y: 0, width, height, opacity: .35, rotation: 0, visible: true });
         selection = { kind: "trace", index: state.drafting.traceImages.length - 1 }; selections = [selection];
       })); image.addEventListener("error", () => setStatus("error", "That image could not be loaded"));
       image.src = dataUrl;
@@ -1543,7 +1550,12 @@ async function runExport(kind: string): Promise<void> {
   else if (kind === "placements-csv" && result) downloadText(`${base}-placements.csv`, placementsCsv(result.placements), "text/csv");
   else if (kind === "solve-json" && result) downloadText(`${base}-solve.json`, JSON.stringify(result, null, 2), "application/json");
   else if (kind === "study-json" && sensitivityResult) downloadText(`${base}-sensitivity.json`, JSON.stringify(sensitivityResult, null, 2), "application/json");
-  else if (kind === "layout-png" && result) await downloadLayoutPng(`${base}-layout.png`, problem, result.placements, { ...(page === "sensitivity" ? studyDisplay : display), viewSettings: state.viewSettings, customDimensions: page === "packing" ? state.dimensions : [] });
+  else if (kind === "layout-png" && result) await downloadLayoutPng(`${base}-layout.png`, problem, result.placements, {
+    ...(page === "sensitivity" ? studyDisplay : display), viewSettings: state.viewSettings,
+    customDimensions: page === "packing" ? state.dimensions : [],
+    dimensionPositions: page === "packing" ? state.dimensionPositions : {},
+    dimensionOverrides: page === "packing" ? state.dimensionOverrides : {},
+  });
   else if (kind === "scene-png") { const blob = await cad.exportScenePng(); if (blob) downloadBlob(`${base}-scene.png`, blob); else throw new Error("Scene PNG could not be rendered"); }
   else return;
   setStatus("success", `${kind.replaceAll("-", " ")} exported`);

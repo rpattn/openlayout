@@ -27,7 +27,9 @@ export function packingSidebarHtml(context: PackingSidebarContext): string {
   const lockedButton = (value: CadSelection): string => {
     const key = `${value.kind}:${value.index}`;
     const selected = context.selection?.kind === value.kind && context.selection.index === value.index;
-    return `<button class="entity-row locked-row ${selected ? "selected" : ""}" data-cad-select="${key}" title="Select or unlock"><span class="locked-entity-icon" aria-hidden="true">⌑</span><span><strong>${escapeHtml(context.selectionLabel(value))}</strong><small>${escapeHtml(selectionKindLabel(state, value))}</small><span class="locked-action" data-unlock-entity>Unlock</span></span></button>`;
+    const trace = value.kind === "trace" ? state.drafting.traceImages[value.index] : null;
+    const visibility = trace ? `<button type="button" class="locked-visibility" data-toggle-trace-visibility="${value.index}" aria-label="${trace.visible === false ? "Show" : "Hide"} ${escapeHtml(context.selectionLabel(value))}" title="${trace.visible === false ? "Show" : "Hide"} reference image"><span aria-hidden="true">${trace.visible === false ? "◌" : "◉"}</span></button>` : "";
+    return `<div class="entity-row locked-row ${selected ? "selected" : ""}"><button type="button" class="locked-select" data-cad-select="${key}" title="Select or unlock"><span class="locked-entity-icon" aria-hidden="true">⌑</span><span><strong>${escapeHtml(context.selectionLabel(value))}</strong><small>${escapeHtml(selectionKindLabel(state, value))}</small><span class="locked-action" data-unlock-entity>Unlock</span></span></button>${visibility}</div>`;
   };
   return `<section id="selection-inspector" class="problem-section inspector-section selection-inspector-top">${context.inspectorHtml}</section>
     ${context.outcome ? resultsHtml(context.outcome, context.resultWarnings) : ""}

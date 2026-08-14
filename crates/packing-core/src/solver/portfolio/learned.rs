@@ -93,76 +93,84 @@ pub(in crate::solver) fn learned_lattice_layouts(
 }
 
 fn decomposed_regions(prepared: &PreparedProblem) -> Vec<Bounds> {
-    let mut xs = vec![
-        prepared.container_bounds.min_x,
-        prepared.container_bounds.max_x,
-    ];
-    let mut ys = vec![
-        prepared.container_bounds.min_y,
-        prepared.container_bounds.max_y,
-    ];
-    for point in prepared.container.polygons.iter().flatten() {
-        xs.push(point.x);
-        ys.push(point.y);
-    }
-    for exclusion in &prepared.exclusions {
-        let exclusion_bounds = bounds(exclusion);
-        xs.extend([exclusion_bounds.min_x, exclusion_bounds.max_x]);
-        ys.extend([exclusion_bounds.min_y, exclusion_bounds.max_y]);
-    }
-    normalize_axis(&mut xs, 12);
-    normalize_axis(&mut ys, 12);
-    if prepared.exclusions.is_empty() && rectangle_region_clear(prepared, prepared.container_bounds)
-    {
-        return vec![prepared.container_bounds];
-    }
-    let mut candidates = Vec::new();
-    for left in 0..xs.len().saturating_sub(1) {
-        for right in (left + 1)..xs.len() {
-            for bottom in 0..ys.len().saturating_sub(1) {
-                for top in (bottom + 1)..ys.len() {
-                    let candidate = Bounds {
-                        min_x: xs[left],
-                        min_y: ys[bottom],
-                        max_x: xs[right],
-                        max_y: ys[top],
-                    };
-                    if rectangle_region_clear(prepared, candidate) {
-                        candidates.push(candidate);
+    let component_bounds = container_component_bounds(prepared);
+    let mut regions = Vec::new();
+    for component in component_bounds {
+        let mut xs = vec![component.min_x, component.max_x];
+        let mut ys = vec![component.min_y, component.max_y];
+        for polygon in &prepared.container.polygons {
+            let polygon_bounds = bounds(&PolygonSet::new(vec![polygon.clone()]));
+            if bounds_interiors_overlap(component, polygon_bounds)
+                || bounds_equal(component, polygon_bounds)
+            {
+                for point in polygon {
+                    xs.push(point.x);
+                    ys.push(point.y);
+                }
+            }
+        }
+        for exclusion in &prepared.exclusions {
+            let exclusion_bounds = bounds(exclusion);
+            if bounds_interiors_overlap(component, exclusion_bounds) {
+                xs.extend([exclusion_bounds.min_x, exclusion_bounds.max_x]);
+                ys.extend([exclusion_bounds.min_y, exclusion_bounds.max_y]);
+            }
+        }
+        normalize_axis(&mut xs, 12);
+        normalize_axis(&mut ys, 12);
+        if prepared.exclusions.is_empty() && rectangle_region_clear(prepared, component) {
+            regions.push(component);
+            continue;
+        }
+        let mut candidates = Vec::new();
+        for left in 0..xs.len().saturating_sub(1) {
+            for right in (left + 1)..xs.len() {
+                for bottom in 0..ys.len().saturating_sub(1) {
+                    for top in (bottom + 1)..ys.len() {
+                        let candidate = Bounds {
+                            min_x: xs[left],
+                            min_y: ys[bottom],
+                            max_x: xs[right],
+                            max_y: ys[top],
+                        };
+                        if rectangle_region_clear(prepared, candidate) {
+                            candidates.push(candidate);
+                        }
                     }
                 }
             }
         }
-    }
-    candidates.sort_by(|a, b| {
-        (b.width() * b.height())
-            .total_cmp(&(a.width() * a.height()))
-            .then_with(|| a.min_y.total_cmp(&b.min_y))
-            .then_with(|| a.min_x.total_cmp(&b.min_x))
-    });
-    candidates.dedup_by(|a, b| {
-        (a.min_x - b.min_x).abs() <= EPSILON
-            && (a.min_y - b.min_y).abs() <= EPSILON
-            && (a.max_x - b.max_x).abs() <= EPSILON
-            && (a.max_y - b.max_y).abs() <= EPSILON
-    });
-    let mut regions = Vec::new();
-    for candidate in candidates {
-        if regions
-            .iter()
-            .all(|region| !bounds_interiors_overlap(*region, candidate))
-        {
-            regions.push(candidate);
-            if regions.len() == 12 {
-                break;
+        candidates.sort_by(|a, b| {
+            (b.width() * b.height())
+                .total_cmp(&(a.width() * a.height()))
+                .then_with(|| a.min_y.total_cmp(&b.min_y))
+                .then_with(|| a.min_x.total_cmp(&b.min_x))
+        });
+        candidates.dedup_by(|a, b| bounds_equal(*a, *b));
+        let component_start = regions.len();
+        for candidate in candidates {
+            if regions[component_start..]
+                .iter()
+                .all(|region| !bounds_interiors_overlap(*region, candidate))
+            {
+                regions.push(candidate);
+                if regions.len() - component_start == 12 {
+                    break;
+                }
             }
         }
+        if regions.len() == component_start {
+            regions.push(component);
+        }
     }
-    if regions.is_empty() {
-        vec![prepared.container_bounds]
-    } else {
-        regions
-    }
+    regions
+}
+
+fn bounds_equal(a: Bounds, b: Bounds) -> bool {
+    (a.min_x - b.min_x).abs() <= EPSILON
+        && (a.min_y - b.min_y).abs() <= EPSILON
+        && (a.max_x - b.max_x).abs() <= EPSILON
+        && (a.max_y - b.max_y).abs() <= EPSILON
 }
 
 fn normalize_axis(values: &mut Vec<f64>, limit: usize) {
@@ -276,10 +284,11 @@ pub(in crate::solver) fn learned_motif_layouts(
     observer: &mut dyn SolveObserver,
 ) -> Vec<(String, Vec<CandidatePlacement>)> {
     let mut layouts = Vec::new();
-    // Motifs need a fresh origin in each disconnected/obstructed region. Using only the global
-    // bounds makes a triangle pair stride across gaps between differently sized containers and
-    // leaves later components with a phase chosen for the first one.
+    // Motifs need a fresh origin in each disconnected component. Decomposition samples each
+    // Boolean outer contour independently, so an unrelated component cannot change the phase
+    // candidates available in an existing one.
     let fill_regions = decomposed_regions(prepared);
+    let component_bounds = container_component_bounds(prepared);
     for (item_id, variant_indexes) in &prepared.variants_by_item {
         let item = prepared
             .problem
@@ -338,17 +347,63 @@ pub(in crate::solver) fn learned_motif_layouts(
                 .then_with(|| a.1.cmp(&b.1))
                 .then_with(|| a.2.cmp(&b.2))
         });
-        for (_, first_position, second_position) in pairs.into_iter().take(8) {
-            let first = &prepared.variants[variant_indexes[first_position]];
-            let second = &prepared.variants[variant_indexes[second_position]];
-            for (offset, motif_bounds) in
-                best_motif_offsets(first, second, prepared.problem.clearance.item_to_item)
-                    .into_iter()
-                    .take(2)
-            {
-                for (vertical_high, horizontal_high) in
-                    [(false, false), (false, true), (true, false), (true, true)]
+        let motifs = pairs
+            .into_iter()
+            .take(8)
+            .map(|(_, first_position, second_position)| {
+                let first = &prepared.variants[variant_indexes[first_position]];
+                let second = &prepared.variants[variant_indexes[second_position]];
+                (
+                    first_position,
+                    second_position,
+                    best_motif_offsets(first, second, prepared.problem.clearance.item_to_item)
+                        .into_iter()
+                        .take(2)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let directions = [(false, false), (false, true), (true, false), (true, true)];
+        let mut cached_pitches = vec![[None; 2]; motifs.len()];
+        let mut component_best = vec![Vec::new(); component_bounds.len()];
+        let mut probes = 0usize;
+        'motif_portfolio: for offset_index in 0..2 {
+            for (vertical_high, horizontal_high) in directions {
+                // Round-robin the rotation pairs before trying another origin or secondary
+                // contact offset. This keeps one angle from monopolising a fixed iteration slice
+                // when several disconnected components must be filled.
+                for (motif_index, (first_position, second_position, offsets)) in
+                    motifs.iter().enumerate()
                 {
+                    if probes == 40
+                        || stop_requested(options, started, counters, observer)
+                        || offsets.get(offset_index).is_none()
+                    {
+                        if probes == 40 || counters.limit || counters.cancelled {
+                            break 'motif_portfolio;
+                        }
+                        continue;
+                    }
+                    let first = &prepared.variants[variant_indexes[*first_position]];
+                    let second = &prepared.variants[variant_indexes[*second_position]];
+                    let (offset, motif_bounds) = offsets[offset_index];
+                    // Direction only changes the origin from which this motif is filled. Its learned
+                    // repeat distances are invariant, and recomputing both searches for all four
+                    // directions used enough of the bounded baseline to starve later rotation pairs.
+                    let (pitch_x, pitch_y) = *cached_pitches[motif_index][offset_index]
+                        .get_or_insert_with(|| {
+                            motif_pitch(
+                                first,
+                                second,
+                                offset,
+                                motif_bounds,
+                                prepared.problem.clearance.item_to_item,
+                                counters,
+                            )
+                        });
+                    if pitch_x <= EPSILON || pitch_y <= EPSILON {
+                        continue;
+                    }
                     let mut placed = fixed.to_vec();
                     motif_fill(
                         prepared,
@@ -357,6 +412,8 @@ pub(in crate::solver) fn learned_motif_layouts(
                         second,
                         offset,
                         motif_bounds,
+                        pitch_x,
+                        pitch_y,
                         &fill_regions,
                         vertical_high,
                         horizontal_high,
@@ -373,13 +430,85 @@ pub(in crate::solver) fn learned_motif_layouts(
                             if vertical_high { "top" } else { "bottom" },
                             if horizontal_high { "_right" } else { "_left" }
                         ),
-                        placed,
+                        placed.clone(),
                     ));
+                    for (component_index, component) in component_bounds.iter().enumerate() {
+                        let within_component = placed
+                            .iter()
+                            .skip(fixed.len())
+                            .filter(|entry| bounds_inside(entry.bounds, *component))
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        if within_component.len() > component_best[component_index].len()
+                            || (within_component.len() == component_best[component_index].len()
+                                && layout_key(&within_component)
+                                    < layout_key(&component_best[component_index]))
+                        {
+                            component_best[component_index] = within_component;
+                        }
+                    }
+                    probes += 1;
                 }
             }
         }
+        if component_bounds.len() > 1 {
+            let mut componentwise = fixed.to_vec();
+            let remaining_quantity =
+                (item.quantity as usize).saturating_sub(item_count(fixed, item_id));
+            for entry in component_best
+                .into_iter()
+                .flatten()
+                .take(remaining_quantity)
+            {
+                componentwise.push(entry);
+            }
+            layouts.push(("learned_motif_componentwise".to_string(), componentwise));
+        }
     }
     layouts
+}
+
+fn bounds_inside(inner: Bounds, outer: Bounds) -> bool {
+    inner.min_x >= outer.min_x - EPSILON
+        && inner.max_x <= outer.max_x + EPSILON
+        && inner.min_y >= outer.min_y - EPSILON
+        && inner.max_y <= outer.max_y + EPSILON
+}
+
+fn container_component_bounds(prepared: &PreparedProblem) -> Vec<Bounds> {
+    let mut components = prepared
+        .container
+        .polygons
+        .iter()
+        // Boolean-normalized outer contours are counter-clockwise; clockwise contours are holes.
+        .filter(|polygon| contour_twice_area(polygon) > EPSILON)
+        .map(|polygon| {
+            let geometry = PolygonSet::new(vec![polygon.clone()]);
+            bounds(&geometry)
+        })
+        .collect::<Vec<_>>();
+    components.sort_by(|a, b| {
+        (b.width() * b.height())
+            .total_cmp(&(a.width() * a.height()))
+            .then_with(|| a.min_y.total_cmp(&b.min_y))
+            .then_with(|| a.min_x.total_cmp(&b.min_x))
+    });
+    if components.is_empty() {
+        vec![prepared.container_bounds]
+    } else {
+        components
+    }
+}
+
+fn contour_twice_area(polygon: &[crate::Point]) -> f64 {
+    polygon
+        .iter()
+        .enumerate()
+        .map(|(index, point)| {
+            let next = polygon[(index + 1) % polygon.len()];
+            point.x * next.y - next.x * point.y
+        })
+        .sum()
 }
 
 fn best_motif_offsets(
@@ -511,6 +640,8 @@ fn motif_fill(
     second: &crate::prepare::PreparedVariant,
     offset: crate::Point,
     motif_bounds: Bounds,
+    pitch_x: f64,
+    pitch_y: f64,
     fill_regions: &[Bounds],
     vertical_high: bool,
     horizontal_high: bool,
@@ -520,17 +651,6 @@ fn motif_fill(
     observer: &mut dyn SolveObserver,
 ) {
     let boundary_clearance = prepared.problem.clearance.item_to_boundary;
-    let moved_second = transform(&second.geometry, 0.0, offset.x, offset.y);
-    let mut motif_polygons = first.geometry.polygons.clone();
-    motif_polygons.extend(moved_second.polygons);
-    let motif = PolygonSet::new(motif_polygons);
-    let clearance = prepared.problem.clearance.item_to_item;
-    let pitch_x =
-        learned_geometry_separation(&motif, motif_bounds, 0.0, false, clearance, counters);
-    let pitch_y = learned_geometry_separation(&motif, motif_bounds, 0.0, true, clearance, counters);
-    if pitch_x <= EPSILON || pitch_y <= EPSILON {
-        return;
-    }
     for fill_bounds in fill_regions {
         let mut y = if vertical_high {
             fill_bounds.max_y - motif_bounds.max_y - boundary_clearance
@@ -581,6 +701,24 @@ fn motif_fill(
             y += if vertical_high { -pitch_y } else { pitch_y };
         }
     }
+}
+
+fn motif_pitch(
+    first: &crate::prepare::PreparedVariant,
+    second: &crate::prepare::PreparedVariant,
+    offset: crate::Point,
+    motif_bounds: Bounds,
+    clearance: f64,
+    counters: &mut Counters,
+) -> (f64, f64) {
+    let moved_second = transform(&second.geometry, 0.0, offset.x, offset.y);
+    let mut motif_polygons = first.geometry.polygons.clone();
+    motif_polygons.extend(moved_second.polygons);
+    let motif = PolygonSet::new(motif_polygons);
+    (
+        learned_geometry_separation(&motif, motif_bounds, 0.0, false, clearance, counters),
+        learned_geometry_separation(&motif, motif_bounds, 0.0, true, clearance, counters),
+    )
 }
 
 #[allow(

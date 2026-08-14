@@ -1,4 +1,4 @@
-import { primitiveAnchor, primitiveDependsOn, primitiveShape, resolveEditorTranslations, shapePoints, toProblem, transformPoint } from "./problem";
+import { anchorPoint, primitiveAnchor, primitiveDependsOn, primitiveShape, resolveEditorTranslations, shapePoints, toProblem, transformPoint } from "./problem";
 import { resolveGeometry } from "./geometry-resolver";
 import { ANCHORS, editorColor, ITEM_COLORS } from "./design-tokens";
 import { cadLockReference, sameCadSelection as sameSelection, type CadSelection } from "./cad-selection";
@@ -171,7 +171,23 @@ export class CadWorkspace {
   }
 
   async exportScenePng(width = 1600, height = 1000): Promise<Blob | null> {
-    this.fit();
+    const host = document.createElement("div");
+    host.style.cssText = `position:fixed;left:-10000px;top:0;width:${width}px;height:${height}px;overflow:hidden`;
+    const exportSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    exportSvg.style.width = `${width}px`; exportSvg.style.height = `${height}px`; host.append(exportSvg); document.body.append(host);
+    try {
+      const workspace = new CadWorkspace(exportSvg, this.state, this.problem, this.callbacks);
+      workspace.setModel(this.state, this.problem, this.placements, true);
+      workspace.setOverlays(this.dimensions, this.clearance);
+      workspace.setPresentationMode("edit");
+      workspace.setSelection(null);
+      return await workspace.rasterizeSvg(width, height);
+    } finally {
+      host.remove();
+    }
+  }
+
+  private async rasterizeSvg(width: number, height: number): Promise<Blob | null> {
     const clone = this.svg.cloneNode(true) as SVGSVGElement;
     clone.setAttribute("xmlns", "http://www.w3.org/2000/svg"); clone.setAttribute("width", String(width)); clone.setAttribute("height", String(height));
     clone.querySelectorAll(".cad-source-hit,.cad-trace-hit,.cad-text-hit,.cad-geometry-handle,.cad-part-move-handle,.cad-definition-handle,.cad-group-handle,.cad-snap-handle,.cad-marquee,.cad-draft-cursor").forEach((node) => node.remove());
@@ -257,8 +273,13 @@ export class CadWorkspace {
     };
   }
 
-  private snapDraftPoint(point: Point, bypass = false): Point {
-    if (bypass || !this.state.drafting.snapToGrid) return { x: round(point.x), y: round(point.y) };
+  private snapDraftPoint(point: Point, bypass = false, excludedDraftPoint?: { shapeIndex: number; pointIndex: number }): Point {
+    if (bypass) return { x: round(point.x), y: round(point.y) };
+    if (this.state.drafting.smartSnap) {
+      const nearest = this.nearestSnapPoint(point, this.sceneSnapPoints(excludedDraftPoint));
+      if (nearest) return { x: round(nearest.x), y: round(nearest.y) };
+    }
+    if (!this.state.drafting.snapToGrid) return { x: round(point.x), y: round(point.y) };
     return { x: round(snapUnit(point.x, this.state.drafting.gridStep)), y: round(snapUnit(point.y, this.state.drafting.gridStep)) };
   }
 
@@ -507,7 +528,7 @@ export class CadWorkspace {
       if (selection?.kind !== "drafting" || this.drag.partIndex === undefined) return;
       const shape = this.state.drafting.shapes[selection.index], source = this.drag.originalState?.drafting.shapes[selection.index];
       if (!shape || !source || !shape.points[this.drag.partIndex]) return;
-      const world = this.snapDraftPoint(this.eventPoint(event), event.altKey);
+      const world = this.snapDraftPoint(this.eventPoint(event), event.altKey, { shapeIndex: selection.index, pointIndex: this.drag.partIndex });
       const local = inverseTransformPoint(world, source.rotation, source.x, source.y);
       shape.points[this.drag.partIndex] = { x: round(local.x), y: round(local.y) };
       this.drag.moved = true; this.render(); return;
@@ -567,9 +588,12 @@ export class CadWorkspace {
       } else if (this.drag.mode === "part-move") {
         const selectedParts = this.selections.filter((entry): entry is Extract<CadSelection, { kind: "container" | "item" | "exclusion" }> => entry.kind === "container" || entry.kind === "item" || entry.kind === "exclusion");
         const targets: Array<Extract<CadSelection, { kind: "container" | "item" | "exclusion" }>> = selectedParts.length > 1 ? selectedParts : [selection as Extract<CadSelection, { kind: "container" | "item" | "exclusion" }>];
-        const delta = { x: current.x - this.drag.startWorld.x, y: current.y - this.drag.startWorld.y };
         const originalState = this.drag.originalState, draggedPartIndex = this.drag.partIndex;
+        const rawDelta = { x: current.x - this.drag.startWorld.x, y: current.y - this.drag.startWorld.y };
+        const draftingDelta = event.altKey ? null : this.draftingSnappedMoveDelta(selection, originalState, rawDelta.x, rawDelta.y, draggedPartIndex);
+        const delta = draftingDelta ?? rawDelta;
         targets.forEach((entry) => this.movePart(entry, originalState, entry.kind === "container" ? entry.index : entry.partIndex ?? draggedPartIndex, delta.x, delta.y));
+        this.drag.draftingSnapped = draftingDelta !== null;
       } else if (this.drag.mode === "geometry") {
         // Edge handles resize from the opposite edge by default. Holding Shift switches to
         // a centred, symmetric resize, matching the global scale cage without moving siblings.
@@ -587,10 +611,19 @@ export class CadWorkspace {
     const original = this.drag.originalPlacement;
     const current = this.eventPoint(event);
     if (this.drag.mode === "placement") {
-      const rawX = original.x + current.x - this.drag.startWorld.x, rawY = original.y + current.y - this.drag.startWorld.y;
+      let rawX = original.x + current.x - this.drag.startWorld.x, rawY = original.y + current.y - this.drag.startWorld.y;
+      const item = this.problem.items.find((entry) => entry.id === placement.item_id);
+      const placementPoints = item ? polygons(item.shape, placement.rotation_deg, rawX, rawY).flat() : [{ x: rawX, y: rawY }];
+      const placementBounds = pointBounds(placementPoints), placementAnchors = [
+        ...placementPoints,
+        ...ANCHORS.map((anchor) => anchorPoint(placementBounds, anchor)),
+      ];
+      const draftingAdjustment = !event.altKey && this.state.drafting.smartSnap
+        ? this.draftingAnchorAdjustment(placementAnchors, this.draftingSnapPoints()) : null;
+      if (draftingAdjustment) { rawX += draftingAdjustment.x; rawY += draftingAdjustment.y; }
       const snap = this.state.drafting.snapToGrid && !event.altKey;
-      placement.x = round(snap ? snapUnit(rawX, this.state.drafting.gridStep) : rawX);
-      placement.y = round(snap ? snapUnit(rawY, this.state.drafting.gridStep) : rawY);
+      placement.x = round(snap && !draftingAdjustment ? snapUnit(rawX, this.state.drafting.gridStep) : rawX);
+      placement.y = round(snap && !draftingAdjustment ? snapUnit(rawY, this.state.drafting.gridStep) : rawY);
     } else {
       const start = Math.atan2(this.drag.startWorld.y - original.y, this.drag.startWorld.x - original.x);
       const angle = Math.atan2(current.y - original.y, current.x - original.x);
@@ -622,7 +655,7 @@ export class CadWorkspace {
       this.completeAnchorSnap(drag.selection, drag.partIndex, drag.ownAnchor, drag.currentWorld);
     }
     if (drag.moved && drag.mode === "part-move" && drag.selection && drag.partIndex !== undefined && !event.altKey) {
-      const anchored = this.snapMovedPart(drag.selection, drag.partIndex);
+      const anchored = drag.draftingSnapped || this.snapMovedPart(drag.selection, drag.partIndex);
       if (!anchored && drag.originalState) {
         const current = resolvedPrimitivePosition(this.state, drag.selection, drag.partIndex);
         const original = resolvedPrimitivePosition(drag.originalState, drag.selection, drag.partIndex);
@@ -972,7 +1005,10 @@ export class CadWorkspace {
     const target = primitiveFor(this.state, selection, partIndex);
     const source = primitiveFor(original, selection, partIndex);
     if (!target || !source || target.kind !== source.kind) return;
-    const local = inverseTransformPoint(world, rotation, center.x, center.y);
+    const draftingTarget = bypassSnapping ? null : this.nearestSnapPoint(world, this.draftingSnapPoints());
+    const effectiveWorld = draftingTarget ?? world;
+    const local = inverseTransformPoint(effectiveWorld, rotation, center.x, center.y);
+    const preserveDraftingTarget = bypassSnapping || draftingTarget !== null;
     if (target.kind === "bezier" && source.kind === "bezier" && handle.startsWith("bounds:")) {
       const anchor = handle.slice(7), bounds = pointBounds(shapePoints(primitiveShape(source)));
       const startLocal = inverseTransformPoint(startWorld, rotation, center.x, center.y);
@@ -981,22 +1017,22 @@ export class CadWorkspace {
         y: anchor.includes("bottom") ? bounds.minY : anchor.includes("top") ? bounds.maxY : (bounds.minY + bounds.maxY) / 2,
       };
       const adjusted = { x: boundary.x + local.x - startLocal.x, y: boundary.y + local.y - startLocal.y };
-      this.resizeBezierBounds(target, source, anchor, adjusted, rotation, symmetricResize, bypassSnapping);
+      this.resizeBezierBounds(target, source, anchor, adjusted, rotation, symmetricResize, preserveDraftingTarget);
       return;
     }
     // Radius handles remain centred by default; Shift anchors the opposite point. Polygonal edge
     // and Bézier cage handles use the conventional opposite-edge default and Shift centres them.
     const useOppositeHandle = target.kind === "circle" ? symmetricResize : !symmetricResize;
-    if (useOppositeHandle && this.resizeFromOppositeHandle(target, source, handle, local, rotation, bypassSnapping)) return;
+    if (useOppositeHandle && this.resizeFromOppositeHandle(target, source, handle, local, rotation, preserveDraftingTarget)) return;
     if (target.kind === "rectangle") {
       const anchor = handle.startsWith("resize:") ? handle.slice(7) : handle;
-      if (anchor.includes("left") || anchor.includes("right") || anchor === "width") target.width = this.snapLength(Math.max(.05, Math.abs(local.x) * 2), target, false, bypassSnapping);
-      if (anchor.includes("top") || anchor.includes("bottom") || anchor === "height") target.height = this.snapLength(Math.max(.05, Math.abs(local.y) * 2), target, false, bypassSnapping);
+      if (anchor.includes("left") || anchor.includes("right") || anchor === "width") target.width = this.snapLength(Math.max(.05, Math.abs(local.x) * 2), target, false, preserveDraftingTarget);
+      if (anchor.includes("top") || anchor.includes("bottom") || anchor === "height") target.height = this.snapLength(Math.max(.05, Math.abs(local.y) * 2), target, false, preserveDraftingTarget);
     } else if (target.kind === "triangle") {
-      if (handle.startsWith("base:")) target.base = this.snapLength(Math.max(.05, Math.abs(local.x) * 2), target, false, bypassSnapping);
-      if (handle.startsWith("height:")) target.height = this.snapLength(Math.max(.05, Math.abs(local.y) * 2), target, false, bypassSnapping);
+      if (handle.startsWith("base:")) target.base = this.snapLength(Math.max(.05, Math.abs(local.x) * 2), target, false, preserveDraftingTarget);
+      if (handle.startsWith("height:")) target.height = this.snapLength(Math.max(.05, Math.abs(local.y) * 2), target, false, preserveDraftingTarget);
     } else if (target.kind === "circle") {
-      if (handle.startsWith("radius:")) target.radius = this.snapLength(Math.max(.025, Math.hypot(local.x, local.y)), target, true, bypassSnapping);
+      if (handle.startsWith("radius:")) target.radius = this.snapLength(Math.max(.025, Math.hypot(local.x, local.y)), target, true, preserveDraftingTarget);
     } else if (target.kind === "polygon" && handle.startsWith("vertex:")) {
       const index = Number(handle.split(":")[1]);
       const snappedWorld = this.snapDraftPoint(world, bypassSnapping), snappedLocal = inverseTransformPoint(snappedWorld, rotation, center.x, center.y);
@@ -1005,8 +1041,9 @@ export class CadWorkspace {
       const index = Number(handle.split(":")[1]);
       const knot = target.knots[index], before = source.knots[index];
       if (knot && before) {
-        const dx = local.x - before.point.x, dy = local.y - before.point.y;
-        knot.point = { x: round(local.x), y: round(local.y) };
+        const snappedWorld = this.snapDraftPoint(effectiveWorld, bypassSnapping), snappedLocal = inverseTransformPoint(snappedWorld, rotation, center.x, center.y);
+        const dx = snappedLocal.x - before.point.x, dy = snappedLocal.y - before.point.y;
+        knot.point = { x: round(snappedLocal.x), y: round(snappedLocal.y) };
         knot.control_in = { x: round(before.control_in.x + dx), y: round(before.control_in.y + dy) };
         knot.control_out = { x: round(before.control_out.x + dx), y: round(before.control_out.y + dy) };
       }
@@ -1129,16 +1166,56 @@ export class CadWorkspace {
     const index = selection.kind === "container" ? selection.index : partIndex ?? ("partIndex" in selection ? selection.partIndex : undefined) ?? this.selectedPartIndex;
     const source = primitiveFor(original, selection, index); if (!source) return { x: dx, y: dy };
     const position = resolvedPrimitivePosition(original, selection, index), step = this.state.drafting.gridStep;
+    const displayOffset = selection.kind === "item" ? this.definitionDisplayOffset(selection) : { x: 0, y: 0 };
     let x = position.x + dx, y = position.y + dy;
     if (this.state.drafting.snapToGrid) { x = snapUnit(x, step); y = snapUnit(y, step); }
     if (this.state.drafting.smartSnap) {
       const threshold = this.view.width / Math.max(this.svg.clientWidth, 1) * 4;
       const others = editorPrimitives(original).filter((part) => part !== source);
-      const xCandidates = [...others.map((part) => part.x), ...this.state.drafting.guides.map((guide) => guide.x)];
-      const yCandidates = [...others.map((part) => part.y), ...this.state.drafting.guides.map((guide) => guide.y)];
-      x = nearestWithin(x, xCandidates, threshold); y = nearestWithin(y, yCandidates, threshold);
+      const drafting = this.draftingSnapPoints();
+      const adjustment = this.draftingAnchorAdjustment(
+        this.movingPrimitiveSnapPoints(source, { x, y }, displayOffset), drafting,
+      );
+      if (adjustment) {
+        x += adjustment.x; y += adjustment.y;
+      } else {
+        const xCandidates = [...others.map((part) => part.x), ...this.state.drafting.guides.map((guide) => guide.x), ...drafting.map((point) => point.x - displayOffset.x)];
+        const yCandidates = [...others.map((part) => part.y), ...this.state.drafting.guides.map((guide) => guide.y), ...drafting.map((point) => point.y - displayOffset.y)];
+        x = nearestWithin(x, xCandidates, threshold); y = nearestWithin(y, yCandidates, threshold);
+      }
     }
     return { x: round(x - position.x), y: round(y - position.y) };
+  }
+
+  private draftingSnappedMoveDelta(selection: Exclude<CadSelection, { kind: "placement" }>, original: EditorState, dx: number, dy: number, partIndex: number): Point | null {
+    if (!this.state.drafting.smartSnap) return null;
+    const source = primitiveFor(original, selection, partIndex); if (!source) return null;
+    const position = resolvedPrimitivePosition(original, selection, partIndex), displayOffset = this.definitionDisplayOffset(selection);
+    const adjustment = this.draftingAnchorAdjustment(
+      this.movingPrimitiveSnapPoints(source, { x: position.x + dx, y: position.y + dy }, displayOffset), this.draftingSnapPoints(),
+    );
+    return adjustment ? { x: round(dx + adjustment.x), y: round(dy + adjustment.y) } : null;
+  }
+
+  private movingPrimitiveSnapPoints(part: PrimitiveEditor, position: Point, displayOffset: Point): Point[] {
+    const visiblePosition = { x: position.x + displayOffset.x, y: position.y + displayOffset.y };
+    if (part.kind === "rectangle") return ANCHORS.map((anchor) => primitiveAnchor(part, anchor, visiblePosition));
+    if (part.kind === "circle") return (["center", "top", "bottom", "left", "right"] as const).map((anchor) => primitiveAnchor(part, anchor, visiblePosition));
+    if (part.kind === "triangle") return (["center", "top", "bottom_left", "bottom_right"] as const).map((anchor) => primitiveAnchor(part, anchor, visiblePosition));
+    const localPoints = part.kind === "polygon" ? part.vertices : part.knots.map((knot) => knot.point);
+    return [primitiveAnchor(part, "center", visiblePosition), ...localPoints.map((point) => transformPoint(point, part.rotation, visiblePosition.x, visiblePosition.y))];
+  }
+
+  private draftingAnchorAdjustment(sourcePoints: Point[], draftingPoints: Point[]): Point | null {
+    const capture = this.view.width / Math.max(this.svg.clientWidth, 1) * 14;
+    let best: { x: number; y: number; distance: number } | null = null;
+    for (const source of sourcePoints) {
+      for (const target of draftingPoints) {
+        const x = target.x - source.x, y = target.y - source.y, distance = Math.hypot(x, y);
+        if (distance <= capture && (!best || distance < best.distance)) best = { x, y, distance };
+      }
+    }
+    return best ? { x: best.x, y: best.y } : null;
   }
 
   private movePart(selection: Exclude<CadSelection, { kind: "placement" }>, original: EditorState, partIndex: number, dx: number, dy: number): void {
@@ -1311,18 +1388,36 @@ export class CadWorkspace {
   }
 
   private snapDimensionPoint(point: Point, bypass: boolean): Point {
-    if (bypass) return { x: round(point.x), y: round(point.y) };
-    const candidates = this.sceneSnapPoints();
-    const nearest = candidates.reduce<Point | null>((best, candidate) => !best || Math.hypot(candidate.x - point.x, candidate.y - point.y) < Math.hypot(best.x - point.x, best.y - point.y) ? candidate : best, null);
-    const capture = this.view.width / Math.max(this.svg.clientWidth, 1) * 14;
-    const selected = nearest && Math.hypot(nearest.x - point.x, nearest.y - point.y) <= capture ? nearest : point;
-    return this.snapDraftPoint(selected);
+    return this.snapDraftPoint(point, bypass);
   }
 
-  private sceneSnapPoints(): Point[] {
+  private nearestSnapPoint(point: Point, candidates: Point[]): Point | null {
+    const nearest = candidates.reduce<Point | null>((best, candidate) => !best || Math.hypot(candidate.x - point.x, candidate.y - point.y) < Math.hypot(best.x - point.x, best.y - point.y) ? candidate : best, null);
+    const capture = this.view.width / Math.max(this.svg.clientWidth, 1) * 14;
+    return nearest && Math.hypot(nearest.x - point.x, nearest.y - point.y) <= capture ? nearest : null;
+  }
+
+  private draftingSnapPoints(excluded?: { shapeIndex: number; pointIndex: number }): Point[] {
+    const points: Point[] = [];
+    this.state.drafting.shapes.forEach((shape, shapeIndex) => {
+      const world = draftingWorldPoints(shape);
+      world.forEach((point, pointIndex) => {
+        if (excluded?.shapeIndex !== shapeIndex || excluded.pointIndex !== pointIndex) points.push(point);
+      });
+      const edgeCount = shape.closed ? world.length : Math.max(0, world.length - 1);
+      for (let index = 0; index < edgeCount; index += 1) {
+        const start = world[index], end = world[(index + 1) % world.length];
+        points.push({ x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 });
+      }
+    });
+    return points;
+  }
+
+  private sceneSnapPoints(excludedDraftPoint?: { shapeIndex: number; pointIndex: number }): Point[] {
     const points = [...this.resolved.container.flat(), ...this.resolved.exclusions.flatMap((entry) => entry.polygons.flat())];
     this.itemSamples().forEach((sample) => points.push(...sample.polygons.flat()));
     this.placements.forEach((placement) => { const item = this.problem.items.find((entry) => entry.id === placement.item_id); if (item) points.push(...polygons(item.shape, placement.rotation_deg, placement.x, placement.y).flat()); });
+    points.push(...this.draftingSnapPoints(excludedDraftPoint));
     return points;
   }
 
@@ -1506,13 +1601,32 @@ export class CadWorkspace {
       const item = this.problem.items.find((entry) => entry.id === placement.item_id);
       if (item) points.push(...polygons(item.shape, placement.rotation_deg, placement.x, placement.y).flat());
     });
-    if (this.presentationMode === "edit") this.state.drafting.traceImages.forEach((_, index) => { const bounds = this.selectionBounds({ kind: "trace", index }); if (bounds) points.push({ x: bounds.minX, y: bounds.minY }, { x: bounds.maxX, y: bounds.maxY }); });
+    if (this.presentationMode === "edit") this.state.drafting.traceImages.forEach((trace, index) => { if (trace.visible === false) return; const bounds = this.selectionBounds({ kind: "trace", index }); if (bounds) points.push({ x: bounds.minX, y: bounds.minY }, { x: bounds.maxX, y: bounds.maxY }); });
     if (this.presentationMode === "edit") {
       this.state.drafting.texts.forEach((_, index) => { const bounds = this.selectionBounds({ kind: "text", index }); if (bounds) points.push({ x: bounds.minX, y: bounds.minY }, { x: bounds.maxX, y: bounds.maxY }); });
       this.state.drafting.shapes.forEach((shape) => points.push(...draftingWorldPoints(shape)));
       this.state.dimensions.forEach((dimension) => points.push(dimension.start, dimension.end, { x: dimension.start.x + dimension.offset.x, y: dimension.start.y + dimension.offset.y }, { x: dimension.end.x + dimension.offset.x, y: dimension.end.y + dimension.offset.y }));
+      Object.entries(this.state.dimensionPositions).forEach(([owner, position]) => {
+        const source = this.dimensionOwnerPoints(owner); if (!source.length) return;
+        const bounds = pointBounds(source);
+        points.push({ x: bounds.minX + position.x, y: bounds.minY + position.y }, { x: bounds.maxX + position.x, y: bounds.maxY + position.y });
+      });
     }
     return points.length ? pointBounds(points) : this.containerBounds();
+  }
+
+  private dimensionOwnerPoints(owner: string): Point[] {
+    if (owner === "material" || owner === "clearance:boundary") return this.resolved.container.flat();
+    if (owner === "clearance:item-to-item") return this.itemSamples()[0]?.polygons.flat() ?? [];
+    if (owner.startsWith("exclusion:") || owner.startsWith("clearance:exclusion:")) {
+      const id = owner.replace(/^clearance:/, "").slice("exclusion:".length);
+      return this.resolved.exclusions.find((entry) => entry.id === id)?.polygons.flat() ?? [];
+    }
+    if (owner.startsWith("item:")) {
+      const id = owner.slice("item:".length), index = this.problem.items.findIndex((entry) => entry.id === id);
+      return this.itemSamples()[index]?.polygons.flat() ?? [];
+    }
+    return [];
   }
 }
 

@@ -230,6 +230,133 @@ fn learned_decomposition_fills_offset_disconnected_regions() {
 }
 
 #[test]
+fn adding_a_disconnected_container_preserves_irregular_component_motif_capacity() {
+    let mut problem = rectangle_problem(9.0, 4.0, 2.0, 2.0);
+    problem.items[0].quantity = 40;
+    problem.items[0].shape = Shape::Triangle {
+        base: 2.0,
+        height: 2.0,
+    };
+    problem.items[0].rotation_policy = RotationPolicy::Continuous {
+        min_deg: 0.0,
+        max_deg: 360.0,
+        coupling: RotationCoupling::Independent,
+    };
+    problem.clearance = Clearance {
+        item_to_item: 0.35,
+        item_to_boundary: 0.3,
+        item_to_exclusion: 0.0,
+    };
+    problem.container.parts.push(RegionPart {
+        id: "rounded-end".into(),
+        operation: RegionOperation::Add,
+        shape: Shape::Circle {
+            radius: 2.0,
+            segments: 32,
+        },
+        translation: Point { x: -4.5, y: 0.0 },
+        rotation_deg: 0.0,
+        snap: None,
+    });
+    let mut solve_options = options();
+    solve_options.seed = 7;
+    solve_options.max_iterations = 10_000;
+    solve_options.grid_step = 0.25;
+    solve_options.baseline_only = true;
+
+    let single = solve(&problem, &solve_options).unwrap();
+    problem.container.parts.push(RegionPart {
+        id: "lower".into(),
+        operation: RegionOperation::Add,
+        shape: Shape::Rectangle {
+            width: 6.6,
+            height: 4.9,
+        },
+        translation: Point { x: 1.65, y: -6.45 },
+        rotation_deg: 0.0,
+        snap: None,
+    });
+    let combined = solve(&problem, &solve_options).unwrap();
+    let retained = combined
+        .placements
+        .iter()
+        .filter(|placement| placement.y > -3.0)
+        .count();
+    let added = combined
+        .placements
+        .iter()
+        .filter(|placement| placement.y < -3.0)
+        .count();
+
+    assert!(single.packed_item_count >= 7);
+    assert!(
+        retained >= single.packed_item_count,
+        "adding a disconnected component reduced the original component from {} to {retained} items via {}",
+        single.packed_item_count,
+        combined.solver_strategy,
+    );
+    assert!(
+        added >= 4,
+        "expected the added component to contribute items"
+    );
+    assert!(combined.validation.valid);
+}
+
+#[test]
+fn disconnected_rectangles_combine_their_independently_best_triangle_phases() {
+    let mut problem = rectangle_problem(8.0, 6.0, 2.0, 2.0);
+    problem.items[0].quantity = 40;
+    problem.items[0].shape = Shape::Triangle {
+        base: 2.0,
+        height: 2.0,
+    };
+    problem.items[0].rotation_policy = RotationPolicy::Continuous {
+        min_deg: 0.0,
+        max_deg: 360.0,
+        coupling: RotationCoupling::Independent,
+    };
+    problem.clearance = Clearance {
+        item_to_item: 0.15,
+        item_to_boundary: 0.1,
+        item_to_exclusion: 0.0,
+    };
+    let mut solve_options = options();
+    solve_options.seed = 7;
+    solve_options.max_iterations = 10_000;
+    solve_options.grid_step = 0.25;
+    solve_options.baseline_only = true;
+
+    let top = solve(&problem, &solve_options).unwrap();
+    problem.container.parts.push(RegionPart {
+        id: "lower".into(),
+        operation: RegionOperation::Add,
+        shape: Shape::Rectangle {
+            width: 8.0,
+            height: 5.0,
+        },
+        translation: Point { x: 0.0, y: -7.0 },
+        rotation_deg: 0.0,
+        snap: None,
+    });
+    let combined = solve(&problem, &solve_options).unwrap();
+    let retained_top = combined
+        .placements
+        .iter()
+        .filter(|placement| placement.y > -3.0)
+        .count();
+    let packed_lower = combined
+        .placements
+        .iter()
+        .filter(|placement| placement.y < -3.0)
+        .count();
+
+    assert_eq!(top.packed_item_count, 12);
+    assert!(retained_top >= top.packed_item_count);
+    assert!(packed_lower >= 10);
+    assert!(combined.validation.valid);
+}
+
+#[test]
 fn capsule_quality_and_studio_twenty_one_item_witness_are_validated() {
     let exclusion_vertices = (0..32)
         .map(|index| {

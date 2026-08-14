@@ -279,6 +279,7 @@ test("creates, moves, overrides, persists, and exports first-class dimensions", 
   await page.locator('[data-export="scene-png"]').click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toMatch(/-scene\.png$/);
+  expect(Number(await page.locator('[data-dimension-owner="material"] [data-dimension-axis="width"] .cad-dimension-line').getAttribute("y1"))).toBeCloseTo(movedY, 3);
 });
 
 test("adds editable scene text and directly moves, resizes, rotates, and persists it", async ({ page }) => {
@@ -602,6 +603,84 @@ test("snaps polygon vertices to the unit grid while dragging", async ({ page }) 
   expect(Math.abs(first[1] * 2 - Math.round(first[1] * 2))).toBeLessThan(.001);
 });
 
+test("uses two-point drafting line anchors for dimensions and shape edits", async ({ page }) => {
+  await page.goto("/");
+  const canvas = page.locator("#cad-canvas"), box = await canvas.boundingBox();
+  if (!box) throw new Error("CAD canvas unavailable");
+
+  await clickMoreTool(page, "Draw two-point drafting line");
+  await page.mouse.click(box.x + box.width * .84, box.y + box.height * .3);
+  await page.mouse.click(box.x + box.width * .96, box.y + box.height * .44);
+  const line = page.locator(".cad-drafting-shape").first();
+  await expect(line).toHaveCount(1);
+  const anchors = await line.evaluate((path: SVGPathElement) => {
+    const start = path.getPointAtLength(0), midpoint = path.getPointAtLength(path.getTotalLength() / 2), matrix = path.getScreenCTM();
+    if (!matrix) throw new Error("Drafting line has no screen transform");
+    const screen = (point: DOMPoint) => {
+      const transformed = point.matrixTransform(matrix);
+      return { x: transformed.x, y: transformed.y };
+    };
+    return {
+      start: { x: start.x, y: -start.y, screen: screen(start) },
+      midpoint: { x: midpoint.x, y: -midpoint.y, screen: screen(midpoint) },
+    };
+  });
+
+  await clickMoreTool(page, "Drafting aids");
+  await page.locator('[data-drafting-field="snapToGrid"]').uncheck();
+  await page.getByRole("button", { name: "Close drafting aids" }).click();
+
+  await clickMoreTool(page, "Create dimension");
+  await page.mouse.click(anchors.start.screen.x + 7, anchors.start.screen.y + 4);
+  await page.mouse.click(anchors.midpoint.screen.x - 6, anchors.midpoint.screen.y + 5);
+  const extensions = page.locator('[data-dimension-owner^="custom:"] .cad-dimension-extension');
+  await expect(extensions).toHaveCount(2);
+  expect(Number(await extensions.nth(0).getAttribute("x1"))).toBeCloseTo(anchors.start.x, 5);
+  expect(-Number(await extensions.nth(0).getAttribute("y1"))).toBeCloseTo(anchors.start.y, 5);
+  expect(Number(await extensions.nth(1).getAttribute("x1"))).toBeCloseTo(anchors.midpoint.x, 5);
+  expect(-Number(await extensions.nth(1).getAttribute("y1"))).toBeCloseTo(anchors.midpoint.y, 5);
+
+  await page.locator('[data-cad-select="container:0"]').click();
+  const vertex = page.locator('[data-geometry-handle="vertex:0"]'), vertexBox = await vertex.boundingBox();
+  if (!vertexBox) throw new Error("Polygon vertex grip is unavailable");
+  await page.mouse.move(vertexBox.x + vertexBox.width / 2, vertexBox.y + vertexBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(anchors.start.screen.x + 6, anchors.start.screen.y - 5, { steps: 4 });
+  await page.mouse.up();
+  expect(Number(await vertex.getAttribute("cx"))).toBeCloseTo(anchors.start.x, 5);
+  expect(-Number(await vertex.getAttribute("cy"))).toBeCloseTo(anchors.start.y, 5);
+
+  await page.locator('[data-cad-select="item:0"]').click();
+  await page.locator("#item-part-select").selectOption("1");
+  const circleCenter = page.locator(".cad-part-move-handle"), circleCenterBox = await circleCenter.boundingBox();
+  if (!circleCenterBox) throw new Error("Circle centre grip is unavailable");
+  await page.mouse.move(circleCenterBox.x + circleCenterBox.width / 2, circleCenterBox.y + circleCenterBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(anchors.start.screen.x + 5, anchors.start.screen.y + 5, { steps: 4 });
+  await page.mouse.up();
+  expect(Number(await circleCenter.getAttribute("cx"))).toBeCloseTo(anchors.start.x, 5);
+  expect(-Number(await circleCenter.getAttribute("cy"))).toBeCloseTo(anchors.start.y, 5);
+
+  await page.locator("#item-part-select").selectOption("0");
+  const rectangleCorner = page.locator('[data-geometry-handle="resize:bottom_right"]'), rectangleCornerBox = await rectangleCorner.boundingBox();
+  const rectangleCenter = page.locator(".cad-part-move-handle"), rectangleCenterBox = await rectangleCenter.boundingBox();
+  if (!rectangleCornerBox || !rectangleCenterBox) throw new Error("Rectangle move anchors are unavailable");
+  const liveMidpointScreen = await line.evaluate((path: SVGPathElement) => {
+    const midpoint = path.getPointAtLength(path.getTotalLength() / 2), matrix = path.getScreenCTM();
+    if (!matrix) throw new Error("Drafting line has no screen transform");
+    const transformed = midpoint.matrixTransform(matrix);
+    return { x: transformed.x, y: transformed.y };
+  });
+  const cornerScreen = { x: rectangleCornerBox.x + rectangleCornerBox.width / 2, y: rectangleCornerBox.y + rectangleCornerBox.height / 2 };
+  const centerScreen = { x: rectangleCenterBox.x + rectangleCenterBox.width / 2, y: rectangleCenterBox.y + rectangleCenterBox.height / 2 };
+  await page.mouse.move(centerScreen.x, centerScreen.y);
+  await page.mouse.down();
+  await page.mouse.move(centerScreen.x + liveMidpointScreen.x - cornerScreen.x - 5, centerScreen.y + liveMidpointScreen.y - cornerScreen.y + 5, { steps: 4 });
+  await page.mouse.up();
+  expect(Number(await rectangleCorner.getAttribute("cx"))).toBeCloseTo(anchors.midpoint.x, 5);
+  expect(-Number(await rectangleCorner.getAttribute("cy"))).toBeCloseTo(anchors.midpoint.y, 5);
+});
+
 test("creates and directly transforms guides, drafting paths, construction shapes, and multiple images", async ({ page }) => {
   await page.goto("/");
   await clickMoreTool(page, "Add vertical drafting line");
@@ -727,9 +806,15 @@ test("locks every CAD entity type and exposes locked entities only in the sideba
   await expect(page.locator(".cad-trace-image")).toHaveCount(1);
   await expect(page.locator('[data-cad-kind="trace"]')).toHaveCount(0);
   await expect(page.locator(".locked-entity-group .locked-row")).toHaveCount(5);
+  await page.locator('[data-toggle-trace-visibility="0"]').click();
+  await expect(page.locator(".cad-trace-image")).toHaveCount(0);
+  await expect(page.locator(".locked-entity-group .locked-row")).toHaveCount(5);
 
   await page.reload();
   await expect(page.locator(".locked-entity-group .locked-row")).toHaveCount(5);
+  await expect(page.locator(".cad-trace-image")).toHaveCount(0);
+  await page.locator('[data-toggle-trace-visibility="0"]').click();
+  await expect(page.locator(".cad-trace-image")).toHaveCount(1);
   await expect(page.locator('[data-cad-kind="trace"], [data-cad-kind="drafting"], [data-cad-kind="guide"], [data-cad-kind="item"][data-cad-index="0"], [data-cad-kind="exclusion"][data-cad-index="0"]')).toHaveCount(0);
 });
 
