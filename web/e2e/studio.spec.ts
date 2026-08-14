@@ -1,5 +1,15 @@
 import { expect, test, type Page } from "@playwright/test";
 
+test("default project reaches the 21-item continuation result", async ({ page }) => {
+  await page.goto("/");
+  const started = Date.now();
+  await page.locator("#solve").click();
+  await expect(page.locator("#workspace-summary")).toHaveText("21 packed items", { timeout: 15_000 });
+  await expect(page.locator("#diagnostics")).toContainText("Workers2");
+  await expect(page.locator("#diagnostics")).toContainText("Winning laneClearance continuation");
+  expect(Date.now() - started).toBeLessThan(15_000);
+});
+
 async function clickMoreTool(page: Page, name: string): Promise<void> {
   const drafting: Record<string, string> = {
     "Drafting aids": "Drafting settings", "Add trace image": "Trace image", "Add scene text": "Text",

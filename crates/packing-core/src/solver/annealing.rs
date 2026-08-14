@@ -1,5 +1,26 @@
 use super::*;
 
+#[derive(Clone)]
+struct AnnealPlacement {
+    x: f64,
+    y: f64,
+    rotation_deg: f64,
+    bounds: Bounds,
+    variant_id: usize,
+}
+
+impl AnnealPlacement {
+    fn to_placement(&self, item_id: &str) -> Placement {
+        Placement {
+            item_id: item_id.to_string(),
+            x: self.x,
+            y: self.y,
+            rotation_deg: self.rotation_deg,
+            fixed: false,
+        }
+    }
+}
+
 pub(super) fn anneal_elongated_continuation(
     prepared: &PreparedProblem,
     placements: &[Placement],
@@ -20,25 +41,25 @@ pub(super) fn anneal_elongated_continuation(
     {
         return None;
     }
-    let initial_state = placements
+    let item_id = placements[0].item_id.as_str();
+    let mut state = placements
         .iter()
         .map(|placement| {
             let variant_id = prepared.variants.iter().position(|variant| {
                 variant.item_id == placement.item_id
                     && same_rotation(variant.rotation_deg, placement.rotation_deg)
             })?;
-            Some((
-                candidate(
-                    &prepared.variants[variant_id],
-                    placement.x,
-                    placement.y,
-                    placement.fixed,
-                ),
+            Some(AnnealPlacement {
+                x: placement.x,
+                y: placement.y,
+                rotation_deg: placement.rotation_deg,
+                bounds: prepared.variants[variant_id]
+                    .bounds
+                    .translated(placement.x, placement.y),
                 variant_id,
-            ))
+            })
         })
         .collect::<Option<Vec<_>>>()?;
-    let (mut state, mut state_variant_ids): (Vec<_>, Vec<_>) = initial_state.into_iter().unzip();
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     let reference = &prepared.variants[prepared.variants_by_item[&placements[0].item_id][0]];
     let minor_half_extent = reference.bounds.width().min(reference.bounds.height()) / 2.0;
@@ -63,19 +84,19 @@ pub(super) fn anneal_elongated_continuation(
     let mut best = state.clone();
     let mut best_penalty = penalty;
     for iteration in 0..iterations {
-        let progress = iteration as f64 / iterations.max(1) as f64;
+        // Reserve the tail for low-temperature settling. The former full-budget cooling curve
+        // only reached the studio capsule's feasible basin in the last few percent of the run,
+        // making Wasm continuation appear stalled while doing avoidable high-temperature moves.
+        let progress = (iteration as f64 / (iterations.max(1) as f64 * 0.6)).min(1.0);
         let temperature = 1.5 * (1.0 - progress).powi(2) + 0.002;
         let step = 4.0 * (1.0 - progress) + 0.02;
         let index = rng.random_range(0..state.len());
-        if state[index].placement.fixed {
-            continue;
-        }
         let original = state[index].clone();
-        let variants = &prepared.variants_by_item[&original.placement.item_id];
+        let variants = &prepared.variants_by_item[item_id];
         let variant_id = if rng.random::<f64>() < 0.05 {
             variants[rng.random_range(0..variants.len())]
         } else {
-            state_variant_ids[index]
+            state[index].variant_id
         };
         let variant = &prepared.variants[variant_id];
         let (x, y) = if rng.random::<f64>() < 0.02 {
@@ -85,12 +106,18 @@ pub(super) fn anneal_elongated_continuation(
             )
         } else {
             (
-                original.placement.x + rng.random_range(-step..step),
-                original.placement.y + rng.random_range(-step..step),
+                original.x + rng.random_range(-step..step),
+                original.y + rng.random_range(-step..step),
             )
         };
-        let trial = candidate(variant, x, y, false);
-        if !anneal_hard_valid(prepared, rectangular_core, &trial) {
+        let trial = AnnealPlacement {
+            x,
+            y,
+            rotation_deg: variant.rotation_deg,
+            bounds: variant.bounds.translated(x, y),
+            variant_id,
+        };
+        if !anneal_hard_valid(prepared, rectangular_core, &trial, variant) {
             continue;
         }
         let old_local =
@@ -100,12 +127,11 @@ pub(super) fn anneal_elongated_continuation(
         let delta = new_local - old_local;
         if delta <= 0.0 || rng.random::<f64>() < (-delta / temperature).exp() {
             state[index] = trial;
-            state_variant_ids[index] = variant_id;
             penalty = (penalty + delta).max(0.0);
             if penalty <= EPSILON {
                 let placements = state
                     .iter()
-                    .map(|entry| entry.placement.clone())
+                    .map(|entry| entry.to_placement(item_id))
                     .collect::<Vec<_>>();
                 if validate_placements(prepared, &placements).is_ok_and(|report| report.valid) {
                     return Some(placements);
@@ -119,7 +145,7 @@ pub(super) fn anneal_elongated_continuation(
     }
     let placements = best
         .iter()
-        .map(|entry| entry.placement.clone())
+        .map(|entry| entry.to_placement(item_id))
         .collect::<Vec<_>>();
     (best_penalty <= EPSILON
         && validate_placements(prepared, &placements).is_ok_and(|report| report.valid))
@@ -129,7 +155,8 @@ pub(super) fn anneal_elongated_continuation(
 fn anneal_hard_valid(
     prepared: &PreparedProblem,
     rectangular_core: Option<Bounds>,
-    candidate: &CandidatePlacement,
+    candidate: &AnnealPlacement,
+    variant: &crate::prepare::PreparedVariant,
 ) -> bool {
     let boundary = prepared.problem.clearance.item_to_boundary;
     if candidate.bounds.min_x < prepared.container_bounds.min_x + boundary - EPSILON
@@ -148,9 +175,34 @@ fn anneal_hard_valid(
             && candidate.bounds.min_y >= core.min_y + boundary - EPSILON
             && candidate.bounds.max_y <= core.max_y - boundary + EPSILON
     });
-    if !inside_rectangular_core && !set_inside(&candidate.geometry, &prepared.container, boundary) {
-        return false;
+    let mut geometry = None;
+    if !inside_rectangular_core {
+        let transformed = transform(&variant.geometry, 0.0, candidate.x, candidate.y);
+        if !set_inside(&transformed, &prepared.container, boundary) {
+            return false;
+        }
+        geometry = Some(transformed);
     }
+    if prepared.exclusions.is_empty() {
+        return true;
+    }
+    if geometry.is_none()
+        && prepared
+            .exclusions
+            .iter()
+            .enumerate()
+            .any(|(index, exclusion)| {
+                let required = prepared
+                    .problem
+                    .clearance
+                    .item_to_exclusion
+                    .max(prepared.problem.exclusions[index].clearance);
+                candidate.bounds.overlaps(bounds(exclusion), required)
+            })
+    {
+        geometry = Some(transform(&variant.geometry, 0.0, candidate.x, candidate.y));
+    }
+    let geometry = geometry.as_ref();
     prepared
         .exclusions
         .iter()
@@ -162,13 +214,13 @@ fn anneal_hard_valid(
                 .item_to_exclusion
                 .max(prepared.problem.exclusions[index].clearance);
             !candidate.bounds.overlaps(bounds(exclusion), required)
-                || !sets_conflict(&candidate.geometry, exclusion, required)
+                || geometry.is_some_and(|geometry| !sets_conflict(geometry, exclusion, required))
         })
 }
 
 fn capsule_layout_penalty(
     prepared: &PreparedProblem,
-    state: &[CandidatePlacement],
+    state: &[AnnealPlacement],
     radius: f64,
     half_segment: f64,
 ) -> f64 {
@@ -189,9 +241,9 @@ fn capsule_layout_penalty(
 
 fn capsule_piece_penalty(
     prepared: &PreparedProblem,
-    state: &[CandidatePlacement],
+    state: &[AnnealPlacement],
     moving_index: usize,
-    candidate: &CandidatePlacement,
+    candidate: &AnnealPlacement,
     radius: f64,
     half_segment: f64,
 ) -> f64 {
@@ -205,12 +257,12 @@ fn capsule_piece_penalty(
 
 fn capsule_pair_penalty(
     prepared: &PreparedProblem,
-    first: &CandidatePlacement,
-    second: &CandidatePlacement,
+    first: &AnnealPlacement,
+    second: &AnnealPlacement,
     radius: f64,
     half_segment: f64,
 ) -> f64 {
-    let segment = |placement: &Placement| {
+    let segment = |placement: &AnnealPlacement| {
         let radians = placement.rotation_deg.to_radians();
         let dx = radians.cos() * half_segment;
         let dy = radians.sin() * half_segment;
@@ -225,8 +277,8 @@ fn capsule_pair_penalty(
             },
         )
     };
-    let (first_a, first_b) = segment(&first.placement);
-    let (second_a, second_b) = segment(&second.placement);
+    let (first_a, first_b) = segment(first);
+    let (second_a, second_b) = segment(second);
     (radius * 2.0 + prepared.problem.clearance.item_to_item
         - capsule_surrogate_segment_distance(first_a, first_b, second_a, second_b))
     .max(0.0)

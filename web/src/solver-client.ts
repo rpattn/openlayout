@@ -44,7 +44,15 @@ export class SolverClient {
         progress(next);
       }
     };
-    const jobs = this.workers.map((_, workerIndex) => {
+    // A single connected stock has one deterministic direct lane and one continuation lane.
+    // Extra direct seeds cannot beat the continuation target for the studio capsule, but running
+    // them concurrently makes the geometry-heavy continuation substantially slower in Wasm.
+    // Retain the wider seed portfolio for compound/multi-container material where independent
+    // component phases are exactly what those additional lanes protect.
+    const portfolioWorkers = problem.container.parts.length === 1
+      ? this.workers.slice(0, 2)
+      : this.workers;
+    const jobs = portfolioWorkers.map((_, workerIndex) => {
       const lane: SolveLane = workerIndex === 1 ? "clearance_continuation" : "direct";
       const workerOptions = workerIndex === 1 ? options : {
         ...options,
@@ -76,7 +84,7 @@ export class SolverClient {
     best.runtime_timing = {
       total_ms: performance.now() - started,
       phase_ms: best.runtime_timing?.phase_ms ?? {},
-      worker_count: this.workers.length,
+      worker_count: portfolioWorkers.length,
       winning_lane: winningLane,
       lanes: results.map((result) => ({
         lane: result.runtime_timing?.lane ?? "direct",
