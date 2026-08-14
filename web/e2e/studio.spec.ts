@@ -603,6 +603,22 @@ test("snaps polygon vertices to the unit grid while dragging", async ({ page }) 
   expect(Math.abs(first[1] * 2 - Math.round(first[1] * 2))).toBeLessThan(.001);
 });
 
+test("shows grid snapping live while moving a shape", async ({ page }) => {
+  await page.goto("/");
+  const handle = page.locator(".cad-part-move-handle"), handleBox = await handle.boundingBox();
+  const canvas = page.locator("#cad-canvas"), canvasBox = await canvas.boundingBox();
+  const viewBox = (await canvas.getAttribute("viewBox"))!.split(" ").map(Number);
+  if (!handleBox || !canvasBox) throw new Error("Shape move grip is unavailable");
+  const dx = .37 / viewBox[2] * canvasBox.width, dy = .34 / viewBox[3] * canvasBox.height;
+  await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(handleBox.x + handleBox.width / 2 + dx, handleBox.y + handleBox.height / 2 - dy);
+  const liveX = Number(await handle.getAttribute("cx")), liveY = -Number(await handle.getAttribute("cy"));
+  expect(liveX / .5).toBeCloseTo(Math.round(liveX / .5), 6);
+  expect(liveY / .5).toBeCloseTo(Math.round(liveY / .5), 6);
+  await page.mouse.up();
+});
+
 test("uses two-point drafting line anchors for dimensions and shape edits", async ({ page }) => {
   await page.goto("/");
   const canvas = page.locator("#cad-canvas"), box = await canvas.boundingBox();

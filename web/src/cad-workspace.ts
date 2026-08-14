@@ -591,7 +591,9 @@ export class CadWorkspace {
         const originalState = this.drag.originalState, draggedPartIndex = this.drag.partIndex;
         const rawDelta = { x: current.x - this.drag.startWorld.x, y: current.y - this.drag.startWorld.y };
         const draftingDelta = event.altKey ? null : this.draftingSnappedMoveDelta(selection, originalState, rawDelta.x, rawDelta.y, draggedPartIndex);
-        const delta = draftingDelta ?? rawDelta;
+        const overConstructionAnchor = !event.altKey && this.nearConstituentSnapTarget(selection, draggedPartIndex, current);
+        const delta = event.altKey ? rawDelta : draftingDelta
+          ?? (overConstructionAnchor ? rawDelta : this.snappedMoveDelta(selection, originalState, rawDelta.x, rawDelta.y, draggedPartIndex));
         targets.forEach((entry) => this.movePart(entry, originalState, entry.kind === "container" ? entry.index : entry.partIndex ?? draggedPartIndex, delta.x, delta.y));
         this.drag.draftingSnapped = draftingDelta !== null;
       } else if (this.drag.mode === "geometry") {
@@ -1195,6 +1197,21 @@ export class CadWorkspace {
       this.movingPrimitiveSnapPoints(source, { x: position.x + dx, y: position.y + dy }, displayOffset), this.draftingSnapPoints(),
     );
     return adjustment ? { x: round(dx + adjustment.x), y: round(dy + adjustment.y) } : null;
+  }
+
+  private nearConstituentSnapTarget(selection: Exclude<CadSelection, { kind: "placement" }>, partIndex: number, point: Point): boolean {
+    const parts = definitionParts(this.state, selection), source = parts?.[partIndex];
+    if (!parts || !source) return false;
+    const positions = resolveEditorTranslations(parts), displayOffset = this.definitionDisplayOffset(selection);
+    const capture = this.view.width / Math.max(this.svg.clientWidth, 1) * 14;
+    return parts.some((target) => {
+      if (target.id === source.id || primitiveDependsOn(parts, target.id, source.id)) return false;
+      const position = positions.get(target.id) ?? { x: target.x, y: target.y };
+      return ANCHORS.some((anchor) => {
+        const targetPoint = primitiveAnchor(target, anchor, position);
+        return Math.hypot(targetPoint.x + displayOffset.x - point.x, targetPoint.y + displayOffset.y - point.y) <= capture;
+      });
+    });
   }
 
   private movingPrimitiveSnapPoints(part: PrimitiveEditor, position: Point, displayOffset: Point): Point[] {
