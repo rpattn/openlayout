@@ -196,10 +196,12 @@ export class CadWorkspace {
   private async rasterizeSvg(width: number, height: number): Promise<Blob | null> {
     const clone = this.svg.cloneNode(true) as SVGSVGElement;
     clone.setAttribute("xmlns", "http://www.w3.org/2000/svg"); clone.setAttribute("width", String(width)); clone.setAttribute("height", String(height));
+    clone.dataset.theme = document.documentElement.dataset.theme ?? "dark";
     clone.querySelectorAll(".cad-source-hit,.cad-trace-hit,.cad-text-hit,.cad-geometry-handle,.cad-part-move-handle,.cad-definition-handle,.cad-group-handle,.cad-snap-handle,.cad-marquee,.cad-draft-cursor").forEach((node) => node.remove());
     const css = Array.from(document.styleSheets).flatMap((sheet) => { try { return Array.from(sheet.cssRules).map((rule) => rule.cssText); } catch { return []; } }).join("\n");
-    const computed = getComputedStyle(document.documentElement), variables = ["--canvas", "--surface", "--surface-soft", "--text", "--text-soft", "--muted", "--line", "--accent", "--amber", "--danger", "--constraint", "--constraint-danger", "--container-default"].map((name) => `${name}:${computed.getPropertyValue(name)};`).join("");
-    const style = document.createElementNS("http://www.w3.org/2000/svg", "style"); style.textContent = `:root{${variables}}${css}`; clone.prepend(style);
+    const computed = getComputedStyle(document.documentElement);
+    ["--canvas", "--surface", "--surface-soft", "--text", "--text-soft", "--muted", "--line", "--accent", "--amber", "--danger", "--constraint", "--constraint-danger", "--container-default", "--grid-line"].forEach((name) => clone.style.setProperty(name, computed.getPropertyValue(name)));
+    const style = document.createElementNS("http://www.w3.org/2000/svg", "style"); style.textContent = css; clone.prepend(style);
     const source = new Blob([new XMLSerializer().serializeToString(clone)], { type: "image/svg+xml" }), url = URL.createObjectURL(source), image = new Image();
     return await new Promise<Blob | null>((resolve) => {
       image.onload = () => { const canvas = document.createElement("canvas"); canvas.width = width; canvas.height = height; canvas.getContext("2d")!.drawImage(image, 0, 0, width, height); URL.revokeObjectURL(url); canvas.toBlob(resolve, "image/png"); };

@@ -1582,10 +1582,62 @@ function editSelectedLayout(): void {
 
 function openExport(): void {
   const evaluation = selectedEvaluation();
+  const problem = page === "sensitivity" && evaluation ? evaluation.problem : toProblem(state);
   const result = page === "sensitivity" ? evaluation?.result ?? null : currentResult;
   element("export-options").innerHTML = exportOptionsHtml({ layout: !!result, sensitivity: !!sensitivityResult });
   element("export-options").querySelectorAll<HTMLButtonElement>("[data-export]").forEach((button) => button.addEventListener("click", () => void runExport(button.dataset.export!)));
   element<HTMLDialogElement>("export-dialog").showModal();
+  void renderExportPreviews(problem, result);
+}
+
+async function renderExportPreviews(problem: PackingProblem, result: SolveResult | null): Promise<void> {
+  const host = element("export-options");
+  const preview = (kind: string) => host.querySelector<HTMLElement>(`[data-export-preview="${kind}"]`);
+  const showSvg = (kind: string, source: string) => {
+    const target = preview(kind); if (!target) return;
+    const image = new Image(); image.alt = ""; image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(source)}`;
+    target.replaceChildren(image); target.classList.remove("loading");
+  };
+  const showJson = (kind: string, value: unknown) => {
+    const target = preview(kind); if (!target) return;
+    const content = JSON.stringify(value, null, 2), code = document.createElement("pre");
+    code.textContent = content.length > 1_200 ? `${content.slice(0, 1_200)}\n…` : content;
+    target.replaceChildren(code); target.classList.remove("loading");
+  };
+
+  showJson("problem-json", problem);
+  showSvg("shapes-svg", shapesToSvg(problem));
+  if (result) {
+    showSvg("layout-svg", layoutToSvg(problem, result.placements));
+    showJson("solve-json", result);
+    const canvas = document.createElement("canvas"), target = preview("layout-png");
+    if (target) {
+      target.replaceChildren(canvas); target.classList.remove("loading");
+      renderLayout(canvas, problem, result.placements, activeLayoutDisplay());
+    }
+  }
+  if (sensitivityResult) showJson("study-json", sensitivityResult);
+
+  const sceneTarget = preview("scene-png");
+  if (!sceneTarget) return;
+  try {
+    const blob = await cad.exportScenePng(480, 300);
+    if (!blob || !sceneTarget.isConnected) throw new Error("Scene preview unavailable");
+    const image = new Image(), url = URL.createObjectURL(blob);
+    image.alt = ""; image.onload = () => URL.revokeObjectURL(url); image.onerror = () => URL.revokeObjectURL(url); image.src = url;
+    sceneTarget.replaceChildren(image); sceneTarget.classList.remove("loading");
+  } catch {
+    if (sceneTarget.isConnected) { sceneTarget.replaceChildren(Object.assign(document.createElement("span"), { textContent: "Preview unavailable" })); sceneTarget.classList.remove("loading"); }
+  }
+}
+
+function activeLayoutDisplay() {
+  return {
+    ...(page === "sensitivity" ? studyDisplay : display), viewSettings: state.viewSettings,
+    customDimensions: page === "packing" ? state.dimensions : [],
+    dimensionPositions: page === "packing" ? state.dimensionPositions : {},
+    dimensionOverrides: page === "packing" ? state.dimensionOverrides : {},
+  };
 }
 
 async function runExport(kind: string): Promise<void> {
@@ -1599,12 +1651,7 @@ async function runExport(kind: string): Promise<void> {
   else if (kind === "placements-csv" && result) downloadText(`${base}-placements.csv`, placementsCsv(result.placements), "text/csv");
   else if (kind === "solve-json" && result) downloadText(`${base}-solve.json`, JSON.stringify(result, null, 2), "application/json");
   else if (kind === "study-json" && sensitivityResult) downloadText(`${base}-sensitivity.json`, JSON.stringify(sensitivityResult, null, 2), "application/json");
-  else if (kind === "layout-png" && result) await downloadLayoutPng(`${base}-layout.png`, problem, result.placements, {
-    ...(page === "sensitivity" ? studyDisplay : display), viewSettings: state.viewSettings,
-    customDimensions: page === "packing" ? state.dimensions : [],
-    dimensionPositions: page === "packing" ? state.dimensionPositions : {},
-    dimensionOverrides: page === "packing" ? state.dimensionOverrides : {},
-  });
+  else if (kind === "layout-png" && result) await downloadLayoutPng(`${base}-layout.png`, problem, result.placements, activeLayoutDisplay());
   else if (kind === "scene-png") { const blob = await cad.exportScenePng(); if (blob) downloadBlob(`${base}-scene.png`, blob); else throw new Error("Scene PNG could not be rendered"); }
   else return;
   setStatus("success", `${kind.replaceAll("-", " ")} exported`);

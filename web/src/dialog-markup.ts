@@ -30,5 +30,9 @@ export function exportOptionsHtml({ layout, sensitivity }: ExportAvailability): 
 }
 
 function exportCard(title: string, description: string, kind: string, disabled = false): string {
-  return `<article><div><strong>${title}</strong><p>${description}</p></div><button type="button" class="button ghost" data-export="${kind}" ${disabled ? "disabled" : ""}>Download</button></article>`;
+  const previewable = kind.endsWith("-svg") || kind.endsWith("-png") || kind.endsWith("-json");
+  const preview = previewable
+    ? `<div class="export-preview ${disabled ? "unavailable" : "loading"}" data-export-preview="${kind}" role="img" aria-label="${title} preview"><span>${disabled ? "Available after solve" : "Preparing preview…"}</span></div>`
+    : "";
+  return `<article class="export-card">${preview}<div class="export-card-details"><div><strong>${title}</strong><p>${description}</p></div><button type="button" class="button ghost" data-export="${kind}" ${disabled ? "disabled" : ""}>Download</button></div></article>`;
 }

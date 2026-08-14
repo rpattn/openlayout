@@ -23,6 +23,12 @@ test("default project reaches the 21-item continuation result", async ({ page })
   await expect(page.locator('[data-dimension-owner="clearance:item-to-item"]')).toHaveCount(0);
   await expect(page.locator('[data-dimension-owner="material"]')).toHaveCount(1);
   await page.locator("#result-export").click();
+  await expect(page.locator('[data-export-preview="problem-json"] pre')).toContainText('"container"');
+  await expect(page.locator('[data-export-preview="shapes-svg"] img')).toBeVisible();
+  await expect(page.locator('[data-export-preview="layout-svg"] img')).toBeVisible();
+  await expect(page.locator('[data-export-preview="layout-png"] canvas')).toBeVisible();
+  await expect(page.locator('[data-export-preview="scene-png"] img')).toBeVisible();
+  await expect(page.locator('[data-export-preview="solve-json"] pre')).toContainText('"placements"');
   const download = page.waitForEvent("download");
   await page.locator('[data-export="scene-png"]').click();
   await download;
@@ -38,6 +44,32 @@ test("default project reaches the 21-item continuation result", async ({ page })
   expect(exported.placements).toBeGreaterThan(0);
   expect(exported.itemSamples).toBe(0);
   expect(exported.itemDimensions).toBe(0);
+});
+
+test("previews and exports the workspace scene in the active theme", async ({ page }) => {
+  await page.addInitScript(() => {
+    const serialize = XMLSerializer.prototype.serializeToString;
+    XMLSerializer.prototype.serializeToString = function (root) {
+      const result = serialize.call(this, root);
+      if (root instanceof SVGElement) (window as typeof window & { __lastSceneSvg?: string }).__lastSceneSvg = result;
+      return result;
+    };
+  });
+  await page.goto("/");
+  await clickMoreTool(page, "Toggle theme");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await page.getByRole("button", { name: "Export", exact: true }).click();
+  await expect(page.locator('[data-export-preview="scene-png"] img')).toBeVisible();
+  const previewSource = await page.evaluate(() => (window as typeof window & { __lastSceneSvg?: string }).__lastSceneSvg ?? "");
+  expect(previewSource).toContain('data-theme="light"');
+  expect(previewSource).toContain("--canvas: #f4f7f9");
+
+  const download = page.waitForEvent("download");
+  await page.locator('[data-export="scene-png"]').click();
+  await download;
+  const exportSource = await page.evaluate(() => (window as typeof window & { __lastSceneSvg?: string }).__lastSceneSvg ?? "");
+  expect(exportSource).toContain('data-theme="light"');
+  expect(exportSource).toContain("--canvas: #f4f7f9");
 });
 
 async function clickMoreTool(page: Page, name: string): Promise<void> {
