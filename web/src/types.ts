@@ -235,7 +235,7 @@ export interface EditorRegion {
 }
 
 export interface ConstructionGuide { id: string; x: number; y: number; rotation: number }
-export interface DraftingPath { id: string; points: Point[]; x: number; y: number; rotation: number; closed: boolean }
+export interface DraftingPath { id: string; points: Point[]; x: number; y: number; rotation: number; closed: boolean; fillColor?: string }
 export interface TraceImage {
   id: string;
   dataUrl: string;

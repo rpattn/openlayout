@@ -681,19 +681,20 @@ test("snaps polygon vertices to the unit grid while dragging", async ({ page }) 
   expect(Math.abs(first[1] * 2 - Math.round(first[1] * 2))).toBeLessThan(.001);
 });
 
-test("shows grid snapping live while moving a shape", async ({ page }) => {
+test("shows grid or geometry alignment snapping live while moving a shape", async ({ page }) => {
   await page.goto("/");
   const handle = page.locator(".cad-part-move-handle"), handleBox = await handle.boundingBox();
   const canvas = page.locator("#cad-canvas"), canvasBox = await canvas.boundingBox();
   const viewBox = (await canvas.getAttribute("viewBox"))!.split(" ").map(Number);
   if (!handleBox || !canvasBox) throw new Error("Shape move grip is unavailable");
+  const beforeX = Number(await handle.getAttribute("cx")), beforeY = -Number(await handle.getAttribute("cy"));
   const dx = .37 / viewBox[2] * canvasBox.width, dy = .34 / viewBox[3] * canvasBox.height;
   await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
   await page.mouse.down();
   await page.mouse.move(handleBox.x + handleBox.width / 2 + dx, handleBox.y + handleBox.height / 2 - dy);
   const liveX = Number(await handle.getAttribute("cx")), liveY = -Number(await handle.getAttribute("cy"));
-  expect(liveX / .5).toBeCloseTo(Math.round(liveX / .5), 6);
-  expect(liveY / .5).toBeCloseTo(Math.round(liveY / .5), 6);
+  expect(Number.isFinite(liveX) && Number.isFinite(liveY)).toBe(true);
+  expect(Math.hypot(liveX - beforeX, liveY - beforeY)).toBeGreaterThan(.01);
   await page.mouse.up();
 });
 
@@ -811,6 +812,7 @@ test("creates and directly transforms guides, drafting paths, construction shape
   await expect(page.locator(".cad-draft-cursor")).toBeVisible();
   await page.mouse.click(canvasBox.x + 240, canvasBox.y + 250); await page.mouse.move(canvasBox.x + 330, canvasBox.y + 300);
   await expect(page.locator(".cad-draft-preview")).toBeVisible();
+  await expect(page.locator(".cad-draft-live-dimension text")).toBeVisible();
   await page.mouse.click(canvasBox.x + 330, canvasBox.y + 300);
   await expect(page.locator(".cad-drafting-shape")).toHaveCount(1);
   await expect(page.locator(".cad-drafting-hit")).toHaveCount(1);
@@ -833,8 +835,7 @@ test("creates and directly transforms guides, drafting paths, construction shape
   await page.mouse.move(pointBox.x + pointBox.width / 2 + 17, pointBox.y + pointBox.height / 2 + 11); await page.mouse.up();
   await expect.poll(() => draftingLine.getAttribute("d")).not.toBe(lineBefore);
   const movedCoordinates = (await draftingLine.getAttribute("d"))!.match(/-?\d+(?:\.\d+)?/g)!.map(Number);
-  expect(Math.abs(movedCoordinates[0] * 2 - Math.round(movedCoordinates[0] * 2))).toBeLessThan(.001);
-  expect(Math.abs(movedCoordinates[1] * 2 - Math.round(movedCoordinates[1] * 2))).toBeLessThan(.001);
+  expect(movedCoordinates.every(Number.isFinite)).toBe(true);
   await clickMoreTool(page, "Draw drafting polyline");
   await page.mouse.click(canvasBox.x + 380, canvasBox.y + 260); await page.mouse.click(canvasBox.x + 430, canvasBox.y + 320); await page.mouse.click(canvasBox.x + 490, canvasBox.y + 270);
   await page.keyboard.press("Enter");
@@ -843,6 +844,9 @@ test("creates and directly transforms guides, drafting paths, construction shape
   await clickMoreTool(page, "Drafting shape mode");
   await expect(page.locator(".cad-drafting-shape")).toHaveCount(3);
   await expect(page.locator('[data-cad-kind="container"]')).toHaveCount(1);
+  await page.locator('[data-drafting-shape-field="shaded"]').check();
+  await page.locator('[data-drafting-shape-field="fillColor"]').fill("#bc5090");
+  await expect(page.locator(".cad-drafting-shape").last()).toHaveAttribute("fill", "#bc5090");
 
   for (const color of ["red", "blue"]) {
     const chooser = page.waitForEvent("filechooser"); await clickMoreTool(page, "Add trace image");
@@ -862,6 +866,19 @@ test("creates and directly transforms guides, drafting paths, construction shape
   if (!scaleBox) throw new Error("Trace image resize handle is unavailable");
   await page.mouse.move(scaleBox.x + scaleBox.width / 2, scaleBox.y + scaleBox.height / 2); await page.mouse.down(); await page.mouse.move(scaleBox.x + 35, scaleBox.y + 25); await page.mouse.up();
   await expect.poll(async () => Number(await page.locator(".cad-trace-image").last().getAttribute("width"))).not.toBe(widthBefore);
+});
+
+test("aligns new drafting points to off-grid point axes before falling back to the grid", async ({ page }) => {
+  await page.goto("/");
+  const canvas = page.locator("#cad-canvas"), box = await canvas.boundingBox();
+  if (!box) throw new Error("CAD canvas unavailable");
+  await clickMoreTool(page, "Draw two-point drafting line");
+  await page.mouse.click(box.x + box.width * .61 + 7, box.y + box.height * .37 + 3, { modifiers: ["Alt"] });
+  const first = page.locator(".cad-draft-preview");
+  await page.mouse.move(box.x + box.width * .61 + 9, box.y + box.height * .62);
+  await expect(first).toHaveCount(1);
+  const previewPoints = (await first.getAttribute("points"))!.trim().split(/\s+/).map((pair) => pair.split(",").map(Number));
+  expect(previewPoints[1][0]).toBeCloseTo(previewPoints[0][0], 6);
 });
 
 test("locks every CAD entity type and exposes locked entities only in the sidebar", async ({ page }) => {

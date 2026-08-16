@@ -26,7 +26,9 @@
 .cad-construction-guide { stroke: transparent; stroke-width: 10px; vector-effect: non-scaling-stroke; pointer-events: stroke; cursor: move; }
 .cad-drafting-shape { fill: none; stroke: #49cfe8; stroke-width: 1.4px; stroke-dasharray: 5 3; vector-effect: non-scaling-stroke; pointer-events: none; }
 .cad-drafting-hit { fill: none; stroke: transparent; stroke-width: 14px; vector-effect: non-scaling-stroke; pointer-events: stroke; cursor: move; }
+.cad-drafting-hit.closed { fill: transparent; pointer-events: all; }
 .cad-draft-preview { fill: none; stroke: var(--amber); stroke-width: 1.5px; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; pointer-events: none; }
+.cad-draft-live-dimension { pointer-events: none; }
 .cad-canvas.placing-guide, .cad-canvas.placing-draft { cursor: crosshair; }
 .cad-draft-cursor { pointer-events: none; }
 .cad-draft-cursor circle { fill: var(--surface); stroke: var(--amber); stroke-width: 1.5px; vector-effect: non-scaling-stroke; }

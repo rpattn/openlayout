@@ -34,7 +34,7 @@ export function renderInspector(context: InspectorContext): InspectorMarkup {
   }
   if (selection.kind === "drafting") {
     const shape = state.drafting.shapes[selection.index];
-    return result(shape ? `<div class="inspector-heading"><div><small>DRAFTING SHAPE</small><h2>${shape.closed ? "Construction shape" : "Construction path"} ${selection.index + 1}</h2></div><span class="selection-badge">${shape.points.length} points</span></div><p class="hint">Grid snap · Alt bypass</p><button data-delete-object class="button danger full">Delete drafting shape</button>` : emptyConstruction("Drafting shape unavailable"));
+    return result(shape ? `<div class="inspector-heading"><div><small>DRAFTING SHAPE</small><h2>${shape.closed ? "Construction shape" : "Construction path"} ${selection.index + 1}</h2></div><span class="selection-badge">${shape.points.length} points</span></div>${shape.closed ? `<div class="field-grid two"><label class="checkbox-field"><input type="checkbox" data-drafting-shape-field="shaded" ${shape.fillColor ? "checked" : ""}> Shaded</label><label>Shading colour<input type="color" data-drafting-shape-field="fillColor" value="${escapeHtml(shape.fillColor ?? "#49cfe8")}" ${shape.fillColor ? "" : "disabled"}></label></div>` : ""}<p class="hint">Grid and geometry alignment snap · Alt bypass</p><button data-delete-object class="button danger full">Delete drafting shape</button>` : emptyConstruction("Drafting shape unavailable"));
   }
   if (selection.kind === "dimension") {
     const dimension = state.dimensions[selection.index];

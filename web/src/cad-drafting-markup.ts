@@ -35,8 +35,9 @@ export function draftingMarkup({ state, view, isLocked, isSelected }: DraftingMa
   const shapes = state.drafting.shapes.map((shape, index) => {
     const points = draftingWorldPoints(shape), d = points.map((point, pointIndex) => `${pointIndex ? "L" : "M"}${point.x},${-point.y}`).join(" ") + (shape.closed ? " Z" : "");
     const locked = isLocked({ kind: "drafting", index }), selected = isSelected({ kind: "drafting", index });
-    const hit = locked ? "" : `<path data-cad-kind="drafting" data-cad-index="${index}" class="cad-drafting-hit" d="${d}"/>`;
-    return `<path class="cad-drafting-shape ${locked ? "locked" : selected ? "selected" : ""}" d="${d}"/>${hit}`;
+    const fill = shape.closed && shape.fillColor ? ` fill="${escapeHtml(shape.fillColor)}" fill-opacity=".24"` : "";
+    const hit = locked ? "" : `<path data-cad-kind="drafting" data-cad-index="${index}" class="cad-drafting-hit ${shape.closed ? "closed" : ""}" d="${d}"/>`;
+    return `<path class="cad-drafting-shape ${locked ? "locked" : selected ? "selected" : ""}"${fill} d="${d}"/>${hit}`;
   }).join("");
   const texts = state.drafting.texts.map((entry, index) => {
     const bounds = draftingTextLocalBounds(entry), locked = isLocked({ kind: "text", index });
@@ -50,12 +51,15 @@ export function draftingMarkup({ state, view, isLocked, isSelected }: DraftingMa
   return `<g class="cad-construction-guides">${guides}${shapes}${texts}</g>`;
 }
 
-export function draftPreviewMarkup(tool: "line" | "polyline" | null, points: Point[], hover: Point | null, scale: number): string {
+export function draftPreviewMarkup(tool: "line" | "polyline" | null, points: Point[], hover: Point | null, scale: number, settings: EditorState["viewSettings"]): string {
   if (!tool || !hover) return "";
   const allPoints = [...points, hover];
   const preview = points.length ? `<polyline class="cad-draft-preview" points="${allPoints.map((entry) => `${entry.x},${-entry.y}`).join(" ")}"/>` : "";
+  const dimension = tool === "line" && points.length === 1
+    ? `<g class="cad-draft-live-dimension">${linearDimensionMarkup({ id: "draft-preview", start: points[0], end: hover, offset: { x: 0, y: 0 }, textOverride: "" }, scale, settings)}</g>`
+    : "";
   const cursor = Math.max(5 * scale, .1), crosshair = Math.max(8 * scale, .16), label = Math.max(9 * scale, .18);
-  return `${preview}<g class="cad-draft-cursor"><circle cx="${hover.x}" cy="${-hover.y}" r="${cursor}"/><line x1="${hover.x - crosshair}" y1="${-hover.y}" x2="${hover.x + crosshair}" y2="${-hover.y}"/><line x1="${hover.x}" y1="${-hover.y - crosshair}" x2="${hover.x}" y2="${-hover.y + crosshair}"/><text x="${hover.x + label}" y="${-hover.y - label}">${formatNumber(hover.x, 2)}, ${formatNumber(hover.y, 2)}</text></g>`;
+  return `${preview}${dimension}<g class="cad-draft-cursor"><circle cx="${hover.x}" cy="${-hover.y}" r="${cursor}"/><line x1="${hover.x - crosshair}" y1="${-hover.y}" x2="${hover.x + crosshair}" y2="${-hover.y}"/><line x1="${hover.x}" y1="${-hover.y - crosshair}" x2="${hover.x}" y2="${-hover.y + crosshair}"/><text x="${hover.x + label}" y="${-hover.y - label}">${formatNumber(hover.x, 2)}, ${formatNumber(hover.y, 2)}</text></g>`;
 }
 
 export function guidePreviewMarkup(rotation: number | null, hover: Point | null, view: CadView, scale: number): string {

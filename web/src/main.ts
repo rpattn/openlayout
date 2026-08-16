@@ -490,6 +490,12 @@ function selectionInspector(): string {
 }
 
 function bindInlineInspector(sidebar: HTMLElement): void {
+  sidebar.querySelectorAll<HTMLInputElement>("[data-drafting-shape-field]").forEach((input) => input.addEventListener("change", () => mutate(() => {
+    if (selection?.kind !== "drafting") return;
+    const shape = state.drafting.shapes[selection.index]; if (!shape?.closed) return;
+    if (input.dataset.draftingShapeField === "shaded") shape.fillColor = input.checked ? shape.fillColor ?? "#49cfe8" : undefined;
+    else shape.fillColor = input.value;
+  })));
   sidebar.querySelectorAll<HTMLInputElement>("[data-auto-dimension-field]").forEach((input) => input.addEventListener("change", () => mutate(() => {
     if (selection?.kind !== "auto-dimension") return;
     const field = input.dataset.autoDimensionField!;

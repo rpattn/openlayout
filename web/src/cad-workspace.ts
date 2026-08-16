@@ -258,7 +258,7 @@ export class CadWorkspace {
       ${editing ? traceImageHitMarkup(this.draftingMarkupContext()) : ""}
       ${this.selections.length > 1 ? this.multiSelectionMarkup(scale) : this.selection && (editing || this.selection.kind === "placement") ? this.selectionHandles(this.selection, scale) : ""}
       ${guidePreviewMarkup(this.guideTool, this.guideHover, this.view, scale)}
-      ${draftPreviewMarkup(this.draftTool, this.draftPoints, this.draftHover, scale)}
+      ${draftPreviewMarkup(this.draftTool, this.draftPoints, this.draftHover, scale, this.state.viewSettings)}
       ${dimensionPreviewMarkup(this.dimensionTool, this.dimensionPoints, this.dimensionHover, scale, this.state.viewSettings)}
       ${this.marqueeMarkup()}`;
   }
@@ -283,12 +283,19 @@ export class CadWorkspace {
 
   private snapDraftPoint(point: Point, bypass = false, excludedDraftPoint?: { shapeIndex: number; pointIndex: number }): Point {
     if (bypass) return { x: round(point.x), y: round(point.y) };
+    const candidates = [...this.sceneSnapPoints(excludedDraftPoint), ...this.draftPoints];
     if (this.state.drafting.smartSnap) {
-      const nearest = this.nearestSnapPoint(point, this.sceneSnapPoints(excludedDraftPoint));
+      const nearest = this.nearestSnapPoint(point, candidates);
       if (nearest) return { x: round(nearest.x), y: round(nearest.y) };
     }
-    if (!this.state.drafting.snapToGrid) return { x: round(point.x), y: round(point.y) };
-    return { x: round(snapUnit(point.x, this.state.drafting.gridStep)), y: round(snapUnit(point.y, this.state.drafting.gridStep)) };
+    let x = this.state.drafting.snapToGrid ? snapUnit(point.x, this.state.drafting.gridStep) : point.x;
+    let y = this.state.drafting.snapToGrid ? snapUnit(point.y, this.state.drafting.gridStep) : point.y;
+    if (this.state.drafting.smartSnap) {
+      const capture = this.snapCaptureDistance();
+      x = nearestWithinOrNull(point.x, candidates.map((candidate) => candidate.x), capture) ?? x;
+      y = nearestWithinOrNull(point.y, candidates.map((candidate) => candidate.y), capture) ?? y;
+    }
+    return { x: round(x), y: round(y) };
   }
 
   private pointerDown(event: PointerEvent): void {
@@ -1017,10 +1024,13 @@ export class CadWorkspace {
     const target = primitiveFor(this.state, selection, partIndex);
     const source = primitiveFor(original, selection, partIndex);
     if (!target || !source || target.kind !== source.kind) return;
-    const draftingTarget = bypassSnapping ? null : this.nearestSnapPoint(world, this.draftingSnapPoints());
-    const effectiveWorld = draftingTarget ?? world;
+    const usesPointPosition = target.kind === "rectangle" || target.kind === "polygon" || target.kind === "bezier";
+    const draftingTarget = bypassSnapping || usesPointPosition ? null : this.nearestSnapPoint(world, this.draftingSnapPoints());
+    const effectiveWorld = usesPointPosition ? this.snapDraftPoint(world, bypassSnapping) : draftingTarget ?? world;
     const local = inverseTransformPoint(effectiveWorld, rotation, center.x, center.y);
-    const preserveDraftingTarget = bypassSnapping || draftingTarget !== null;
+    const preserveDraftingTarget = bypassSnapping
+      || target.kind !== "circle" && draftingTarget !== null
+      || usesPointPosition && Math.hypot(effectiveWorld.x - world.x, effectiveWorld.y - world.y) > 1e-8;
     if (target.kind === "bezier" && source.kind === "bezier" && handle.startsWith("bounds:")) {
       const anchor = handle.slice(7), bounds = pointBounds(shapePoints(primitiveShape(source)));
       const startLocal = inverseTransformPoint(startWorld, rotation, center.x, center.y);
@@ -1191,9 +1201,13 @@ export class CadWorkspace {
       if (adjustment) {
         x += adjustment.x; y += adjustment.y;
       } else {
+        const axisAdjustment = this.axisAnchorAdjustment(
+          this.movingPrimitiveSnapPoints(source, { x, y }, displayOffset), this.stationaryPrimitiveSnapPoints(original, source),
+        );
+        if (axisAdjustment) { x += axisAdjustment.x; y += axisAdjustment.y; }
         const xCandidates = [...others.map((part) => part.x), ...this.state.drafting.guides.map((guide) => guide.x), ...drafting.map((point) => point.x - displayOffset.x)];
         const yCandidates = [...others.map((part) => part.y), ...this.state.drafting.guides.map((guide) => guide.y), ...drafting.map((point) => point.y - displayOffset.y)];
-        x = nearestWithin(x, xCandidates, threshold); y = nearestWithin(y, yCandidates, threshold);
+        if (!axisAdjustment) { x = nearestWithin(x, xCandidates, threshold); y = nearestWithin(y, yCandidates, threshold); }
       }
     }
     return { x: round(x - position.x), y: round(y - position.y) };
@@ -1231,6 +1245,35 @@ export class CadWorkspace {
     if (part.kind === "triangle") return (["center", "top", "bottom_left", "bottom_right"] as const).map((anchor) => primitiveAnchor(part, anchor, visiblePosition));
     const localPoints = part.kind === "polygon" ? part.vertices : part.knots.map((knot) => knot.point);
     return [primitiveAnchor(part, "center", visiblePosition), ...localPoints.map((point) => transformPoint(point, part.rotation, visiblePosition.x, visiblePosition.y))];
+  }
+
+  private stationaryPrimitiveSnapPoints(state: EditorState, excluded: PrimitiveEditor): Point[] {
+    const points: Point[] = [];
+    const append = (parts: PrimitiveEditor[], displayOffset: Point = { x: 0, y: 0 }) => {
+      const positions = resolveEditorTranslations(parts);
+      parts.forEach((part) => {
+        if (part === excluded) return;
+        const position = positions.get(part.id) ?? { x: part.x, y: part.y };
+        points.push(...this.movingPrimitiveSnapPoints(part, position, displayOffset));
+        points.push(...polygons(primitiveShape(part), part.rotation, position.x + displayOffset.x, position.y + displayOffset.y).flat());
+      });
+    };
+    append(state.containerParts.map((entry) => entry.primitive));
+    state.exclusions.forEach((entry) => append(entry.parts));
+    state.items.forEach((item, index) => append(item.parts, this.definitionDisplayOffset({ kind: "item", index })));
+    points.push(...this.draftingSnapPoints());
+    this.placements.forEach((placement) => {
+      const item = this.placementProblem.items.find((entry) => entry.id === placement.item_id);
+      if (item) points.push(...polygons(item.shape, placement.rotation_deg, placement.x, placement.y).flat());
+    });
+    return points;
+  }
+
+  private axisAnchorAdjustment(sourcePoints: Point[], targetPoints: Point[]): Point | null {
+    const capture = this.snapCaptureDistance();
+    const dx = nearestWithinOrNull(0, sourcePoints.flatMap((source) => targetPoints.map((target) => target.x - source.x)), capture);
+    const dy = nearestWithinOrNull(0, sourcePoints.flatMap((source) => targetPoints.map((target) => target.y - source.y)), capture);
+    return dx === null && dy === null ? null : { x: dx ?? 0, y: dy ?? 0 };
   }
 
   private draftingAnchorAdjustment(sourcePoints: Point[], draftingPoints: Point[]): Point | null {
@@ -1420,8 +1463,12 @@ export class CadWorkspace {
 
   private nearestSnapPoint(point: Point, candidates: Point[]): Point | null {
     const nearest = candidates.reduce<Point | null>((best, candidate) => !best || Math.hypot(candidate.x - point.x, candidate.y - point.y) < Math.hypot(best.x - point.x, best.y - point.y) ? candidate : best, null);
-    const capture = this.view.width / Math.max(this.svg.clientWidth, 1) * 14;
+    const capture = this.snapCaptureDistance();
     return nearest && Math.hypot(nearest.x - point.x, nearest.y - point.y) <= capture ? nearest : null;
+  }
+
+  private snapCaptureDistance(): number {
+    return this.view.width / Math.max(this.svg.clientWidth, 1) * 14;
   }
 
   private draftingSnapPoints(excluded?: { shapeIndex: number; pointIndex: number }): Point[] {
@@ -1799,7 +1846,10 @@ function snapAngle(value: number): number {
   return Math.abs(candidate - value) <= ROTATION_CAPTURE_DEGREES ? candidate : value;
 }
 function nearestWithin(value: number, candidates: number[], threshold: number): number {
+  return nearestWithinOrNull(value, candidates, threshold) ?? value;
+}
+function nearestWithinOrNull(value: number, candidates: number[], threshold: number): number | null {
   const nearest = candidates.reduce<number | null>((best, candidate) => best === null || Math.abs(candidate - value) < Math.abs(best - value) ? candidate : best, null);
-  return nearest !== null && Math.abs(nearest - value) <= threshold ? nearest : value;
+  return nearest !== null && Math.abs(nearest - value) <= threshold ? nearest : null;
 }
 function round(value: number, digits = 3): number { const factor = 10 ** digits; return Math.round(value * factor) / factor; }

@@ -256,6 +256,7 @@ function migrateProject(project: LocalProject): LocalProject {
     entry.fontFamily ??= "mono"; entry.align ??= "left"; entry.bold ??= false; entry.italic ??= false; entry.underline ??= false;
   });
   state.drafting.shapes ??= [];
+  state.drafting.shapes.forEach((shape) => { if (!shape.closed) delete shape.fillColor; });
   delete state.drafting.traceImage;
   state.lockedEntities ??= [];
   state.viewSettings ??= { showGrid: true, showDimensions: false, showClearance: false, dimensionTextSize: 11, edgeThickness: 1.4, dimensionPrecision: 2, dimensionUnit: "mm" };
