@@ -24,7 +24,7 @@
 .cad-guide-visual { stroke: #49cfe8; stroke-width: 1px; stroke-dasharray: 7 4; opacity: .72; vector-effect: non-scaling-stroke; }
 .cad-guide-visual.selected, .cad-drafting-shape.selected { stroke: var(--amber); opacity: 1; stroke-width: 2px; }
 .cad-construction-guide { stroke: transparent; stroke-width: 10px; vector-effect: non-scaling-stroke; pointer-events: stroke; cursor: move; }
-.cad-drafting-shape { fill: none; stroke: #49cfe8; stroke-width: 1.4px; stroke-dasharray: 5 3; vector-effect: non-scaling-stroke; pointer-events: none; }
+.cad-drafting-shape { stroke: #49cfe8; stroke-width: 1.4px; stroke-dasharray: 5 3; vector-effect: non-scaling-stroke; pointer-events: none; }
 .cad-drafting-hit { fill: none; stroke: transparent; stroke-width: 14px; vector-effect: non-scaling-stroke; pointer-events: stroke; cursor: move; }
 .cad-drafting-hit.closed { fill: transparent; pointer-events: all; }
 .cad-draft-preview { fill: none; stroke: var(--amber); stroke-width: 1.5px; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; pointer-events: none; }
@@ -135,6 +135,9 @@
 .tool-button.has-content { color: var(--accent); }
 .toolbar-color { width: 32px; height: 30px; display: grid; place-items: center; padding: 0; color: var(--muted); }
 .toolbar-color input, .primitive-editor input[type="color"] { width: 28px; min-height: 22px; height: 22px; padding: 1px; border-radius: 4px; cursor: pointer; }
+.toolbar-transparency { width: 72px; display: grid; place-items: center; }
+.toolbar-transparency input { width: 64px; accent-color: var(--accent); cursor: pointer; }
+.toolbar-transparency input:disabled { cursor: default; opacity: .35; }
 .tool-button:disabled { opacity: .3; cursor: default; }
 .tool-button span { margin-left: 3px; }
 .tool-button.compact-overlay { width: 28px; min-width: 28px; padding: 0; font-size: 13px; }

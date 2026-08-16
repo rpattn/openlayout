@@ -844,9 +844,16 @@ test("creates and directly transforms guides, drafting paths, construction shape
   await clickMoreTool(page, "Drafting shape mode");
   await expect(page.locator(".cad-drafting-shape")).toHaveCount(3);
   await expect(page.locator('[data-cad-kind="container"]')).toHaveCount(1);
-  await page.locator('[data-drafting-shape-field="shaded"]').check();
-  await page.locator('[data-drafting-shape-field="fillColor"]').fill("#bc5090");
-  await expect(page.locator(".cad-drafting-shape").last()).toHaveAttribute("fill", "#bc5090");
+  const draftingShape = page.locator(".cad-drafting-shape").last();
+  await expect(draftingShape).toHaveAttribute("fill", "none");
+  await expect(page.locator("[data-drafting-shape-field]")).toHaveCount(0);
+  const draftingColour = page.locator("#toolbar-part-color"), draftingTransparency = page.locator("#toolbar-color-transparency");
+  await expect(draftingColour).toBeEnabled(); await expect(draftingTransparency).toBeDisabled();
+  await draftingColour.fill("#bc5090");
+  await expect(draftingShape).toHaveAttribute("fill", "#bc5090");
+  await expect(draftingShape).toHaveCSS("fill", "rgb(188, 80, 144)");
+  await expect(draftingTransparency).toBeEnabled(); await draftingTransparency.fill("65");
+  await expect(draftingShape).toHaveAttribute("fill-opacity", "0.35");
 
   for (const color of ["red", "blue"]) {
     const chooser = page.waitForEvent("filechooser"); await clickMoreTool(page, "Add trace image");

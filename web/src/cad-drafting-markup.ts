@@ -35,7 +35,9 @@ export function draftingMarkup({ state, view, isLocked, isSelected }: DraftingMa
   const shapes = state.drafting.shapes.map((shape, index) => {
     const points = draftingWorldPoints(shape), d = points.map((point, pointIndex) => `${pointIndex ? "L" : "M"}${point.x},${-point.y}`).join(" ") + (shape.closed ? " Z" : "");
     const locked = isLocked({ kind: "drafting", index }), selected = isSelected({ kind: "drafting", index });
-    const fill = shape.closed && shape.fillColor ? ` fill="${escapeHtml(shape.fillColor)}" fill-opacity=".24"` : "";
+    const fill = shape.closed && shape.fillColor
+      ? ` fill="${escapeHtml(shape.fillColor)}" fill-opacity="${Math.max(0, Math.min(1, shape.fillOpacity ?? 1))}"`
+      : ' fill="none"';
     const hit = locked ? "" : `<path data-cad-kind="drafting" data-cad-index="${index}" class="cad-drafting-hit ${shape.closed ? "closed" : ""}" d="${d}"/>`;
     return `<path class="cad-drafting-shape ${locked ? "locked" : selected ? "selected" : ""}"${fill} d="${d}"/>${hit}`;
   }).join("");

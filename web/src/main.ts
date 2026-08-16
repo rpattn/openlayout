@@ -141,6 +141,11 @@ function bindShell(): void {
     const color = (event.target as HTMLInputElement).value;
     selectedPrimitivesForColor().forEach((part) => { part.color = color; });
     selectedTextsForColor().forEach((entry) => { entry.color = color; });
+    selectedDraftingShapesForColor().forEach((shape) => { shape.fillColor = color; shape.fillOpacity ??= 1; });
+  }));
+  element<HTMLInputElement>("toolbar-color-transparency").addEventListener("input", (event) => mutate(() => {
+    const opacity = 1 - Number((event.target as HTMLInputElement).value) / 100;
+    selectedDraftingShapesForColor().forEach((shape) => { if (shape.fillColor) shape.fillOpacity = opacity; });
   }));
   element("join-material").addEventListener("click", joinSelectedMaterial);
   element("lock-selection").addEventListener("click", toggleSelectionLock);
@@ -490,12 +495,6 @@ function selectionInspector(): string {
 }
 
 function bindInlineInspector(sidebar: HTMLElement): void {
-  sidebar.querySelectorAll<HTMLInputElement>("[data-drafting-shape-field]").forEach((input) => input.addEventListener("change", () => mutate(() => {
-    if (selection?.kind !== "drafting") return;
-    const shape = state.drafting.shapes[selection.index]; if (!shape?.closed) return;
-    if (input.dataset.draftingShapeField === "shaded") shape.fillColor = input.checked ? shape.fillColor ?? "#49cfe8" : undefined;
-    else shape.fillColor = input.value;
-  })));
   sidebar.querySelectorAll<HTMLInputElement>("[data-auto-dimension-field]").forEach((input) => input.addEventListener("change", () => mutate(() => {
     if (selection?.kind !== "auto-dimension") return;
     const field = input.dataset.autoDimensionField!;
@@ -766,6 +765,14 @@ function selectedTextsForColor(): EditorState["drafting"]["texts"] {
   return selections.flatMap((entry) => entry.kind === "text" && state.drafting.texts[entry.index] ? [state.drafting.texts[entry.index]] : []);
 }
 
+function selectedDraftingShapesForColor(): EditorState["drafting"]["shapes"] {
+  if (selections.some(isLocked)) return [];
+  return selections.flatMap((entry) => {
+    const shape = entry.kind === "drafting" ? state.drafting.shapes[entry.index] : undefined;
+    return shape?.closed ? [shape] : [];
+  });
+}
+
 function selectedConstraintParts(): PrimitiveEditor[] | null {
   if (selection?.kind === "item") return state.items[selection.index]?.parts ?? null;
   if (selection?.kind === "container") return state.containerParts.map((entry) => entry.primitive);
@@ -969,7 +976,7 @@ function addGeometry(kind: PrimitiveEditor["kind"]): void {
       }
       const points = shapePoints(primitiveShape(primitive));
       state.drafting.shapes.push({ id: crypto.randomUUID(), points, x: primitive.x, y: primitive.y, rotation: primitive.rotation, closed: true });
-      selection = { kind: "drafting", index: state.drafting.shapes.length - 1 }; selectedPartIndex = 0; return;
+      selection = { kind: "drafting", index: state.drafting.shapes.length - 1 }; selections = [selection]; selectedPartIndex = 0; return;
     }
     if (editableSelection?.kind === "item") {
       const item = state.items[editableSelection.index], target = item.parts[selectedPartIndex] ?? item.parts[0];
@@ -1104,8 +1111,13 @@ function updateToolbarState(): void {
   const lockLabel = lock.querySelector("span"); if (lockLabel) lockLabel.textContent = unlock ? "Unlock selection" : "Lock selection";
   lock.title = unlock ? "Unlock this entity for CAD interaction" : "Lock selected entities against CAD interaction";
   lock.classList.toggle("active", unlock);
-  const color = element<HTMLInputElement>("toolbar-part-color"), parts = selectedPrimitivesForColor(), texts = selectedTextsForColor();
-  color.disabled = parts.length === 0 && texts.length === 0; color.value = texts[0]?.color ?? editorColor(parts[0]);
+  const color = element<HTMLInputElement>("toolbar-part-color"), transparency = element<HTMLInputElement>("toolbar-color-transparency");
+  const parts = selectedPrimitivesForColor(), texts = selectedTextsForColor(), draftingShapes = selectedDraftingShapesForColor();
+  color.disabled = parts.length === 0 && texts.length === 0 && draftingShapes.length === 0;
+  color.value = draftingShapes[0]?.fillColor ?? texts[0]?.color ?? editorColor(parts[0]);
+  const shadedDraftingShapes = draftingShapes.filter((shape) => shape.fillColor);
+  transparency.disabled = shadedDraftingShapes.length === 0;
+  transparency.value = String(Math.round((1 - (shadedDraftingShapes[0]?.fillOpacity ?? 1)) * 100));
   const trace = element<HTMLButtonElement>("add-trace-image"); trace.classList.toggle("has-content", state.drafting.traceImages.length > 0);
   trace.title = state.drafting.traceImages.length ? "Add another tracing image" : "Add a transparent tracing image";
   const snap = element<HTMLButtonElement>("toggle-grid-snap");
