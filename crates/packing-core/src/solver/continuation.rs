@@ -7,6 +7,62 @@ pub(super) fn clearance_continuation(
     observer: &mut dyn SolveObserver,
     preview_seed: &[Placement],
 ) -> Result<ContinuationOutcome, PackingError> {
+    if let Some(components) = independently_solvable_components(prepared) {
+        let mut component_options = *options;
+        component_options.max_iterations = options.max_iterations.min(30_000);
+        component_options.restarts = component_options.restarts.min(2);
+        let seed = if preview_seed.iter().any(|placement| !placement.fixed) {
+            preview_seed.to_vec()
+        } else {
+            solve_with_observer_internal(prepared, options, &mut NoObserver, None, false)?
+                .placements
+        };
+        let mut combined = Vec::new();
+        let mut stages = 0;
+        let mut repair_only_stages = 0;
+        let mut search_stages = 0;
+        let mut full_solve_stages = 0;
+        for component in components {
+            let component_seed = seed
+                .iter()
+                .filter(|placement| placement_inside_component(prepared, placement, &component))
+                .cloned()
+                .collect::<Vec<_>>();
+            let retained = seed
+                .iter()
+                .filter(|placement| !placement_inside_component(prepared, placement, &component))
+                .cloned()
+                .collect::<Vec<_>>();
+            let component_prepared = prepared_for_component(prepared, component);
+            let mut component_observer = ComponentContinuationObserver {
+                inner: observer,
+                retained: &retained,
+            };
+            let outcome = clearance_continuation_single(
+                &component_prepared,
+                &component_options,
+                &mut component_observer,
+                &component_seed,
+            )?;
+            stages += outcome.stages;
+            repair_only_stages += outcome.repair_only_stages;
+            search_stages += outcome.search_stages;
+            full_solve_stages += outcome.full_solve_stages;
+            let component_best = if outcome.placements.len() >= component_seed.len() {
+                outcome.placements
+            } else {
+                component_seed
+            };
+            append_within_requested_quantities(prepared, &mut combined, component_best);
+        }
+        return Ok(ContinuationOutcome {
+            placements: combined,
+            stages,
+            repair_only_stages,
+            search_stages,
+            full_solve_stages,
+        });
+    }
     if let Some(component) = dominant_complex_component(prepared) {
         let seed = if preview_seed.iter().any(|placement| !placement.fixed) {
             preview_seed.to_vec()
@@ -39,6 +95,30 @@ pub(super) fn clearance_continuation(
         return Ok(outcome);
     }
     clearance_continuation_single(prepared, options, observer, preview_seed)
+}
+
+fn append_within_requested_quantities(
+    prepared: &PreparedProblem,
+    combined: &mut Vec<Placement>,
+    placements: Vec<Placement>,
+) {
+    for placement in placements {
+        let quantity = prepared
+            .problem
+            .items
+            .iter()
+            .find(|item| item.id == placement.item_id)
+            .expect("continuation placement item exists")
+            .quantity as usize;
+        if combined
+            .iter()
+            .filter(|existing| existing.item_id == placement.item_id)
+            .count()
+            < quantity
+        {
+            combined.push(placement);
+        }
+    }
 }
 
 fn clearance_continuation_single(
@@ -248,6 +328,92 @@ fn dominant_complex_component(prepared: &PreparedProblem) -> Option<PolygonSet> 
     let mut component = PolygonSet::new(polygons);
     component.enable_edge_index();
     Some(component)
+}
+
+fn independently_solvable_components(prepared: &PreparedProblem) -> Option<Vec<PolygonSet>> {
+    // High-vertex/compound items use the established dominant-component continuation below. Its
+    // retained-stock path avoids repeating expensive curve predicates for every component.
+    if prepared.variants.iter().any(|variant| {
+        variant
+            .geometry
+            .polygons
+            .iter()
+            .map(Vec::len)
+            .sum::<usize>()
+            > 16
+            || variant.geometry.polygons.len() != 1
+    }) {
+        return None;
+    }
+    if prepared.problem.items.iter().any(|item| {
+        matches!(
+            item.rotation_policy,
+            crate::RotationPolicy::Discrete {
+                coupling: crate::RotationCoupling::SharedPerItem,
+                ..
+            } | crate::RotationPolicy::Continuous {
+                coupling: crate::RotationCoupling::SharedPerItem,
+                ..
+            }
+        )
+    }) {
+        return None;
+    }
+    let mut outer = prepared
+        .container
+        .polygons
+        .iter()
+        .filter(|polygon| contour_twice_area(polygon) > EPSILON)
+        .cloned()
+        .collect::<Vec<_>>();
+    if outer.len() < 2 {
+        return None;
+    }
+    outer.sort_by(|a, b| {
+        contour_twice_area(b)
+            .total_cmp(&contour_twice_area(a))
+            .then_with(|| a.len().cmp(&b.len()))
+    });
+    let components = outer
+        .into_iter()
+        .map(|owner| {
+            let mut polygons = vec![owner.clone()];
+            polygons.extend(
+                prepared
+                    .container
+                    .polygons
+                    .iter()
+                    .filter(|polygon| contour_twice_area(polygon) < -EPSILON)
+                    .filter(|polygon| {
+                        let point = polygon[0];
+                        prepared
+                            .container
+                            .polygons
+                            .iter()
+                            .filter(|outer| {
+                                contour_twice_area(outer) > EPSILON
+                                    && crate::geometry::point_in_polygon(point, outer)
+                            })
+                            .min_by(|a, b| contour_twice_area(a).total_cmp(&contour_twice_area(b)))
+                            .is_some_and(|containing| containing == &owner)
+                    })
+                    .cloned(),
+            );
+            let mut component = PolygonSet::new(polygons);
+            component.enable_edge_index();
+            component
+        })
+        .collect::<Vec<_>>();
+    // An exclusion spanning more than one component cannot be assigned independently without
+    // clipping it. Keep such uncommon scenes on the global continuation path.
+    if prepared.exclusions.iter().any(|exclusion| {
+        !components
+            .iter()
+            .any(|component| set_inside(exclusion, component, 0.0))
+    }) {
+        return None;
+    }
+    Some(components)
 }
 
 fn prepared_for_component(prepared: &PreparedProblem, component: PolygonSet) -> PreparedProblem {

@@ -95,6 +95,7 @@ pub(super) fn portfolio_orders(
 }
 
 mod learned;
+use learned::container_component_bounds;
 pub(super) use learned::{
     alternating_fill, largest_container_rectangle, learned_lattice_layouts, learned_motif_layouts,
     prepare_fixed,
@@ -116,107 +117,114 @@ pub(super) fn structured_fill(
     started: Clock,
     observer: &mut dyn SolveObserver,
 ) {
+    let fill_bounds = container_component_bounds(prepared);
     for &variant_index in order {
         let variant = &prepared.variants[variant_index];
         let pitch_x =
             variant.bounds.width() + prepared.problem.clearance.item_to_item + EPSILON * 10.0;
         let pitch_y =
             variant.bounds.height() + prepared.problem.clearance.item_to_item + EPSILON * 10.0;
-        for origin_high in [false, true] {
-            if columns {
-                let mut column = 0usize;
-                let mut x = if cross_high {
-                    prepared.container_bounds.max_x
-                        - variant.bounds.max_x
+        // Each disconnected material component needs its own scan origin. Using the scene-wide
+        // bounds makes the empty space between components part of the row/column phase, so adding
+        // unrelated stock can remove placements that the same component accepts in isolation.
+        // A one-component scene follows the original loop exactly.
+        for component in &fill_bounds {
+            for origin_high in [false, true] {
+                if columns {
+                    let mut column = 0usize;
+                    let mut x = if cross_high {
+                        component.max_x
+                            - variant.bounds.max_x
+                            - prepared.problem.clearance.item_to_boundary
+                    } else {
+                        component.min_x - variant.bounds.min_x
+                            + prepared.problem.clearance.item_to_boundary
+                    };
+                    loop {
+                        let cross_beyond = if cross_high {
+                            x + variant.bounds.min_x < component.min_x - EPSILON
+                        } else {
+                            x + variant.bounds.max_x > component.max_x + EPSILON
+                        };
+                        if cross_beyond {
+                            break;
+                        }
+                        let offset = if stagger && column % 2 == 1 {
+                            pitch_y / 2.0
+                        } else {
+                            0.0
+                        };
+                        let mut y = if origin_high {
+                            component.max_y - variant.bounds.max_y - offset
+                        } else {
+                            component.min_y - variant.bounds.min_y + offset
+                        };
+                        loop {
+                            if stop_requested(options, started, counters, observer) {
+                                return;
+                            }
+                            let beyond = if origin_high {
+                                y + variant.bounds.min_y < component.min_y - EPSILON
+                            } else {
+                                y + variant.bounds.max_y > component.max_y + EPSILON
+                            };
+                            if beyond {
+                                break;
+                            }
+                            try_place(prepared, variant, x, y, placed, counters);
+                            y += if origin_high { -pitch_y } else { pitch_y };
+                        }
+                        column += 1;
+                        x += if cross_high { -pitch_x } else { pitch_x };
+                    }
+                    continue;
+                }
+                let mut row = 0usize;
+                let mut y = if cross_high {
+                    component.max_y
+                        - variant.bounds.max_y
                         - prepared.problem.clearance.item_to_boundary
                 } else {
-                    prepared.container_bounds.min_x - variant.bounds.min_x
+                    component.min_y - variant.bounds.min_y
                         + prepared.problem.clearance.item_to_boundary
                 };
                 loop {
                     let cross_beyond = if cross_high {
-                        x + variant.bounds.min_x < prepared.container_bounds.min_x - EPSILON
+                        y + variant.bounds.min_y < component.min_y - EPSILON
                     } else {
-                        x + variant.bounds.max_x > prepared.container_bounds.max_x + EPSILON
+                        y + variant.bounds.max_y > component.max_y + EPSILON
                     };
                     if cross_beyond {
                         break;
                     }
-                    let offset = if stagger && column % 2 == 1 {
-                        pitch_y / 2.0
+                    let offset = if stagger && row % 2 == 1 {
+                        pitch_x / 2.0
                     } else {
                         0.0
                     };
-                    let mut y = if origin_high {
-                        prepared.container_bounds.max_y - variant.bounds.max_y - offset
+                    let mut x = if origin_high {
+                        component.max_x - variant.bounds.max_x - offset
                     } else {
-                        prepared.container_bounds.min_y - variant.bounds.min_y + offset
+                        component.min_x - variant.bounds.min_x + offset
                     };
                     loop {
                         if stop_requested(options, started, counters, observer) {
                             return;
                         }
                         let beyond = if origin_high {
-                            y + variant.bounds.min_y < prepared.container_bounds.min_y - EPSILON
+                            x + variant.bounds.min_x < component.min_x - EPSILON
                         } else {
-                            y + variant.bounds.max_y > prepared.container_bounds.max_y + EPSILON
+                            x + variant.bounds.max_x > component.max_x + EPSILON
                         };
                         if beyond {
                             break;
                         }
                         try_place(prepared, variant, x, y, placed, counters);
-                        y += if origin_high { -pitch_y } else { pitch_y };
+                        x += if origin_high { -pitch_x } else { pitch_x };
                     }
-                    column += 1;
-                    x += if cross_high { -pitch_x } else { pitch_x };
+                    row += 1;
+                    y += if cross_high { -pitch_y } else { pitch_y };
                 }
-                continue;
-            }
-            let mut row = 0usize;
-            let mut y = if cross_high {
-                prepared.container_bounds.max_y
-                    - variant.bounds.max_y
-                    - prepared.problem.clearance.item_to_boundary
-            } else {
-                prepared.container_bounds.min_y - variant.bounds.min_y
-                    + prepared.problem.clearance.item_to_boundary
-            };
-            loop {
-                let cross_beyond = if cross_high {
-                    y + variant.bounds.min_y < prepared.container_bounds.min_y - EPSILON
-                } else {
-                    y + variant.bounds.max_y > prepared.container_bounds.max_y + EPSILON
-                };
-                if cross_beyond {
-                    break;
-                }
-                let offset = if stagger && row % 2 == 1 {
-                    pitch_x / 2.0
-                } else {
-                    0.0
-                };
-                let mut x = if origin_high {
-                    prepared.container_bounds.max_x - variant.bounds.max_x - offset
-                } else {
-                    prepared.container_bounds.min_x - variant.bounds.min_x + offset
-                };
-                loop {
-                    if stop_requested(options, started, counters, observer) {
-                        return;
-                    }
-                    let beyond = if origin_high {
-                        x + variant.bounds.min_x < prepared.container_bounds.min_x - EPSILON
-                    } else {
-                        x + variant.bounds.max_x > prepared.container_bounds.max_x + EPSILON
-                    };
-                    if beyond {
-                        break;
-                    }
-                    try_place(prepared, variant, x, y, placed, counters);
-                    x += if origin_high { -pitch_x } else { pitch_x };
-                }
-                row += 1;
-                y += if cross_high { -pitch_y } else { pitch_y };
             }
         }
     }
@@ -232,17 +240,23 @@ pub(super) fn greedy_fill(
     observer: &mut dyn SolveObserver,
 ) {
     let step = options.grid_step;
+    let fill_bounds = container_component_bounds(prepared);
     for &variant_index in order {
         let variant = &prepared.variants[variant_index];
         let mut positions = contact_positions(prepared, variant, placed);
-        let mut y = prepared.container_bounds.min_y - variant.bounds.min_y;
-        while y + variant.bounds.max_y <= prepared.container_bounds.max_y + EPSILON {
-            let mut x = prepared.container_bounds.min_x - variant.bounds.min_x;
-            while x + variant.bounds.max_x <= prepared.container_bounds.max_x + EPSILON {
-                positions.push((x, y));
-                x += step;
+        // Grid phase must be local to each material component for the same reason as structured
+        // rows: empty inter-component distance is not usable stock and must not shift the sample
+        // coordinates within a component.
+        for component in &fill_bounds {
+            let mut y = component.min_y - variant.bounds.min_y;
+            while y + variant.bounds.max_y <= component.max_y + EPSILON {
+                let mut x = component.min_x - variant.bounds.min_x;
+                while x + variant.bounds.max_x <= component.max_x + EPSILON {
+                    positions.push((x, y));
+                    x += step;
+                }
+                y += step;
             }
-            y += step;
         }
         positions.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.total_cmp(&b.0)));
         positions.dedup_by(|a, b| (a.0 - b.0).abs() < EPSILON && (a.1 - b.1).abs() < EPSILON);

@@ -1,0 +1,261 @@
+{
+  "schema_version": 2,
+  "container": {
+    "parts": [
+      {
+        "id": "material",
+        "operation": "add",
+        "shape": {
+          "kind": "rectangle",
+          "width": 12.501,
+          "height": 6.3
+        },
+        "translation": {
+          "x": -4.25,
+          "y": 6.35
+        },
+        "rotation_deg": 0,
+        "snap": null
+      },
+      {
+        "id": "material-2",
+        "operation": "add",
+        "shape": {
+          "kind": "bezier",
+          "knots": [
+            {
+              "point": {
+                "x": -2,
+                "y": 0
+              },
+              "control_in": {
+                "x": -2,
+                "y": 1.1
+              },
+              "control_out": {
+                "x": -2,
+                "y": -1.1
+              }
+            },
+            {
+              "point": {
+                "x": -0.009,
+                "y": -3.147
+              },
+              "control_in": {
+                "x": -1.109,
+                "y": -3.147
+              },
+              "control_out": {
+                "x": 1.091,
+                "y": -3.147
+              }
+            },
+            {
+              "point": {
+                "x": 8.691,
+                "y": 0.021
+              },
+              "control_in": {
+                "x": 5.589,
+                "y": -3.558
+              },
+              "control_out": {
+                "x": 5.589,
+                "y": 3.629
+              }
+            },
+            {
+              "point": {
+                "x": -0.005,
+                "y": 3.153
+              },
+              "control_in": {
+                "x": 1.095,
+                "y": 3.153
+              },
+              "control_out": {
+                "x": -1.105,
+                "y": 3.153
+              }
+            }
+          ],
+          "segments_per_curve": 12
+        },
+        "translation": {
+          "x": 2.005,
+          "y": 6.347
+        },
+        "rotation_deg": 0,
+        "snap": null
+      },
+      {
+        "id": "cutout",
+        "operation": "subtract",
+        "shape": {
+          "kind": "rectangle",
+          "width": 4,
+          "height": 7.5
+        },
+        "translation": {
+          "x": 9,
+          "y": 6.25
+        },
+        "rotation_deg": 0,
+        "snap": null
+      },
+      {
+        "id": "material-3",
+        "operation": "add",
+        "shape": {
+          "kind": "rectangle",
+          "width": 20.771,
+          "height": 5.718
+        },
+        "translation": {
+          "x": -0.117,
+          "y": -2.837
+        },
+        "rotation_deg": 0,
+        "snap": null
+      },
+      {
+        "id": "material-3-copy",
+        "operation": "add",
+        "shape": {
+          "kind": "rectangle",
+          "width": 20,
+          "height": 6
+        },
+        "translation": {
+          "x": -0.535,
+          "y": -12.133
+        },
+        "rotation_deg": 0,
+        "snap": null
+      },
+      {
+        "id": "material-4",
+        "operation": "add",
+        "shape": {
+          "kind": "bezier",
+          "knots": [
+            {
+              "point": {
+                "x": -5,
+                "y": 0
+              },
+              "control_in": {
+                "x": -5,
+                "y": 2.2
+              },
+              "control_out": {
+                "x": -5,
+                "y": -2.2
+              }
+            },
+            {
+              "point": {
+                "x": 0,
+                "y": -3
+              },
+              "control_in": {
+                "x": -2.75,
+                "y": -3
+              },
+              "control_out": {
+                "x": 2.75,
+                "y": -3
+              }
+            },
+            {
+              "point": {
+                "x": 5,
+                "y": 0
+              },
+              "control_in": {
+                "x": 4.476,
+                "y": -1.102
+              },
+              "control_out": {
+                "x": 4.456,
+                "y": 0.725
+              }
+            },
+            {
+              "point": {
+                "x": 0,
+                "y": 3
+              },
+              "control_in": {
+                "x": 2.75,
+                "y": 3
+              },
+              "control_out": {
+                "x": -2.75,
+                "y": 3
+              }
+            }
+          ],
+          "segments_per_curve": 12
+        },
+        "translation": {
+          "x": 9.465,
+          "y": -12.133
+        },
+        "rotation_deg": 0,
+        "snap": {
+          "target_part": 4,
+          "own_anchor": "center",
+          "target_anchor": "right",
+          "offset": {
+            "x": 0,
+            "y": 0
+          }
+        }
+      }
+    ]
+  },
+  "exclusions": [],
+  "items": [
+    {
+      "id": "item",
+      "quantity": 50,
+      "rotation_policy": {
+        "kind": "discrete",
+        "angles_deg": [
+          0,
+          90,
+          180,
+          270
+        ],
+        "coupling": "independent"
+      },
+      "shape": {
+        "kind": "compound",
+        "parts": [
+          {
+            "shape": {
+              "kind": "triangle",
+              "base": 2.9,
+              "height": 2.51
+            },
+            "translation": {
+              "x": 0,
+              "y": 0
+            },
+            "rotation_deg": 0,
+            "snap": null
+          }
+        ]
+      }
+    }
+  ],
+  "fixed_placements": [],
+  "clearance": {
+    "item_to_item": 0.5,
+    "item_to_boundary": 0.5,
+    "item_to_exclusion": 0
+  }
+}
+

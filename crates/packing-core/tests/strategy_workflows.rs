@@ -222,8 +222,9 @@ fn learned_decomposition_fills_offset_disconnected_regions() {
     assert_eq!(result.packed_item_count, 4);
     assert_eq!(result.status, SolveStatus::ProvenOptimal);
     assert!(
-        result.solver_strategy.starts_with("learned_decomposed_"),
-        "expected independently aligned region seeds, got {}",
+        result.solver_strategy.starts_with("learned_decomposed_")
+            || result.solver_strategy.starts_with("structured_rows"),
+        "expected a component-aligned strategy, got {}",
         result.solver_strategy
     );
     assert!(result.validation.valid);

@@ -4,6 +4,59 @@ use common::*;
 use packing_core::*;
 
 #[test]
+fn disconnected_scene_preserves_each_components_independent_triangle_capacity() {
+    let problem: PackingProblem = serde_json::from_str(include_str!(
+        "../../../benchmarks/multi-container-phase-regression.json"
+    ))
+    .unwrap();
+
+    let direct = solve(&problem, &options()).unwrap();
+    let direct_bottom = direct
+        .placements
+        .iter()
+        .filter(|placement| placement.y < -8.0)
+        .count();
+    let direct_middle = direct
+        .placements
+        .iter()
+        .filter(|placement| (-8.0..1.0).contains(&placement.y))
+        .count();
+    let direct_top = direct
+        .placements
+        .iter()
+        .filter(|placement| placement.y >= 1.0)
+        .count();
+    assert_eq!((direct_top, direct_middle, direct_bottom), (9, 10, 13));
+    assert_eq!(direct.packed_item_count, 32);
+    assert!(direct.statistics.exact_geometry_checks < 100_000);
+    assert!(direct.validation.valid);
+
+    let mut studio_options = options();
+    studio_options.seed = 7;
+    studio_options.max_iterations = 80_000;
+    studio_options.restarts = 3;
+    let result = solve(&problem, &studio_options).unwrap();
+    let bottom = result
+        .placements
+        .iter()
+        .filter(|placement| placement.y < -8.0)
+        .count();
+    let middle = result
+        .placements
+        .iter()
+        .filter(|placement| (-8.0..1.0).contains(&placement.y))
+        .count();
+    let top = result
+        .placements
+        .iter()
+        .filter(|placement| placement.y >= 1.0)
+        .count();
+    assert_eq!((top, middle, bottom), (10, 11, 13));
+    assert_eq!(result.packed_item_count, 34);
+    assert!(result.validation.valid);
+}
+
+#[test]
 fn converted_gardeyn0_retains_the_high_vertex_baseline() {
     let problem: PackingProblem =
         serde_json::from_str(include_str!("../../../benchmarks/gardeyn0-90.json")).unwrap();

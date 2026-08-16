@@ -31,3 +31,9 @@ the same 48,681.08 container, which is feasible as a target because continuous r
 the discrete record's orientations. `gardeyn0-clearance.json` is a documented stress derivative of
 the discrete fixture with 25 units of item/item and item/boundary clearance; it is a performance and
 correctness regression, not a published best-known target.
+
+`multi-container-phase-regression.json` is the original user-supplied reproduction for disconnected
+container performance. The studio's balanced 80,000-iteration profile must place 10, 11, and 13 of
+the requested compound triangles in the top, middle, and bottom components respectively. The quick
+30,000-iteration performance gate retains 32 placements with fewer than 100,000 exact geometry
+checks. This is an OpenLayout regression input rather than an externally published benchmark.

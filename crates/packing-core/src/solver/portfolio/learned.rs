@@ -461,10 +461,11 @@ pub(in crate::solver) fn learned_motif_layouts(
                 (
                     first_position,
                     second_position,
-                    best_motif_offsets(first, second, prepared.problem.clearance.item_to_item)
-                        .into_iter()
-                        .take(2)
-                        .collect::<Vec<_>>(),
+                    select_motif_offsets(
+                        best_motif_offsets(first, second, prepared.problem.clearance.item_to_item),
+                        &component_bounds,
+                        prepared.problem.clearance.item_to_boundary,
+                    ),
                 )
             })
             .collect::<Vec<_>>();
@@ -580,7 +581,7 @@ fn bounds_inside(inner: Bounds, outer: Bounds) -> bool {
         && inner.max_y <= outer.max_y + EPSILON
 }
 
-fn container_component_bounds(prepared: &PreparedProblem) -> Vec<Bounds> {
+pub(super) fn container_component_bounds(prepared: &PreparedProblem) -> Vec<Bounds> {
     let mut components = prepared
         .container
         .polygons
@@ -682,6 +683,53 @@ fn best_motif_offsets(
         .into_iter()
         .map(|(_, _, offset, motif_bounds)| (offset, motif_bounds))
         .collect()
+}
+
+fn select_motif_offsets(
+    candidates: Vec<(crate::Point, Bounds)>,
+    component_bounds: &[Bounds],
+    boundary_clearance: f64,
+) -> Vec<(crate::Point, Bounds)> {
+    if component_bounds.len() <= 1 {
+        return candidates.into_iter().take(2).collect();
+    }
+    let Some(primary) = candidates.first().copied() else {
+        return Vec::new();
+    };
+    let repeat_capacity = |motif: Bounds| {
+        component_bounds
+            .iter()
+            .map(|component| {
+                let width = (component.width() - 2.0 * boundary_clearance).max(0.0);
+                let height = (component.height() - 2.0 * boundary_clearance).max(0.0);
+                if motif.width() > width + EPSILON || motif.height() > height + EPSILON {
+                    0usize
+                } else {
+                    (width / motif.width()).floor() as usize
+                        * (height / motif.height()).floor() as usize
+                }
+            })
+            .sum::<usize>()
+    };
+    let alternative = candidates
+        .iter()
+        .copied()
+        .enumerate()
+        .skip(1)
+        .max_by(|(a_index, (_, a_bounds)), (b_index, (_, b_bounds))| {
+            repeat_capacity(*a_bounds)
+                .cmp(&repeat_capacity(*b_bounds))
+                .then_with(|| b_index.cmp(a_index))
+        })
+        .map(|(_, candidate)| candidate);
+    let mut selected = vec![primary];
+    if let Some(alternative) = alternative
+        && ((alternative.0.x - primary.0.x).abs() > EPSILON
+            || (alternative.0.y - primary.0.y).abs() > EPSILON)
+    {
+        selected.push(alternative);
+    }
+    selected
 }
 
 /// Moves a touching motif pair apart along its centre-to-centre direction until the requested
