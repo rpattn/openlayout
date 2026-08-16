@@ -233,7 +233,7 @@ async function writeDurableWorkspace(serialized: string): Promise<void> {
 }
 
 function migrateProject(project: LocalProject): LocalProject {
-  const state = project.state as unknown as { containerParts?: unknown[]; items?: unknown[]; exclusions?: Array<{ primitive?: unknown; parts?: unknown[] }>; lockedEntities?: EditorState["lockedEntities"]; viewSettings?: EditorState["viewSettings"]; dimensions?: EditorState["dimensions"]; dimensionPositions?: EditorState["dimensionPositions"]; dimensionOverrides?: EditorState["dimensionOverrides"]; drafting?: EditorState["drafting"] & { traceImage?: EditorState["drafting"]["traceImages"][number]; guides?: Array<Partial<EditorState["drafting"]["guides"][number]> & { axis?: "x" | "y"; position?: number }> } };
+  const state = project.state as unknown as { containerParts?: unknown[]; items?: unknown[]; exclusions?: Array<{ primitive?: unknown; parts?: unknown[] }>; lockedEntities?: EditorState["lockedEntities"]; viewSettings?: EditorState["viewSettings"]; dimensions?: EditorState["dimensions"]; dimensionPositions?: EditorState["dimensionPositions"]; dimensionOverrides?: EditorState["dimensionOverrides"]; hiddenDimensions?: EditorState["hiddenDimensions"]; drafting?: EditorState["drafting"] & { traceImage?: EditorState["drafting"]["traceImages"][number]; guides?: Array<Partial<EditorState["drafting"]["guides"][number]> & { axis?: "x" | "y"; position?: number }> } };
   state.containerParts ??= [];
   state.items ??= [];
   state.exclusions ??= [];
@@ -264,6 +264,7 @@ function migrateProject(project: LocalProject): LocalProject {
   state.dimensions ??= [];
   state.dimensionPositions ??= {};
   state.dimensionOverrides ??= {};
+  state.hiddenDimensions ??= {};
   return project as LocalProject;
 }
 

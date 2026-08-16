@@ -52,6 +52,7 @@ export const defaultState = (): EditorState => ({
   dimensions: [],
   dimensionPositions: {},
   dimensionOverrides: {},
+  hiddenDimensions: {},
   study: {
     parameterKey: "part_width:item-a:0",
     start: 3,

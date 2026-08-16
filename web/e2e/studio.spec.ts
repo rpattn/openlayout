@@ -254,12 +254,18 @@ test("provides engineering dimensions, persistent view settings, and vertical na
   expect(Math.abs(materialLabel.y - itemLabel.y)).toBeGreaterThan(5);
   await expect(page.locator(".cad-grid line")).toHaveCount(0);
   await expect(page.locator("#cad-canvas")).toHaveCSS("--cad-edge-width", "2.5px");
+  await page.locator("[data-cad-background]").click({ position: { x: 5, y: 5 } });
+  await page.locator('[data-dimension-owner="material"] [data-dimension-axis="width"] text').click();
+  await page.getByRole("button", { name: "Hide dimension" }).click();
+  await expect(page.locator('[data-dimension-owner="material"] [data-dimension-axis="width"]')).toHaveCount(0);
+  await expect(page.locator('[data-dimension-owner="material"] [data-dimension-axis="height"]')).toHaveCount(1);
 
   await page.reload();
   await page.getByRole("button", { name: "View settings" }).click();
   await expect(page.getByLabel("View settings panel").getByLabel("Text size px")).toHaveValue("16");
   await expect(page.getByLabel("View settings panel").getByLabel("Grid spacing")).toHaveValue("1");
   await expect(page.getByLabel("View settings panel").getByRole("checkbox", { name: "Grid", exact: true })).not.toBeChecked();
+  await expect(page.locator('[data-dimension-owner="material"] [data-dimension-axis="width"]')).toHaveCount(0);
 });
 
 test("uses remembered hover-menu shapes for material, cut-out, item, and exclusion", async ({ page }) => {
@@ -1093,23 +1099,35 @@ test("moves a centered rectangle added immediately after a solve", async ({ page
 
   const before = await added.getAttribute("d");
   const originalBefore = await original.getAttribute("d");
-  const addedBox = await added.boundingBox();
-  if (!addedBox) throw new Error("Second rectangle is unavailable");
-  const solvedBoxes = await page.locator(".cad-placement.reference").evaluateAll((nodes) => nodes.map((node) => {
-    const box = node.getBoundingClientRect(); return { x: box.x, y: box.y, width: box.width, height: box.height };
-  }));
-  const covered = solvedBoxes.find((box) => {
-    const x = box.x + box.width / 2, y = box.y + box.height / 2;
-    return x > addedBox.x && x < addedBox.x + addedBox.width && y > addedBox.y && y < addedBox.y + addedBox.height;
-  });
-  if (!covered) throw new Error("No solved placement overlaps the second rectangle");
-  const dragX = covered.x + covered.width / 2, dragY = covered.y + covered.height / 2;
+  const moveHandle = page.locator('[data-part-move="container:1"]');
+  const handleBox = await moveHandle.boundingBox();
+  if (!handleBox) throw new Error("Second rectangle move handle is unavailable");
+  const dragX = handleBox.x + handleBox.width / 2, dragY = handleBox.y + handleBox.height / 2;
   await page.mouse.move(dragX, dragY);
   await page.mouse.down();
   await page.mouse.move(dragX + 70, dragY + 35, { steps: 4 });
   await page.mouse.up();
   await expect.poll(() => added.getAttribute("d")).not.toBe(before);
   await expect(original).toHaveAttribute("d", originalBefore!);
+});
+
+test("keeps solved placements editable after returning to setup", async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.goto("/");
+  await configureFastSolve(page);
+  await page.getByRole("button", { name: "Run packing" }).click();
+  await expect(page.getByRole("button", { name: "Repack" })).toBeEnabled({ timeout: 30_000 });
+  await page.getByRole("button", { name: "Return to edit" }).click();
+
+  const placement = page.locator('[data-cad-kind="placement"][data-cad-index="0"]');
+  await placement.click();
+  await expect(page.locator("#selection-inspector")).toContainText("Packed item 1");
+  await openInspectorDetails(page, "placement-precision");
+  const x = page.locator('[data-placement-field="x"]');
+  const before = Number(await x.inputValue());
+  await x.fill(String(before + 0.5)); await x.blur();
+  await expect(x).toHaveValue(String(before + 0.5));
+  await expect(page.locator("#workspace-summary")).toContainText("manual layout");
 });
 
 test("undoes and redoes solved placement moves as atomic result edits", async ({ page }) => {

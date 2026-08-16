@@ -203,7 +203,7 @@ function bindShell(): void {
     const lockButton = contextMenu.querySelector<HTMLButtonElement>('[data-context-action="lock"]')!;
     lockButton.hidden = !selection || kind === "dimension" || kind === "auto-dimension"; lockButton.textContent = selection && isLocked(selection) ? "Unlock" : "Lock";
     contextMenu.querySelector<HTMLButtonElement>('[data-context-action="reset-rotation"]')!.hidden = !selection || kind === "dimension" || kind === "auto-dimension";
-    contextMenu.querySelector<HTMLButtonElement>('[data-context-action="delete"]')!.hidden = kind === "auto-dimension";
+    contextMenu.querySelector<HTMLButtonElement>('[data-context-action="delete"]')!.hidden = !kind;
   });
   document.addEventListener("pointerdown", (event) => {
     if (!(event.target as Element).closest("#cad-context-menu")) contextMenu.hidden = true;
@@ -500,6 +500,7 @@ function bindInlineInspector(sidebar: HTMLElement): void {
     if (selection?.kind !== "auto-dimension") return;
     delete state.dimensionOverrides[`${selection.owner}:${selection.axis}`]; delete state.dimensionPositions[selection.owner];
   }));
+  sidebar.querySelector("[data-hide-auto-dimension]")?.addEventListener("click", hideSelectedAutoDimension);
   sidebar.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("[data-text-field]").forEach((input) => input.addEventListener("change", () => mutate(() => {
     if (selection?.kind !== "text") return;
     const entry = state.drafting.texts[selection.index]; if (!entry) return;
@@ -1019,9 +1020,19 @@ function joinSelectedMaterial(): void {
 function deleteToolbarSelection(): void {
   if (selections.some(isLocked)) return;
   if (selections.length > 1) { deleteMultipleSelections(); return; }
-  if (!selection || selection.kind === "placement" || selection.kind === "auto-dimension") return;
+  if (!selection || selection.kind === "placement") return;
+  if (selection.kind === "auto-dimension") { hideSelectedAutoDimension(); return; }
   if (selection.kind === "container" || selection.kind === "guide" || selection.kind === "drafting" || selection.kind === "dimension" || selection.kind === "text" || selection.kind === "trace" || ((selection.kind === "item" || selection.kind === "exclusion") && selection.partIndex === undefined)) { deleteSelectedObject(); return; }
   mutate(deleteSelectedPart);
+}
+
+function hideSelectedAutoDimension(): void {
+  if (selection?.kind !== "auto-dimension") return;
+  const key = `${selection.owner}:${selection.axis}`;
+  mutate(() => {
+    state.hiddenDimensions[key] = true;
+    selection = null; selections = [];
+  });
 }
 
 function deleteMultipleSelections(): void {
@@ -1081,7 +1092,7 @@ function updateToolbarState(): void {
   const primitives = state.containerParts.map((entry) => entry.primitive);
   const canJoin = selectedRegion?.operation === "add" && state.containerParts.some((entry) => entry !== selectedRegion && entry.operation === "add" && !primitiveDependsOn(primitives, entry.primitive.id, selectedRegion.primitive.id));
   element<HTMLButtonElement>("join-material").disabled = !canJoin;
-  element<HTMLButtonElement>("delete-selection").disabled = selections.length === 0 || selections.some(isLocked) || (selections.length === 1 && (selection?.kind === "placement" || selection?.kind === "auto-dimension"));
+  element<HTMLButtonElement>("delete-selection").disabled = selections.length === 0 || selections.some(isLocked) || (selections.length === 1 && selection?.kind === "placement");
   const lock = element<HTMLButtonElement>("lock-selection"), unlock = selections.length === 1 && !!selection && isLocked(selection);
   lock.disabled = selections.length === 0 || selection?.kind === "auto-dimension"; lock.setAttribute("aria-label", unlock ? "Unlock selection" : "Lock selection");
   const lockLabel = lock.querySelector("span"); if (lockLabel) lockLabel.textContent = unlock ? "Unlock selection" : "Lock selection";
@@ -1637,6 +1648,7 @@ function activeLayoutDisplay() {
     customDimensions: page === "packing" ? state.dimensions : [],
     dimensionPositions: page === "packing" ? state.dimensionPositions : {},
     dimensionOverrides: page === "packing" ? state.dimensionOverrides : {},
+    hiddenDimensions: page === "packing" ? state.hiddenDimensions : {},
   };
 }
 

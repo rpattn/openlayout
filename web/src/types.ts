@@ -305,5 +305,6 @@ export interface EditorState {
   dimensions: CadDimension[];
   dimensionPositions: Record<string, Point>;
   dimensionOverrides: Record<string, string>;
+  hiddenDimensions: Record<string, boolean>;
   study: Omit<SensitivityStudy, "parameter" | "solve_options"> & { parameterKey: string };
 }

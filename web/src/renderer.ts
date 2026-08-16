@@ -11,6 +11,7 @@ export interface LayoutDisplayOptions {
   customDimensions?: CadDimension[];
   dimensionPositions?: Record<string, Point>;
   dimensionOverrides?: Record<string, string>;
+  hiddenDimensions?: Record<string, boolean>;
 }
 
 export function renderLayout(canvas: HTMLCanvasElement, problem: PackingProblem, placements: Placement[] = [], display: LayoutDisplayOptions = {}): void {
@@ -188,6 +189,9 @@ function drawDashedPolygon(context: CanvasRenderingContext2D, points: Point[], v
 
 function drawDimensions(context: CanvasRenderingContext2D, points: Point[], viewport: ReturnType<typeof makeViewport>, settings: CadViewSettings, diameter = false, owner = "material", display: LayoutDisplayOptions = {}): void {
   if (!points.length) return;
+  const hideWidth = display.hiddenDimensions?.[`${owner}:width`];
+  const hideHeight = display.hiddenDimensions?.[`${owner}:height`];
+  if (hideWidth && (diameter || hideHeight)) return;
   const bounds = pointBounds(points), topLeft = screen({ x: bounds.minX, y: bounds.maxY }, viewport), bottomRight = screen({ x: bounds.maxX, y: bounds.minY }, viewport);
   const offset = 8 * devicePixelRatio, position = display.dimensionPositions?.[owner] ?? { x: 0, y: 0 };
   topLeft.y -= position.y * viewport.scale; bottomRight.y -= position.y * viewport.scale;
@@ -195,16 +199,21 @@ function drawDimensions(context: CanvasRenderingContext2D, points: Point[], view
   const theme = canvasTheme();
   const unit = settings.dimensionUnit ? ` ${settings.dimensionUnit}` : "";
   context.save(); context.strokeStyle = theme.text; context.fillStyle = theme.text; context.globalAlpha = .9; context.lineWidth = Math.max(devicePixelRatio, settings.edgeThickness * .75 * devicePixelRatio); context.font = `650 ${settings.dimensionTextSize * devicePixelRatio}px ui-monospace, monospace`; context.textAlign = "center";
-  context.beginPath(); context.moveTo(topLeft.x, topLeft.y - offset); context.lineTo(bottomRight.x, topLeft.y - offset); context.moveTo(topLeft.x, topLeft.y - offset * 1.35); context.lineTo(topLeft.x, topLeft.y - offset * .65); context.moveTo(bottomRight.x, topLeft.y - offset * 1.35); context.lineTo(bottomRight.x, topLeft.y - offset * .65); context.stroke();
-  const widthLabel = display.dimensionOverrides?.[`${owner}:width`] || `${diameter ? "Ø" : ""}${bounds.width.toFixed(settings.dimensionPrecision)}${unit}`;
-  context.fillText(widthLabel, (topLeft.x + bottomRight.x) / 2, topLeft.y - offset - 3 * devicePixelRatio);
+  if (!hideWidth) {
+    context.beginPath(); context.moveTo(topLeft.x, topLeft.y - offset); context.lineTo(bottomRight.x, topLeft.y - offset); context.moveTo(topLeft.x, topLeft.y - offset * 1.35); context.lineTo(topLeft.x, topLeft.y - offset * .65); context.moveTo(bottomRight.x, topLeft.y - offset * 1.35); context.lineTo(bottomRight.x, topLeft.y - offset * .65); context.stroke();
+    const widthLabel = display.dimensionOverrides?.[`${owner}:width`] || `${diameter ? "Ø" : ""}${bounds.width.toFixed(settings.dimensionPrecision)}${unit}`;
+    context.fillText(widthLabel, (topLeft.x + bottomRight.x) / 2, topLeft.y - offset - 3 * devicePixelRatio);
+  }
   if (diameter) { context.restore(); return; }
-  context.beginPath(); context.moveTo(bottomRight.x + offset + shiftedRight, topLeft.y + position.y * viewport.scale); context.lineTo(bottomRight.x + offset + shiftedRight, bottomRight.y + position.y * viewport.scale); context.moveTo(bottomRight.x + offset * .65 + shiftedRight, topLeft.y + position.y * viewport.scale); context.lineTo(bottomRight.x + offset * 1.35 + shiftedRight, topLeft.y + position.y * viewport.scale); context.moveTo(bottomRight.x + offset * .65 + shiftedRight, bottomRight.y + position.y * viewport.scale); context.lineTo(bottomRight.x + offset * 1.35 + shiftedRight, bottomRight.y + position.y * viewport.scale); context.stroke();
-  context.save(); context.translate(bottomRight.x + offset + shiftedRight + settings.dimensionTextSize * devicePixelRatio, (topLeft.y + bottomRight.y) / 2 + position.y * viewport.scale); context.rotate(-Math.PI / 2); context.fillText(display.dimensionOverrides?.[`${owner}:height`] || `${bounds.height.toFixed(settings.dimensionPrecision)}${unit}`, 0, 0); context.restore(); context.restore();
+  if (!hideHeight) {
+    context.beginPath(); context.moveTo(bottomRight.x + offset + shiftedRight, topLeft.y + position.y * viewport.scale); context.lineTo(bottomRight.x + offset + shiftedRight, bottomRight.y + position.y * viewport.scale); context.moveTo(bottomRight.x + offset * .65 + shiftedRight, topLeft.y + position.y * viewport.scale); context.lineTo(bottomRight.x + offset * 1.35 + shiftedRight, topLeft.y + position.y * viewport.scale); context.moveTo(bottomRight.x + offset * .65 + shiftedRight, bottomRight.y + position.y * viewport.scale); context.lineTo(bottomRight.x + offset * 1.35 + shiftedRight, bottomRight.y + position.y * viewport.scale); context.stroke();
+    context.save(); context.translate(bottomRight.x + offset + shiftedRight + settings.dimensionTextSize * devicePixelRatio, (topLeft.y + bottomRight.y) / 2 + position.y * viewport.scale); context.rotate(-Math.PI / 2); context.fillText(display.dimensionOverrides?.[`${owner}:height`] || `${bounds.height.toFixed(settings.dimensionPrecision)}${unit}`, 0, 0); context.restore();
+  }
+  context.restore();
 }
 
 function drawClearanceDimension(context: CanvasRenderingContext2D, points: Point[], distance: number, outward: boolean, viewport: ReturnType<typeof makeViewport>, settings: CadViewSettings, owner: string, display: LayoutDisplayOptions): void {
-  if (!points.length || distance <= 0) return;
+  if (!points.length || distance <= 0 || display.hiddenDimensions?.[`${owner}:clearance`]) return;
   const bounds = pointBounds(points), y = (bounds.minY + bounds.maxY) / 2;
   const position = display.dimensionPositions?.[owner] ?? { x: 0, y: 0 };
   const start = { x: (outward ? bounds.maxX : bounds.minX) + position.x, y: y + position.y }, end = { x: (outward ? bounds.maxX + distance : bounds.minX + distance) + position.x, y: y + position.y };

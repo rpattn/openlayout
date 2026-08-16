@@ -753,8 +753,7 @@ export class CadWorkspace {
     const sourceParts = sourcePartPolygons(item.shape).map((partPolygons) => transformPolygons(partPolygons, placement.rotation_deg, placement.x, placement.y));
     const editorItem = this.state.items.find((entry) => entry.id === item.id);
     const colored = sourceParts.map((partPolygons, partIndex) => partPolygons.map((polygon) => `<path class="cad-part-color item" style="fill:${editorColor(editorItem?.parts[partIndex], color)}" d="${path(polygon)}"/>`).join("")).join("");
-    const interactive = this.presentationMode === "results" || placement.fixed;
-    const paths = `${colored}<path ${locked || !interactive ? "" : `data-cad-kind="placement" data-cad-index="${index}"`} class="cad-placement unified ${locked ? "locked" : selected ? "selected" : ""} ${placement.fixed ? "fixed" : ""} ${interactive ? "" : "reference"}" fill-rule="evenodd" style="--item-color:${color};fill:transparent" d="${compoundPath(placed)}"/>${this.clearance && this.problem.clearance.item_to_item > 0 ? placed.map((polygon) => `<path class="cad-clearance item" d="${path(offsetPolygon(polygon, (contourArea(polygon) >= 0 ? 1 : -1) * this.problem.clearance.item_to_item / 2))}"/>`).join("") : ""}`;
+    const paths = `${colored}<path ${locked ? "" : `data-cad-kind="placement" data-cad-index="${index}"`} class="cad-placement unified ${locked ? "locked" : selected ? "selected" : ""} ${placement.fixed ? "fixed" : ""}" fill-rule="evenodd" style="--item-color:${color};fill:transparent" d="${compoundPath(placed)}"/>${this.clearance && this.problem.clearance.item_to_item > 0 ? placed.map((polygon) => `<path class="cad-clearance item" d="${path(offsetPolygon(polygon, (contourArea(polygon) >= 0 ? 1 : -1) * this.problem.clearance.item_to_item / 2))}"/>`).join("") : ""}`;
     const fixedBadge = placement.fixed ? `<g class="cad-fixed-badge" aria-label="Fixed placement"><circle cx="${placement.x}" cy="${-placement.y}" r=".32"/><text x="${placement.x}" y="${-placement.y + .12}" text-anchor="middle">F</text></g>` : "";
     return `<g aria-label="${escapeHtml(placement.item_id)} placement ${index + 1}">${paths}${fixedBadge}</g>`;
   }
@@ -1387,7 +1386,7 @@ export class CadWorkspace {
   private dimensionMarkup(): string {
     const scale = this.view.width / Math.max(this.svg.clientWidth, 1), markup: string[] = []; let automaticIndex = 0;
     const append = (points: Point[], owner: string, lane = 0, diameter = false) => {
-      if (points.length) { markup.push(engineeringDimensions(pointBounds(points), scale, owner, this.state.viewSettings, lane, diameter, this.state.dimensionPositions[owner], this.state.dimensionOverrides, automaticIndex)); automaticIndex += diameter ? 1 : 2; }
+      if (points.length) { markup.push(engineeringDimensions(pointBounds(points), scale, owner, this.state.viewSettings, lane, diameter, this.state.dimensionPositions[owner], this.state.dimensionOverrides, automaticIndex, this.state.hiddenDimensions)); automaticIndex += diameter ? 1 : 2; }
     };
     append(this.resolved.container.flat(), "material", 0, this.state.containerParts.length === 1 && this.state.containerParts[0]?.primitive.kind === "circle");
     this.problem.exclusions.forEach((entry, index) => append((this.resolved.exclusions.find((geometry) => geometry.id === entry.id)?.polygons ?? []).flat(), `exclusion:${entry.id}`, index + 1, this.state.exclusions[index]?.parts.length === 1 && this.state.exclusions[index]?.parts[0]?.kind === "circle"));
@@ -1399,7 +1398,7 @@ export class CadWorkspace {
     }
     if (this.selection?.kind === "drafting") append(draftingWorldPoints(this.state.drafting.shapes[this.selection.index]), `drafting:${this.selection.index + 1}`);
     const clearance = (points: Point[], distance: number, owner: string, outward: boolean) => {
-      if (!points.length || distance <= 0) return;
+      if (!points.length || distance <= 0 || this.state.hiddenDimensions[`${owner}:clearance`]) return;
       const bounds = pointBounds(points), y = (bounds.minY + bounds.maxY) / 2;
       const start = { x: outward ? bounds.maxX : bounds.minX, y }, end = { x: outward ? bounds.maxX + distance : bounds.minX + distance, y };
       const calculated = `${distance.toFixed(this.state.viewSettings.dimensionPrecision)}${this.state.viewSettings.dimensionUnit ? ` ${this.state.viewSettings.dimensionUnit}` : ""} clear`;
